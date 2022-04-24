@@ -1,0 +1,28 @@
+name: Release CI
+
+on: workflow_dispatch
+
+jobs:
+  release-update:
+    runs-on: windows-latest
+    if: startsWith(github.repository, 'zzzgydi')
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: latest
+          tag_name: latest
+          files: target/release/clash-verge-service.exe
