@@ -11,7 +11,9 @@ use tokio::runtime::Runtime;
 use warp::Filter;
 use windows_service::{
   define_windows_service,
-  service::{ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType},
+  service::{
+    ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
+  },
   service_control_handler::{self, ServiceControlHandlerResult},
   service_dispatcher, Result,
 };
@@ -118,7 +120,13 @@ pub async fn run_service() -> anyhow::Result<()> {
 // 开启服务 设置服务状态
 fn start_service() -> Result<()> {
   let status_handle =
-    service_control_handler::register(SERVICE_NAME, |_| ServiceControlHandlerResult::NoError)?;
+    service_control_handler::register(SERVICE_NAME, move |event| -> ServiceControlHandlerResult {
+      match event {
+        ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+        ServiceControl::Stop => std::process::exit(0),
+        _ => ServiceControlHandlerResult::NotImplemented,
+      }
+    })?;
 
   status_handle.set_service_status(ServiceStatus {
     service_type: SERVICE_TYPE,

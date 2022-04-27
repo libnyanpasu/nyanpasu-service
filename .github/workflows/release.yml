@@ -25,4 +25,7 @@ jobs:
         with:
           name: latest
           tag_name: latest
-          files: target/release/clash-verge-service.exe
+          files: |
+            target/release/clash-verge-service.exe
+            target/release/install-service.exe
+            target/release/uninstall-service.exe

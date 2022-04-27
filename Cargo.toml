@@ -6,6 +6,18 @@ authors = ["zzzgydi"]
 license = "GPL-3.0"
 repository = "https://github.com/zzzgydi/clash-verge-service.git"
 
+[[bin]]
+name = "clash-verge-service"
+path = "src/main.rs"
+
+[[bin]]
+name = "install-service"
+path = "src/install.rs"
+
+[[bin]]
+name = "uninstall-service"
+path = "src/uninstall.rs"
+
 [dependencies]
 warp = "0.3"
 anyhow = "1.0"
