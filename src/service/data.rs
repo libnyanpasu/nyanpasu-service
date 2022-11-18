@@ -8,6 +8,8 @@ pub struct StartBody {
 
     pub config_dir: String,
 
+    pub config_file: String,
+
     pub log_file: String,
 }
 

@@ -47,9 +47,11 @@ pub fn start_clash(body: StartBody) -> Result<()> {
 
     let config_dir = body.config_dir.as_str();
 
+    let config_file = body.config_file.as_str();
+
     let args = match core_type.as_str() {
-        "clash-meta" => vec!["-m", "-d", config_dir],
-        _ => vec!["-d", config_dir],
+        "clash-meta" => vec!["-m", "-d", config_dir, "-f", config_file],
+        _ => vec!["-d", config_dir, "-f", config_file],
     };
 
     let log = File::create(body.log_file).context("failed to open log")?;
