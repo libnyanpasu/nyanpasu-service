@@ -1,12 +1,12 @@
 use super::data::*;
 use anyhow::{bail, Context, Result};
-use once_cell::sync::OnceCell;
+
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::process::Child;
 use std::process::Command;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Default)]
 pub struct ClashStatus {
@@ -17,7 +17,7 @@ pub struct ClashStatus {
 
 impl ClashStatus {
     pub fn global() -> &'static Arc<Mutex<ClashStatus>> {
-        static CLASHSTATUS: OnceCell<Arc<Mutex<ClashStatus>>> = OnceCell::new();
+        static CLASHSTATUS: OnceLock<Arc<Mutex<ClashStatus>>> = OnceLock::new();
 
         CLASHSTATUS.get_or_init(|| Arc::new(Mutex::new(ClashStatus::default())))
     }
