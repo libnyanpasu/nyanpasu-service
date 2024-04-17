@@ -1,3 +1,3 @@
-# Clash Verge Service
+# Clash Nyanpasu Service
 
-A Windows Service.
+A simple service to make clash core privileged.

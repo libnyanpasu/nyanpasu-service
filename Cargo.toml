@@ -1,25 +1,17 @@
 [package]
-name = "clash-verge-service"
+name = "clash-nyanpasu-service"
 version = "0.1.0"
 edition = "2021"
-authors = ["zzzgydi"]
+authors = ["zzzgydi", "LibNyanpasu"]
 license = "GPL-3.0"
-repository = "https://github.com/zzzgydi/clash-verge-service.git"
+repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
-[[bin]]
-name = "clash-verge-service"
-path = "src/main.rs"
+[workspace]
+members = ["nyanpasu_service", "ipc_bridge"]
 
-[[bin]]
-name = "install-service"
-path = "src/install.rs"
-
-[[bin]]
-name = "uninstall-service"
-path = "src/uninstall.rs"
-
-[dependencies]
+[workspace.dependencies]
 warp = "0.3"
+axum = "0.7.4"
 anyhow = "1.0"
 log = "0.4.20"
 log4rs = "1.2.0"
@@ -28,9 +20,35 @@ parking_lot = "0.12.1"
 windows-service = "0.6.0"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1.0", features = ["derive"] }
+clap = { version = "4.5.2", features = ["derive"] }
+thiserror = "1.0.57"
+tracing = "0.1"
+tracing-attributes = "0.1"
+tracing-futures = "0.2"
+tracing-subscriber = { version = "0.3", features = [
+    "env-filter",
+    "json",
+    "parking_lot",
+] }
+tracing-error = "0.2"
+tracing-log = { version = "0.2" }
+tracing-appender = { version = "0.2", features = ["parking_lot"] }
+opentelemetry = "0.22"
+opentelemetry_sdk = "0.22"
+opentelemetry-stdout = { version = "0.3", features = ["trace"] }
+tracing-opentelemetry = "0.22"
+console-subscriber = "0.2.0"
+simd-json = "0.13.8"
+rfd = "0.14.0"
+
+[[bin]]
+name = "nyanpasu-service"
+path = "nyanpasu_service/src/main.rs"
 
 [profile.release]
-panic = "abort"
+panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"
+
+

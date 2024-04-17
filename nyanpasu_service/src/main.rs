@@ -1,3 +1,8 @@
+
+pub mod envs;
+mod commands;
+mod ipc;
+mod logging;
 #[cfg(not(windows))]
 fn main() {
     panic!("This program is only intended to run on Windows.");
