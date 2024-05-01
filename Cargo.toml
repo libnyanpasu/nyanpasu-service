@@ -20,7 +20,7 @@ path = "src/uninstall.rs"
 
 [dependencies]
 warp = "0.3"
-anyhow = "1.0"
+anyhow = "1.0.82"
 log = "0.4.20"
 log4rs = "1.2.0"
 serde_json = "1.0"
