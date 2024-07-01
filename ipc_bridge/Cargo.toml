@@ -9,5 +9,12 @@ edition = "2021"
 tracing = { workspace = true }
 tracing-attributes = { workspace = true }
 tracing-futures = { workspace = true }
-
 tokio = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+interprocess = { version = "2.2.0", features = ["tokio"] }
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1"] }
+http-body-util = "0.1"
