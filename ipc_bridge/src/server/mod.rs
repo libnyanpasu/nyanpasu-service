@@ -22,8 +22,7 @@ pub enum ServerError {
 }
 
 pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
-    let name = crate::utils::get_name(placeholder);
-    let name = name.to_fs_name::<GenericFilePath>()?;
+    let name = crate::utils::get_name(placeholder)?;
     let listener = ListenerOptions::new()
         .name(name)
         .nonblocking(ListenerNonblockingMode::Both)

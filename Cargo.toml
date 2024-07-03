@@ -1,13 +1,12 @@
-[package]
-name = "clash-nyanpasu-service"
-version = "0.1.0"
-edition = "2021"
-authors = ["zzzgydi", "LibNyanpasu"]
-license = "GPL-3.0"
-repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
-
 [workspace]
+resolver = "2"
 members = ["nyanpasu_service", "ipc_bridge"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0"
+authors = ["zzzgydi", "LibNyanpasu"]
+repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
 [workspace.dependencies]
 warp = "0.3"
@@ -19,7 +18,9 @@ log4rs = "1.2.0"
 serde_json = "1.0"
 parking_lot = "0.12.1"
 windows-service = "0.7.0"
+simd-json = "0.13"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7" }
 serde = { version = "1.0", features = ["derive"] }
 clap = { version = "4.5.2", features = ["derive"] }
 tracing = "0.1"
@@ -38,13 +39,9 @@ opentelemetry_sdk = "0.23"
 opentelemetry-stdout = { version = "0.4", features = ["trace"] }
 tracing-opentelemetry = "0.24"
 console-subscriber = "0.3.0"
-simd-json = "0.13.8"
 rfd = "0.14.0"
 
 
-[[bin]]
-name = "nyanpasu-service"
-path = "nyanpasu_service/src/main.rs"
 
 [profile.release]
 panic = "unwind"
