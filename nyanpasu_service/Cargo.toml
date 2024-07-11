@@ -12,6 +12,7 @@ default-run = "nyanpasu-service"
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 anyhow = { workspace = true }
+service-manager = "0.7"
 
 [target.'cfg(windows)'.dependencies]
 windows-service = "0.7"

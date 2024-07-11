@@ -1,5 +1,5 @@
 [package]
-name = "ipc_bridge"
+name = "nyanpasu-ipc"
 version = "0.1.0"
 edition = "2021"
 
@@ -15,11 +15,15 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 interprocess = { version = "2.2.0", features = ["tokio"] }
-axum = "0.7"
+axum = { version = "0.7", features = ["ws"] }
+axum-extra = { version = "0.9", features = ["typed-header"] }
 tower = { version = "0.4", features = ["util"] }
+tower-http = { version = "0.5", features = ["fs", "trace"] }
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }
 simd-json = { workspace = true }
-futures-util = "0.3"
+futures = { workspace = true }
+futures-util = { workspace = true }
 pin-project-lite = "0.2.14"
+tokio-tungstenite = "0.23" # Websocket impl
