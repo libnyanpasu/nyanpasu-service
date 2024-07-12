@@ -1,5 +1,5 @@
-mod builder;
 mod definition;
-pub mod manager;
+pub mod instance;
 pub mod prelude;
+pub mod utils;
 pub use prelude::*;
