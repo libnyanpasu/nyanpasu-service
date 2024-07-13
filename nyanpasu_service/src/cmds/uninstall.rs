@@ -6,7 +6,9 @@ use service_manager::{
 
 use crate::consts::SERVICE_LABEL;
 
-pub fn uninstall() -> Result<(), anyhow::Error> {
+use super::CommandError;
+
+pub fn uninstall() -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
     let status = manager.status(ServiceStatusCtx {
@@ -14,7 +16,8 @@ pub fn uninstall() -> Result<(), anyhow::Error> {
     })?;
     match status {
         ServiceStatus::NotInstalled => {
-            anyhow::bail!("service not installed");
+            tracing::info!("service not installed, nothing to do");
+            return Err(CommandError::ServiceNotInstalled);
         }
         ServiceStatus::Stopped(_) => {
             tracing::info!("service already stopped, so we can uninstall it directly");
@@ -36,7 +39,10 @@ pub fn uninstall() -> Result<(), anyhow::Error> {
     tracing::info!("confirming service is uninstalled...");
     let status = manager.status(ServiceStatusCtx { label })?;
     if status != ServiceStatus::NotInstalled {
-        anyhow::bail!("failed to uninstall service");
+        return Err(CommandError::Other(anyhow::anyhow!(
+            "service uninstall failed, status: {:?}",
+            status
+        )));
     }
     Ok(())
 }

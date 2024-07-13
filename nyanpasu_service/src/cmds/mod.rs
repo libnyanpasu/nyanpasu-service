@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use crate::logging;
 
 mod install;
+mod start;
 mod uninstall;
 
 #[derive(Parser)]
@@ -29,8 +30,18 @@ enum Commands {
 pub enum CommandError {
     #[error("permission denied")]
     PermissionDenied,
+    #[error("service not installed")]
+    ServiceNotInstalled,
+    #[error("service not running")]
+    ServiceAlreadyInstalled,
+    #[error("service not running")]
+    ServiceAlreadyStopped,
+    #[error("service already running")]
+    ServiceAlreadyRunning,
     #[error("join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("io error: {0}")]
+    IO(#[from] std::io::Error),
     #[error("other error: {0}")]
     Other(#[from] anyhow::Error),
 }
@@ -53,6 +64,7 @@ pub async fn process() -> Result<(), CommandError> {
             Ok(tokio::task::spawn_blocking(move || install::install(ctx)).await??)
         }
         Some(Commands::Uninstall) => Ok(tokio::task::spawn_blocking(uninstall::uninstall).await??),
+        Some(Commands::Start) => Ok(tokio::task::spawn_blocking(start::start).await??),
         None => {
             eprintln!("No command specified");
             Ok(())

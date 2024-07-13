@@ -1,10 +1,10 @@
 use std::{env::current_exe, ffi::OsString};
 
-use service_manager::{
-    ServiceInstallCtx, ServiceLabel, ServiceManager, ServiceStatus, ServiceStatusCtx,
-};
+use service_manager::{ServiceInstallCtx, ServiceLabel, ServiceStatus, ServiceStatusCtx};
 
 use crate::consts::SERVICE_LABEL;
+
+use super::CommandError;
 
 #[derive(Debug, clap::Args)]
 pub struct InstallCommand {
@@ -16,7 +16,7 @@ pub struct InstallCommand {
     nyanpasu_config_dir: String,
 }
 
-pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
+pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
     // before we install the service, we need to check if the service is already installed
@@ -26,7 +26,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
         })?,
         ServiceStatus::NotInstalled
     ) {
-        anyhow::bail!("service already installed");
+        return Err(CommandError::ServiceAlreadyInstalled);
     }
 
     let service_data_dir = crate::utils::dirs::service_data_dir();
@@ -75,7 +75,9 @@ pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
         manager.status(ServiceStatusCtx { label })?,
         ServiceStatus::NotInstalled
     ) {
-        anyhow::bail!("service not installed");
+        return Err(CommandError::Other(anyhow::anyhow!(
+            "service install failed"
+        )));
     }
     tracing::info!("service installed");
     Ok(())
