@@ -3,9 +3,10 @@ use clap::{Parser, Subcommand};
 use crate::logging;
 
 mod install;
+mod restart;
 mod start;
-mod uninstall;
 mod stop;
+mod uninstall;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -67,6 +68,7 @@ pub async fn process() -> Result<(), CommandError> {
         Some(Commands::Uninstall) => Ok(tokio::task::spawn_blocking(uninstall::uninstall).await??),
         Some(Commands::Start) => Ok(tokio::task::spawn_blocking(start::start).await??),
         Some(Commands::Stop) => Ok(tokio::task::spawn_blocking(stop::stop).await??),
+        Some(Commands::Restart) => Ok(tokio::task::spawn_blocking(restart::restart).await??),
         None => {
             eprintln!("No command specified");
             Ok(())
