@@ -2,6 +2,7 @@ mod cmds;
 pub mod consts;
 mod logging;
 mod utils;
+mod server;
 use tracing::error;
 
 #[tokio::main]

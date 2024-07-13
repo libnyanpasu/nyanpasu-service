@@ -5,6 +5,7 @@ use crate::logging;
 mod install;
 mod restart;
 mod start;
+mod status;
 mod stop;
 mod uninstall;
 
@@ -25,7 +26,7 @@ enum Commands {
     Stop,
     Restart,
     Server, // The main entry point for the service, other commands are the control plane for the service
-    Status,
+    Status(status::StatusCommand),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -44,13 +45,15 @@ pub enum CommandError {
     JoinError(#[from] tokio::task::JoinError),
     #[error("io error: {0}")]
     IO(#[from] std::io::Error),
+    #[error("serde error: {0}")]
+    SimdError(#[from] simd_json::Error),
     #[error("other error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
 pub async fn process() -> Result<(), CommandError> {
     let cli = Cli::parse();
-    if !matches!(cli.command, Some(Commands::Status) | None)
+    if !matches!(cli.command, Some(Commands::Status(_)) | None)
         && !crate::utils::must_check_elevation()
     {
         return Err(CommandError::PermissionDenied);
@@ -69,6 +72,15 @@ pub async fn process() -> Result<(), CommandError> {
         Some(Commands::Start) => Ok(tokio::task::spawn_blocking(start::start).await??),
         Some(Commands::Stop) => Ok(tokio::task::spawn_blocking(stop::stop).await??),
         Some(Commands::Restart) => Ok(tokio::task::spawn_blocking(restart::restart).await??),
+        Some(Commands::Server) => {
+            todo!("Server command not implemented, this should be the main entry point for the service")
+        }
+        Some(Commands::Status(ctx)) => {
+            Ok(
+                tokio::task::spawn_blocking(|| status::status(ctx))
+                    .await??,
+            )
+        }
         None => {
             eprintln!("No command specified");
             Ok(())

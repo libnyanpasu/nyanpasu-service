@@ -10,11 +10,13 @@ default-run = "nyanpasu-service"
 
 
 [dependencies]
-tokio = { workspace = true,  features = ["full"] }
+tokio = { workspace = true, features = ["full"] }
 nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
 ] }
 clap = { version = "4", features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+simd-json = { workspace = true }
 thiserror.workspace = true
 anyhow = { workspace = true }
 tracing.workspace = true
