@@ -1,5 +1,6 @@
-use anyhow::Result;
 use clap::{Parser, Subcommand};
+
+use crate::logging;
 
 mod install;
 
@@ -14,15 +15,42 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    Install,
+    Install(install::InstallCommand),
     Uninstall,
     Start,
     Stop,
     Restart,
+    Server, // The main entry point for the service, other commands are the control plane for the service
     Status,
 }
 
-pub fn parse() -> Result<()> {
+#[derive(thiserror::Error, Debug)]
+pub enum CommandError {
+    #[error("permission denied")]
+    PermissionDenied,
+    #[error("other error: {0}")]
+    Other(#[from] anyhow::Error),
+}
+
+pub fn parse() -> Result<(), CommandError> {
     let cli = Cli::parse();
-    Ok(())
+    if !matches!(cli.command, Some(Commands::Status) | None) && !crate::utils::must_check_elevation() {
+        return Err(CommandError::PermissionDenied);
+    }
+    if matches!(cli.command, Some(Commands::Server)) {
+        logging::init(cli.debug, true)?;
+    } else {
+        logging::init(cli.debug, false)?;
+    }
+
+    match cli.command {
+        Some(Commands::Install(ctx)) => Ok(install::install(ctx)?),
+        None => {
+            eprintln!("No command specified");
+            Ok(())
+        }
+        _ => {
+            unimplemented!("Command not implemented");
+        }
+    }
 }

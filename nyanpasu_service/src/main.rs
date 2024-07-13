@@ -1,17 +1,20 @@
-
-pub mod envs;
 mod cmds;
+pub mod consts;
 mod logging;
 mod utils;
-#[cfg(not(windows))]
-fn main() {
-    panic!("This program is only intended to run on Windows.");
-}
+use tracing::error;
 
-#[cfg(windows)]
-mod service;
-
-#[cfg(windows)]
-fn main() -> windows_service::Result<()> {
-    service::main()
+#[tokio::main]
+async fn main() {
+    match cmds::parse() {
+        Ok(_) => {}
+        Err(cmds::CommandError::PermissionDenied) => {
+            eprintln!("Permission denied, please run as administrator or root");
+            std::process::exit(consts::ExitCode::PermissionDenied as i32);
+        }
+        Err(e) => {
+            error!("Error: {}", e);
+            std::process::exit(consts::ExitCode::Other as i32);
+        }
+    }
 }

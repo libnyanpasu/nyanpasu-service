@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["nyanpasu_service", "nyanpasu_ipc", "nyanpasu_utils"]
+members = ["nyanpasu_service", "nyanpasu_ipc"]
 
 [workspace.package]
 edition = "2021"
@@ -9,6 +9,7 @@ authors = ["zzzgydi", "LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
 [workspace.dependencies]
+nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false }
 warp = "0.3"
 axum = "0.7.4"
 anyhow = "1.0"
