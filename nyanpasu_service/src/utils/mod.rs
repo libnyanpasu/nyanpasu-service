@@ -1,3 +1,5 @@
+use service_manager::ServiceManager;
+
 pub mod dirs;
 pub mod os;
 
@@ -20,4 +22,12 @@ pub fn must_check_elevation() -> bool {
         use whoami::username;
         username() == "root"
     }
+}
+
+pub fn get_service_manager() -> Result<Box<dyn ServiceManager>, anyhow::Error> {
+    let manager = <dyn ServiceManager>::native()?;
+    if !manager.available()? {
+        anyhow::bail!("service manager not available");
+    }
+    Ok(manager)
 }

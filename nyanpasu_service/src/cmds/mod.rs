@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use crate::logging;
 
 mod install;
+mod uninstall;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
@@ -28,13 +29,17 @@ enum Commands {
 pub enum CommandError {
     #[error("permission denied")]
     PermissionDenied,
+    #[error("join error: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
     #[error("other error: {0}")]
     Other(#[from] anyhow::Error),
 }
 
-pub fn parse() -> Result<(), CommandError> {
+pub async fn process() -> Result<(), CommandError> {
     let cli = Cli::parse();
-    if !matches!(cli.command, Some(Commands::Status) | None) && !crate::utils::must_check_elevation() {
+    if !matches!(cli.command, Some(Commands::Status) | None)
+        && !crate::utils::must_check_elevation()
+    {
         return Err(CommandError::PermissionDenied);
     }
     if matches!(cli.command, Some(Commands::Server)) {
@@ -44,7 +49,10 @@ pub fn parse() -> Result<(), CommandError> {
     }
 
     match cli.command {
-        Some(Commands::Install(ctx)) => Ok(install::install(ctx)?),
+        Some(Commands::Install(ctx)) => {
+            Ok(tokio::task::spawn_blocking(move || install::install(ctx)).await??)
+        }
+        Some(Commands::Uninstall) => Ok(tokio::task::spawn_blocking(uninstall::uninstall).await??),
         None => {
             eprintln!("No command specified");
             Ok(())

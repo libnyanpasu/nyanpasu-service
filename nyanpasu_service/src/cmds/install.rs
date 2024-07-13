@@ -18,10 +18,7 @@ pub struct InstallCommand {
 
 pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
-    let manager = <dyn ServiceManager>::native()?;
-    if !manager.available()? {
-        anyhow::bail!("service manager not available");
-    }
+    let manager = crate::utils::get_service_manager()?;
     // before we install the service, we need to check if the service is already installed
     if !matches!(
         manager.status(ServiceStatusCtx {
@@ -54,7 +51,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
     }
     tracing::info!("installing service...");
     manager.install(ServiceInstallCtx {
-        label,
+        label: label.clone(),
         program: current_exe()?,
         args: vec![
             OsString::from("server"),
@@ -73,6 +70,13 @@ pub fn install(ctx: InstallCommand) -> Result<(), anyhow::Error> {
         environment: Some(envs),
         autostart: true,
     })?;
+    // confirm the service is installed
+    if matches!(
+        manager.status(ServiceStatusCtx { label })?,
+        ServiceStatus::NotInstalled
+    ) {
+        anyhow::bail!("service not installed");
+    }
     tracing::info!("service installed");
     Ok(())
 }

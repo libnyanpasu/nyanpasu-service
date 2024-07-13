@@ -6,7 +6,8 @@ use tracing::error;
 
 #[tokio::main]
 async fn main() {
-    match cmds::parse() {
+    let result = cmds::process().await;
+    match result {
         Ok(_) => {}
         Err(cmds::CommandError::PermissionDenied) => {
             eprintln!("Permission denied, please run as administrator or root");
