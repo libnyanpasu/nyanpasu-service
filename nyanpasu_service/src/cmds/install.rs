@@ -36,7 +36,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     // create nyanpasu group to ensure share unix socket access
     #[cfg(not(windows))]
     {
-        if !crate::utils::os::user::is_nyanpasu_group_exists()? {
+        if !crate::utils::os::user::is_nyanpasu_group_exists() {
             crate::utils::os::user::create_nyanpasu_group()?;
         }
         crate::utils::os::user::add_user_to_nyanpasu_group(&ctx.user)?;
