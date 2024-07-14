@@ -12,8 +12,8 @@ mod uninstall;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    #[clap(short, long)]
-    debug: bool,
+    #[clap(long, default_value = "false")]
+    verbose: bool,
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -63,9 +63,9 @@ pub async fn process() -> Result<(), CommandError> {
         return Err(CommandError::PermissionDenied);
     }
     if matches!(cli.command, Some(Commands::Server)) {
-        logging::init(cli.debug, true)?;
+        logging::init(cli.verbose, true)?;
     } else {
-        logging::init(cli.debug, false)?;
+        logging::init(cli.verbose, false)?;
     }
 
     match cli.command {
