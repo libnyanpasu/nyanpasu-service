@@ -1,8 +1,10 @@
+#![feature(error_generic_member_access)]
+
 mod cmds;
 pub mod consts;
 mod logging;
-mod utils;
 mod server;
+mod utils;
 use tracing::error;
 
 #[tokio::main]
@@ -31,7 +33,7 @@ async fn main() {
             std::process::exit(consts::ExitCode::ServiceAlreadyRunning as i32);
         }
         Err(e) => {
-            error!("Error: {}", e);
+            error!("Error: {:#?}", e);
             std::process::exit(consts::ExitCode::Other as i32);
         }
     }

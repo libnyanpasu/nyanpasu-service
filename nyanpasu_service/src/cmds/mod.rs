@@ -1,6 +1,6 @@
-use clap::{Parser, Subcommand};
-
 use crate::logging;
+use clap::{Parser, Subcommand};
+use std::backtrace::Backtrace;
 
 mod install;
 mod restart;
@@ -43,11 +43,15 @@ pub enum CommandError {
     ServiceAlreadyRunning,
     #[error("join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
-    #[error("io error: {0}")]
-    IO(#[from] std::io::Error),
+    #[error("io error: {source}")]
+    IO {
+        #[from]
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[error("serde error: {0}")]
     SimdError(#[from] simd_json::Error),
-    #[error("other error: {0}")]
+    #[error(transparent)]
     Other(#[from] anyhow::Error),
 }
 
@@ -76,10 +80,7 @@ pub async fn process() -> Result<(), CommandError> {
             todo!("Server command not implemented, this should be the main entry point for the service")
         }
         Some(Commands::Status(ctx)) => {
-            Ok(
-                tokio::task::spawn_blocking(|| status::status(ctx))
-                    .await??,
-            )
+            Ok(tokio::task::spawn_blocking(|| status::status(ctx)).await??)
         }
         None => {
             eprintln!("No command specified");
