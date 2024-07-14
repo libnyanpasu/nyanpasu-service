@@ -22,7 +22,7 @@ pub fn is_nyanpasu_group_exists() -> bool {
             .arg("/Groups/nyanpasu")
             .output()
             .expect("failed to execute process");
-        output.status.success();
+        output.status.success()
     }
 }
 
