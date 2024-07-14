@@ -7,8 +7,7 @@ pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error
         return if cfg!(windows) {
             Ok(placeholder.to_string().to_ns_name::<GenericNamespaced>()?)
         } else {
-            Ok(format!("{placeholder}.sock")
-                .to_ns_name::<GenericNamespaced>()?)
+            Ok(format!("{placeholder}.sock").to_ns_name::<GenericNamespaced>()?)
         };
     }
     let name = if cfg!(windows) {

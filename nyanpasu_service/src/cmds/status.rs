@@ -39,7 +39,7 @@ struct StatusInfo {
 }
 
 // TODO: impl the health check if service is running
-// such as data dir, config dir, clash status.
+// such as data dir, config dir, core status.
 pub fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;

@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+nyanpasu-utils = { workspace = true, features = ["core_manager"]}
 tracing = { workspace = true }
 tracing-attributes = { workspace = true }
 tracing-futures = { workspace = true }

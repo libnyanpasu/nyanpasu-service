@@ -39,11 +39,11 @@ pub fn get_version() -> Result<HashMap<String, String>> {
 /// POST /start_clash
 /// 启动clash进程
 pub fn start_clash(body: StartBody) -> Result<()> {
-    // stop the old clash bin
+    // stop the old core bin
     let _ = stop_clash();
 
     let body_cloned = body.clone();
-    let core_type = body.core_type.unwrap_or("clash".into());
+    let core_type = body.core_type.unwrap_or("core".into());
 
     let config_dir = body.config_dir.as_str();
 
@@ -51,7 +51,7 @@ pub fn start_clash(body: StartBody) -> Result<()> {
 
     let args = match core_type.as_str() {
         "mihomo" | "mihomo-alpha" => vec!["-m", "-d", config_dir, "-f", config_file],
-        "clash-rs" => vec!["-d", config_dir, "-c", config_file],
+        "core-rs" => vec!["-d", config_dir, "-c", config_file],
         _ => vec!["-d", config_dir, "-f", config_file],
     };
 
@@ -73,8 +73,8 @@ pub fn stop_clash() -> Result<()> {
     arc.info = None;
 
     match arc.child.take() {
-        Some(mut child) => child.kill().context("failed to kill clash"),
-        None => bail!("clash not executed"),
+        Some(mut child) => child.kill().context("failed to kill core"),
+        None => bail!("core not executed"),
     }
 }
 
@@ -85,6 +85,6 @@ pub fn get_clash() -> Result<StartBody> {
 
     match arc.info.clone() {
         Some(info) => Ok(info),
-        None => bail!("clash not executed"),
+        None => bail!("core not executed"),
     }
 }

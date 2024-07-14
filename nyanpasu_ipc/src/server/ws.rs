@@ -8,12 +8,12 @@ use axum::{
     Router,
 };
 use axum_extra::{headers, TypedHeader};
+use futures::{sink::SinkExt, stream::StreamExt};
 use std::{borrow::Cow, net::SocketAddr, ops::ControlFlow, path::PathBuf};
 use tower_http::{
     services::ServeDir,
     trace::{DefaultMakeSpan, TraceLayer},
 };
-use futures::{sink::SinkExt, stream::StreamExt};
 
 /// The handler for the HTTP request (this gets called when the HTTP GET lands at the start
 /// of websocket negotiation). After this completes, the actual switching from HTTP to
