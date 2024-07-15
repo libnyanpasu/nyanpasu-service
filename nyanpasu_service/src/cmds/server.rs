@@ -9,7 +9,9 @@ use super::CommandError;
 
 #[derive(Args, Debug, Clone)]
 pub struct ServerContext {
+    #[clap(long)]
     pub nyanpasu_config_dir: String,
+    #[clap(long)]
     pub nyanpasu_data_dir: String,
 }
 
