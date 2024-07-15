@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::{path::PathBuf, sync::OnceLock};
 
 pub struct RuntimeInfos {
     pub service_data_dir: PathBuf,

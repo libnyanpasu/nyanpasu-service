@@ -1,4 +1,4 @@
-use axum::{Router, routing::get};
+use axum::{routing::get, Router};
 
 use nyanpasu_ipc::api::status::STATUS_ENDPOINT;
 
