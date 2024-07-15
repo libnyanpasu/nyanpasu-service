@@ -1,9 +1,7 @@
 use nyanpasu_utils::core::instance::CoreInstance;
 use parking_lot::RwLock;
 use std::{
-    borrow::Cow,
     path::PathBuf,
-    string,
     sync::{Arc, OnceLock},
 };
 

@@ -10,7 +10,7 @@ static INSTANCE: OnceLock<RuntimeInfos> = OnceLock::new();
 
 impl RuntimeInfos {
     pub fn global() -> &'static RuntimeInfos {
-        &INSTANCE.get().unwrap() // RUNTIME_INFOS should access in the server command, or it will panic
+        INSTANCE.get().unwrap() // RUNTIME_INFOS should access in the server command, or it will panic
     }
 
     pub fn set_infos(runtime_infos: RuntimeInfos) {
