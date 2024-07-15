@@ -14,6 +14,6 @@ impl RuntimeInfos {
     }
 
     pub fn set_infos(runtime_infos: RuntimeInfos) {
-        INSTANCE.set(runtime_infos);
+        let _ = INSTANCE.set(runtime_infos);
     }
 }

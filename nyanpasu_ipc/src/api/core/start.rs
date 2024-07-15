@@ -5,9 +5,9 @@ use std::path::PathBuf;
 pub const CORE_START_ENDPOINT: &str = "/core/start";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct CoreReq {
+pub struct CoreStartReq {
     pub core_type: nyanpasu_utils::core::CoreType,
     pub config_file: PathBuf,
 }
 
-pub type StatusRes<'a> = R<'a, Option<()>>;
+pub type CoreStartRes<'a> = R<'a, ()>;

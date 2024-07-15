@@ -88,8 +88,5 @@ pub async fn process() -> Result<(), CommandError> {
             eprintln!("No command specified");
             Ok(())
         }
-        _ => {
-            unimplemented!("Command not implemented");
-        }
     }
 }

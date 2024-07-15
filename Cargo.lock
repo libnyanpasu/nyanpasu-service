@@ -524,7 +524,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#85af8196565afce5b142bb40f18f43bc39a0e55e"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#76b2546ba995d08f389876197b3f0fd19330368a"
 dependencies = [
  "dirs-next",
  "thiserror",
@@ -1214,7 +1214,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#85af8196565afce5b142bb40f18f43bc39a0e55e"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#76b2546ba995d08f389876197b3f0fd19330368a"
 dependencies = [
  "derive_builder",
  "dirs-utils",

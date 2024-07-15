@@ -30,7 +30,8 @@ pub struct R<'a, T: Serialize + DeserializeOwned + Debug> {
     pub code: ResponseCode,
     #[builder(default = "self.default_msg()")]
     pub msg: Cow<'a, str>,
-    pub data: T,
+    #[builder(setter(into, strip_option))]
+    pub data: Option<T>,
     #[builder(setter(skip), default = "self.default_ts()")]
     pub ts: i64,
 }
@@ -52,10 +53,20 @@ impl<'a, T: Serialize + DeserializeOwned + Debug> RBuilder<'a, T> {
         if self.code.is_none() {
             return Err("code is required".to_string());
         }
-        if self.data.is_none() {
+        if self.msg.is_none() {
             return Err("msg is required".to_string());
         }
         Ok(())
+    }
+
+    pub fn other_error(msg: Cow<'a, str>) -> R<'a, T> {
+        let code = ResponseCode::OtherError;
+        R {
+            code,
+            msg,
+            data: None,
+            ts: crate::utils::get_current_ts(),
+        }
     }
 
     pub fn success(data: T) -> R<'a, T> {
@@ -63,7 +74,7 @@ impl<'a, T: Serialize + DeserializeOwned + Debug> RBuilder<'a, T> {
         R {
             code,
             msg: Cow::Borrowed(code.msg()),
-            data,
+            data: Some(data),
             ts: crate::utils::get_current_ts(),
         }
     }

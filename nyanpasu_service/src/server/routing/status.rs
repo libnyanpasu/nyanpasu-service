@@ -8,7 +8,7 @@ use nyanpasu_ipc::api::{
 };
 
 pub async fn status() -> (StatusCode, Json<StatusRes<'static>>) {
-    let instance = crate::server::CoreManager::global().read();
+    let instance = crate::server::CoreManager::global();
     let status = instance.status();
     let runtime_infos = crate::server::consts::RuntimeInfos::global();
     let res = RBuilder::success(StatusResBody {
