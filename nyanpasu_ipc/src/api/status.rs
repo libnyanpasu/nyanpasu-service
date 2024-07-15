@@ -1,16 +1,21 @@
 use crate::api::R;
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::{borrow::Cow, path::PathBuf};
 
 pub const STATUS_ENDPOINT: &str = "/status";
 
 pub struct StatusReq {}
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoreState {
     Running,
-    #[default]
     Stopped(Option<String>),
+}
+
+impl Default for CoreState {
+    fn default() -> Self {
+        Self::Stopped(None)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,19 +27,19 @@ pub struct CoreInfos {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeInfos {
-    pub service_data_dir: PathBuf,
-    pub service_config_dir: PathBuf,
-    pub nyanpasu_config_dir: PathBuf,
-    pub nyanpasu_data_dir: PathBuf,
+pub struct RuntimeInfos<'a> {
+    pub service_data_dir: Cow<'a, PathBuf>,
+    pub service_config_dir: Cow<'a, PathBuf>,
+    pub nyanpasu_config_dir: Cow<'a, PathBuf>,
+    pub nyanpasu_data_dir: Cow<'a, PathBuf>,
 }
 
 // TODO: more health check fields
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct StatusResBody<'a> {
-    pub version: &'a str,
+    pub version: Cow<'a, str>,
     pub core_infos: CoreInfos,
-    pub runtime_infos: RuntimeInfos,
+    pub runtime_infos: RuntimeInfos<'a>,
 }
 
 pub type StatusRes<'a> = R<'a, StatusResBody<'a>>;

@@ -55,10 +55,6 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
         program: current_exe()?,
         args: vec![
             OsString::from("server"),
-            OsString::from("--config-dir"),
-            service_config_dir.into_os_string(),
-            OsString::from("--data-dir"),
-            service_data_dir.into_os_string(),
             OsString::from("--nyanpasu-data-dir"),
             ctx.nyanpasu_data_dir.into(),
             OsString::from("--nyanpasu-config-dir"),

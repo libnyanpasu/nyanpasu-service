@@ -14,6 +14,7 @@ nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
 ] }
 nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = ["server"] }
+axum = { workspace = true, features = ["macros"]}
 tokio = { workspace = true, features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }

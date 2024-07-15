@@ -34,11 +34,3 @@ pub fn get_service_manager() -> Result<Box<dyn ServiceManager>, anyhow::Error> {
     }
     Ok(manager)
 }
-
-/// Get the current millisecond timestamp
-pub fn get_current_ts() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as i64
-}

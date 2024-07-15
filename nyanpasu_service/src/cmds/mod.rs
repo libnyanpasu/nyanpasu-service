@@ -4,6 +4,7 @@ use std::backtrace::Backtrace;
 
 mod install;
 mod restart;
+mod server;
 mod start;
 mod status;
 mod stop;
@@ -25,7 +26,7 @@ enum Commands {
     Start,
     Stop,
     Restart,
-    Server, // The main entry point for the service, other commands are the control plane for the service
+    Server(server::ServerContext), // The main entry point for the service, other commands are the control plane for the service
     Status(status::StatusCommand),
 }
 
@@ -62,7 +63,7 @@ pub async fn process() -> Result<(), CommandError> {
     {
         return Err(CommandError::PermissionDenied);
     }
-    if matches!(cli.command, Some(Commands::Server)) {
+    if matches!(cli.command, Some(Commands::Server(_))) {
         logging::init(cli.verbose, true)?;
     } else {
         logging::init(cli.verbose, false)?;
@@ -76,8 +77,9 @@ pub async fn process() -> Result<(), CommandError> {
         Some(Commands::Start) => Ok(tokio::task::spawn_blocking(start::start).await??),
         Some(Commands::Stop) => Ok(tokio::task::spawn_blocking(stop::stop).await??),
         Some(Commands::Restart) => Ok(tokio::task::spawn_blocking(restart::restart).await??),
-        Some(Commands::Server) => {
-            todo!("Server command not implemented, this should be the main entry point for the service")
+        Some(Commands::Server(ctx)) => {
+            server::server(ctx).await?;
+            Ok(())
         }
         Some(Commands::Status(ctx)) => {
             Ok(tokio::task::spawn_blocking(|| status::status(ctx)).await??)

@@ -5,7 +5,8 @@ use hyper_util::{
     server,
 };
 use interprocess::local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions};
-use std::{convert::Infallible, result::Result as StdResult};
+use nyanpasu_utils::io::unwrap_infallible;
+use std::result::Result as StdResult;
 use thiserror::Error;
 use tower::Service;
 
@@ -48,12 +49,5 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
                 tracing::error!("failed to serve connection: {err:#}");
             }
         });
-    }
-}
-
-fn unwrap_infallible<T>(result: StdResult<T, Infallible>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(err) => match err {},
     }
 }

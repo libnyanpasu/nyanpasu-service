@@ -10,7 +10,7 @@ client = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nyanpasu-utils = { workspace = true, default-features = false, features = ["core_manager"]}
+nyanpasu-utils = { workspace = true, default-features = false, features = ["core_manager", "serde"]}
 tracing = { workspace = true }
 tracing-attributes = { workspace = true }
 tracing-futures = { workspace = true }
@@ -32,3 +32,4 @@ futures = { workspace = true }
 futures-util = { workspace = true }
 pin-project-lite = "0.2.14"
 tokio-tungstenite = "0.23" # Websocket impl
+derive_builder = "0.20"

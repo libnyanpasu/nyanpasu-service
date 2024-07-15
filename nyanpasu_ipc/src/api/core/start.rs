@@ -10,4 +10,4 @@ pub struct CoreReq {
     pub config_file: PathBuf,
 }
 
-pub type StatusRes<'a> = R<'a, None>;
+pub type StatusRes<'a> = R<'a, Option<()>>;

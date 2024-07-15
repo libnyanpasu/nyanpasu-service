@@ -21,3 +21,11 @@ pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error
 pub async fn is_service_installed() -> bool {
     true
 }
+
+/// Get the current millisecond timestamp
+pub fn get_current_ts() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64
+}
