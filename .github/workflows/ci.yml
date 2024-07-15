@@ -27,7 +27,7 @@ jobs:
 
     steps:
       - name: Check out Git repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - run: rustup toolchain install nightly --profile minimal --component clippy rustfmt && rustup default nightly
         name: Install Rust nightly toolchain
       - uses: Swatinem/rust-cache@v2
