@@ -34,9 +34,9 @@ tracing-subscriber = { version = "0.3", features = [
 tracing-error = "0.2"
 tracing-log = { version = "0.2" }
 tracing-appender = { version = "0.2", features = ["parking_lot"] }
-opentelemetry = "0.23"
-opentelemetry_sdk = "0.23"
-opentelemetry-stdout = { version = "0.4", features = ["trace"] }
+opentelemetry = "0.24"
+opentelemetry_sdk = "0.24"
+opentelemetry-stdout = { version = "0.5", features = ["trace"] }
 tracing-opentelemetry = "0.24"
 console-subscriber = "0.3.0"
 rfd = "0.14.0"
