@@ -15,6 +15,7 @@ pub enum CoreState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CoreInfos {
+    pub r#type: Option<nyanpasu_utils::core::CoreType>,
     pub state: CoreState,
     pub state_changed_at: i64,
     pub config_path: Option<PathBuf>,

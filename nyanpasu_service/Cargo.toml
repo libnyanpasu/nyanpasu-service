@@ -10,10 +10,11 @@ default-run = "nyanpasu-service"
 
 
 [dependencies]
-tokio = { workspace = true, features = ["full"] }
 nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
 ] }
+nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = ["server"] }
+tokio = { workspace = true, features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 simd-json = { workspace = true }

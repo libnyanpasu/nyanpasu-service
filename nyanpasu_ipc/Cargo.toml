@@ -3,10 +3,14 @@ name = "nyanpasu-ipc"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:tower-http"]
+client = []
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nyanpasu-utils = { workspace = true, features = ["core_manager"]}
+nyanpasu-utils = { workspace = true, default-features = false, features = ["core_manager"]}
 tracing = { workspace = true }
 tracing-attributes = { workspace = true }
 tracing-futures = { workspace = true }
@@ -16,10 +20,10 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
 interprocess = { version = "2.2.0", features = ["tokio"] }
-axum = { version = "0.7", features = ["ws"] }
-axum-extra = { version = "0.9", features = ["typed-header"] }
-tower = { version = "0.4", features = ["util"] }
-tower-http = { version = "0.5", features = ["fs", "trace"] }
+axum = { version = "0.7", features = ["ws"], optional = true }
+axum-extra = { version = "0.9", features = ["typed-header"], optional = true }
+tower = { version = "0.4", features = ["util"], optional = true }
+tower-http = { version = "0.5", features = ["fs", "trace"], optional = true }
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
 hyper-util = { version = "0.1", features = ["full"] }

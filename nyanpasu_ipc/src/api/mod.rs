@@ -1,5 +1,6 @@
-mod core;
-mod status;
+pub mod core;
+pub mod status;
+pub mod log;
 
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
