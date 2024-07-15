@@ -5,7 +5,7 @@ use nyanpasu_utils::core::{
 };
 use parking_lot::RwLock;
 use std::{
-    borrow::{Borrow, Cow},
+    borrow::Cow,
     path::PathBuf,
     sync::{Arc, OnceLock},
 };

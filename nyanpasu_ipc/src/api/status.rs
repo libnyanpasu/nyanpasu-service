@@ -4,8 +4,6 @@ use std::{borrow::Cow, path::PathBuf};
 
 pub const STATUS_ENDPOINT: &str = "/status";
 
-pub struct StatusReq {}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum CoreState {
     Running,
