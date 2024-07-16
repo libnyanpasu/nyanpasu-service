@@ -12,10 +12,7 @@ use windows_service::{
     service_dispatcher,
 };
 
-use crate::{
-    consts::SERVICE_LABEL,
-    utils::{os::register_ctrlc_handler, register_panic_hook},
-};
+use crate::consts::SERVICE_LABEL;
 
 pub fn run() -> Result<()> {
     service_dispatcher::start(SERVICE_LABEL, ffi_service_main)
