@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::{fs, io::IsTerminal};
+use std::{fs, io::IsTerminal, sync::OnceLock};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
@@ -7,6 +7,8 @@ use tracing_appender::{
 };
 use tracing_log::log_tracer;
 use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter};
+
+static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 
 fn get_file_appender(max_files: usize) -> Result<(NonBlocking, WorkerGuard)> {
     let log_dir = crate::utils::dirs::service_logs_dir();
@@ -63,20 +65,20 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     } else {
         None
     };
-    let _guard = match file_layer {
+    match file_layer {
         Some((file_layer, _guard)) => {
             let subscriber = subscriber.with(file_layer);
             log_tracer::LogTracer::init()?;
             tracing::subscriber::set_global_default(subscriber)
                 .map_err(|x| anyhow!("setup logging error: {}", x))?;
-            Some(_guard)
+            GUARD.set(_guard).ok();
         }
         None => {
             log_tracer::LogTracer::init()?;
             tracing::subscriber::set_global_default(subscriber)
                 .map_err(|x| anyhow!("setup logging error: {}", x))?;
-            None
         }
     };
+
     Ok(())
 }
