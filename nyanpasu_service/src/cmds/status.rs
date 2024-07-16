@@ -10,6 +10,9 @@ use super::CommandError;
 pub struct StatusCommand {
     #[clap(long, default_value = "false")]
     json: bool,
+
+    #[clap(long, default_value = "false")]
+    skip_service_check: bool,
 }
 
 #[derive(Debug)]
@@ -45,9 +48,13 @@ struct StatusInfo<'n> {
 pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
-    let mut status = manager.status(ServiceStatusCtx {
-        label: label.clone(),
-    })?;
+    let mut status = if ctx.skip_service_check {
+        ServiceStatus::Running
+    } else {
+        manager.status(ServiceStatusCtx {
+            label: label.clone(),
+        })?
+    };
     let client = Client::new(SERVICE_PLACEHOLDER);
     let info = if status == ServiceStatus::Running {
         let server = match client.status().await {

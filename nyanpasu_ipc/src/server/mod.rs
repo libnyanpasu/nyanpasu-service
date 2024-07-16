@@ -25,9 +25,12 @@ pub enum ServerError {
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }
+use tracing_attributes::instrument;
 
+#[instrument]
 pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     let name = crate::utils::get_name(placeholder)?;
+    tracing::debug!("socket name: {:?}", name);
     let options = ListenerOptions::new()
         .name(name)
         .nonblocking(ListenerNonblockingMode::Both);
@@ -40,8 +43,9 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     };
     let listener = options.create_tokio()?;
     // change the socket group
+    tracing::debug!("changing socket group...");
     crate::utils::os::change_socket_group(placeholder)?;
-
+    tracing::debug!("mounting service...");
     let mut make_service = app.route("/ws", get(ws::ws_handler)).into_make_service();
     // See https://github.com/tokio-rs/axum/blob/main/examples/serve-with-hyper/src/main.rs for
     // more details about this setup

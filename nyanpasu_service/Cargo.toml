@@ -8,6 +8,8 @@ repository = { workspace = true }
 default-run = "nyanpasu-service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+deadlock_detection = ["parking_lot/deadlock_detection"]
 
 [dependencies]
 nyanpasu-utils = { workspace = true, default-features = false, features = [
