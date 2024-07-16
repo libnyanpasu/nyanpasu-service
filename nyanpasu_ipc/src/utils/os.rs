@@ -2,7 +2,7 @@ use std::io::Result;
 
 pub const NYANPASU_USER_GROUP: &str = "nyanpasu";
 
-pub fn change_socket_group(placeholder: &str) -> Result<()> {
+pub(crate) fn change_socket_group(placeholder: &str) -> Result<()> {
     #[cfg(not(windows))]
     {
         use std::{

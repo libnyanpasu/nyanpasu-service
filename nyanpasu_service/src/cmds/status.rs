@@ -1,3 +1,4 @@
+use nyanpasu_ipc::{api::status::StatusResBody, client::shortcuts::Client, SERVICE_PLACEHOLDER};
 use serde::Serialize;
 use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
 
@@ -34,20 +35,38 @@ impl From<ServiceStatus> for ServiceStatusWrapper {
 }
 
 #[derive(Debug, Serialize)]
-struct StatusInfo {
+struct StatusInfo<'n> {
     status: ServiceStatusWrapper,
+    server: Option<StatusResBody<'n>>,
 }
 
 // TODO: impl the health check if service is running
 // such as data dir, config dir, core status.
-pub fn status(ctx: StatusCommand) -> Result<(), CommandError> {
+pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
-    let status = manager.status(ServiceStatusCtx {
+    let mut status = manager.status(ServiceStatusCtx {
         label: label.clone(),
     })?;
-    let info = StatusInfo {
-        status: status.into(),
+    let client = Client::new(SERVICE_PLACEHOLDER);
+    let info = if status == ServiceStatus::Running {
+        let server = match client.status().await {
+            Ok(server) => Some(server),
+            Err(e) => {
+                tracing::debug!("failed to get server status: {}", e);
+                status = ServiceStatus::Stopped(None);
+                None
+            }
+        };
+        StatusInfo {
+            status: status.into(),
+            server,
+        }
+    } else {
+        StatusInfo {
+            status: status.into(),
+            server: None,
+        }
     };
     if ctx.json {
         println!("{}", simd_json::serde::to_string_pretty(&info)?);

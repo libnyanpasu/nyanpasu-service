@@ -82,7 +82,7 @@ pub async fn process() -> Result<(), CommandError> {
             Ok(())
         }
         Some(Commands::Status(ctx)) => {
-            Ok(tokio::task::spawn_blocking(|| status::status(ctx)).await??)
+            Ok(status::status(ctx).await?)
         }
         None => {
             eprintln!("No command specified");

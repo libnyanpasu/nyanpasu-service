@@ -7,3 +7,5 @@ pub mod client;
 #[cfg(feature = "server")]
 pub mod server;
 pub mod utils;
+
+pub const SERVICE_PLACEHOLDER: &str = "nyanpasu_ipc";

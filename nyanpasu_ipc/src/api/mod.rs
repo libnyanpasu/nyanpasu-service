@@ -5,7 +5,7 @@ pub mod status;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{borrow::Cow, fmt::Debug};
 
-#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default)]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]
 pub enum ResponseCode {
     #[default]
     Ok = 0,

@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use nyanpasu_ipc::utils::os::NYANPASU_USER_GROUP;
 
 pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(windows)]
@@ -10,7 +11,7 @@ pub fn is_nyanpasu_group_exists() -> bool {
         use std::process::Command;
         let output = Command::new("getent")
             .arg("group")
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         output.status.success();
@@ -18,10 +19,11 @@ pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
+        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
         let output = Command::new("dscl")
             .arg(".")
             .arg("-read")
-            .arg("/Groups/nyanpasu")
+            .arg(&group)
             .output()
             .expect("failed to execute process");
         output.status.success()
@@ -37,7 +39,7 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
     {
         use std::process::Command;
         let output = Command::new("groupadd")
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         if !output.status.success() {
@@ -52,7 +54,7 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
             .arg("-o")
             .arg("create")
             .arg("-r")
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         if !output.status.success() {
@@ -76,7 +78,7 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
             .output()
             .expect("failed to execute process");
         let output = String::from_utf8_lossy(&output.stdout);
-        output.contains("nyanpasu")
+        output.contains(NYANPASU_USER_GROUP)
     }
     #[cfg(target_os = "macos")]
     {
@@ -86,7 +88,7 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
             .arg("checkmember")
             .arg("-m")
             .arg(username)
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         output.status.success()
@@ -103,7 +105,7 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
         use std::process::Command;
         let output = Command::new("usermod")
             .arg("-aG")
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .arg(username)
             .output()
             .expect("failed to execute process");
@@ -122,7 +124,7 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
             .arg(username)
             .arg("-t")
             .arg("user")
-            .arg("nyanpasu")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         if !output.status.success() {

@@ -1,6 +1,6 @@
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
-pub(crate) mod os;
+pub mod os;
 
 pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error> {
     // TODO: support generic namespaced while I have clear understanding how to change the user group

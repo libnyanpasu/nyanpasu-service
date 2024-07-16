@@ -13,6 +13,7 @@ use tokio::io::{self, AsyncReadExt, AsyncWriteExt as _};
 use interprocess::local_socket::tokio::{prelude::*, Stream};
 
 mod wrapper;
+pub mod shortcuts;
 use wrapper::BodyDataStreamExt;
 
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +22,8 @@ pub enum ClientError {
     Io(#[from] std::io::Error),
     #[error("A network error occurred: {0}")]
     Hyper(#[from] hyper::Error),
+    #[error("An error occurred while perform HTTP: {0}")]
+    Http(#[from] hyper::http::Error),
     #[error("An error occurred: {0}")]
     ParseFailed(#[from] simd_json::Error),
     #[error("An error occurred: {0}")]
