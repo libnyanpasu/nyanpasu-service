@@ -41,6 +41,10 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
         let sw = SecurityDescriptor::deserialize(sdsf)?;
         options.security_descriptor(sw)
     };
+    // allow owner and group to read and write
+    #[cfg(not(windows))]
+    let options = options.mode(0o764 as u32);
+
     let listener = options.create_tokio()?;
     // change the socket group
     tracing::debug!("changing socket group...");
