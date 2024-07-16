@@ -5,6 +5,8 @@ use hyper_util::{
     server,
 };
 use interprocess::local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions};
+#[cfg(unix)]
+use interprocess::os::unix::local_socket::ListenerOptionsExt;
 #[cfg(windows)]
 use interprocess::os::windows::{
     local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
@@ -42,7 +44,7 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
         options.security_descriptor(sw)
     };
     // allow owner and group to read and write
-    #[cfg(not(windows))]
+    #[cfg(unix)]
     let options = options.mode(0o764 as u32);
 
     let listener = options.create_tokio()?;
