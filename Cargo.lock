@@ -1665,7 +1665,7 @@ dependencies = [
 [[package]]
 name = "service-manager"
 version = "0.7.1"
-source = "git+https://github.com/greenhat616/service-manager-rs.git#4221d352a7ac5a4ed3bba82d168ce990048b297f"
+source = "git+https://github.com/greenhat616/service-manager-rs.git#1f6da75a639700dea746cab7a31f24f8ce9b6eab"
 dependencies = [
  "cfg-if",
  "dirs",
