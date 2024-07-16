@@ -16,7 +16,7 @@ pub fn is_nyanpasu_group_exists() -> bool {
             .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
-        output.status.success();
+        output.status.success()
     }
     #[cfg(target_os = "macos")]
     {
