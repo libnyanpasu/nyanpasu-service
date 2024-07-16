@@ -1,5 +1,4 @@
 #![allow(dead_code)]
-use nyanpasu_ipc::utils::os::NYANPASU_USER_GROUP;
 
 pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(windows)]

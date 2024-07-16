@@ -81,9 +81,7 @@ pub async fn process() -> Result<(), CommandError> {
             server::server(ctx).await?;
             Ok(())
         }
-        Some(Commands::Status(ctx)) => {
-            Ok(status::status(ctx).await?)
-        }
+        Some(Commands::Status(ctx)) => Ok(status::status(ctx).await?),
         None => {
             eprintln!("No command specified");
             Ok(())

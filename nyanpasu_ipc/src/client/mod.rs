@@ -1,19 +1,18 @@
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
-    http::{Method, Request, StatusCode},
+    http::Request,
     Response as HyperResponse,
 };
 use hyper_util::rt::TokioIo;
-use serde::Serialize;
 use simd_json::Buffers;
 use std::error::Error as StdError;
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt as _};
+use tokio::io::AsyncReadExt;
 
 use interprocess::local_socket::tokio::{prelude::*, Stream};
 
-mod wrapper;
 pub mod shortcuts;
+mod wrapper;
 use wrapper::BodyDataStreamExt;
 
 #[derive(Debug, thiserror::Error)]

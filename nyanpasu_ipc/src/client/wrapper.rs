@@ -1,16 +1,8 @@
-use std::{
-    io::{BufRead, Read},
-    pin::Pin,
-};
-
-use futures_util::{stream::Stream, StreamExt};
+use futures_util::stream::Stream;
 use http_body_util::BodyDataStream;
-use hyper::{
-    body::{Body, Incoming},
-    Response,
-};
+use hyper::body::Body;
 use pin_project_lite::pin_project;
-use std::task::{Context, Poll};
+use std::task::Poll;
 
 pin_project! {
     #[derive(Clone, Copy, Debug)]

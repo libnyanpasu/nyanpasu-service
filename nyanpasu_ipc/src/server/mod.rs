@@ -4,9 +4,10 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server,
 };
-use interprocess::{
-    local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions},
-    os::windows::{local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor},
+use interprocess::local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions};
+#[cfg(windows)]
+use interprocess::os::windows::{
+    local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
 use nyanpasu_utils::io::unwrap_infallible;
 use std::result::Result as StdResult;
