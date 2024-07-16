@@ -48,11 +48,11 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     let options = options.mode({
         #[cfg(target_os = "linux")]
         {
-            0o764 as u32
+            0o664 as u32
         }
         #[cfg(not(target_os = "linux"))]
         {
-            0o764 as u16
+            0o664 as u16
         }
     });
 
