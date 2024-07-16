@@ -45,7 +45,16 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     };
     // allow owner and group to read and write
     #[cfg(unix)]
-    let options = options.mode(0o764 as u32);
+    let options = options.mode({
+        #[cfg(target_os = "linux")]
+        {
+            0o764 as u32
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0o764 as u16
+        }
+    });
 
     let listener = options.create_tokio()?;
     // change the socket group
