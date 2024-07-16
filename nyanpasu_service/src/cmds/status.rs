@@ -54,7 +54,8 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
             Ok(server) => Some(server),
             Err(e) => {
                 tracing::debug!("failed to get server status: {}", e);
-                status = ServiceStatus::Stopped(None);
+                status =
+                    ServiceStatus::Stopped(Some(format!("failed to get server status: {}", e)));
                 None
             }
         };
