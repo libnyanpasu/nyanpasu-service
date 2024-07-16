@@ -38,12 +38,13 @@ jobs:
           shared-key: ${{ matrix.os }}-ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # Install your linters here
-
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features
       - name: Run linters
         uses: wearerequired/lint-action@master
         with:
           rustfmt: true
-          clippy: true
+          clippy: false
           auto_fix: true
           commit_message: 'chore: apply linting fixes with ${linter}'
           git_name: "github-actions[bot]"

@@ -524,7 +524,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#76b2546ba995d08f389876197b3f0fd19330368a"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#3a700f3b7c4a418ae8b2d443b98e9d5693f1fad8"
 dependencies = [
  "dirs-next",
  "thiserror",
@@ -1183,6 +1183,7 @@ dependencies = [
  "tracing",
  "tracing-attributes",
  "tracing-futures",
+ "widestring",
 ]
 
 [[package]]
@@ -1214,7 +1215,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#76b2546ba995d08f389876197b3f0fd19330368a"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#3a700f3b7c4a418ae8b2d443b98e9d5693f1fad8"
 dependencies = [
  "derive_builder",
  "dirs-utils",
@@ -1279,7 +1280,7 @@ checksum = "1e401f977ab385c9e4e3ab30627d6f26d00e2c73eef317493c4ec6d468726cf8"
 dependencies = [
  "cfg-if",
  "libc",
- "redox_syscall 0.5.2",
+ "redox_syscall 0.5.3",
  "smallvec",
  "windows-targets 0.52.6",
 ]
@@ -1421,9 +1422,9 @@ dependencies = [
 
 [[package]]
 name = "redox_syscall"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c82cf8cff14456045f55ec4241383baeff27af886adb72ffb2162f99911de0fd"
+checksum = "2a908a6e00f1fdd0dfd9c0eb08ce85126f6d8bbda50017e74bc4a4b7d4a926a4"
 dependencies = [
  "bitflags 2.6.0",
 ]

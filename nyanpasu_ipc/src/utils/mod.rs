@@ -1,15 +1,16 @@
-use interprocess::local_socket::{
-    GenericFilePath, GenericNamespaced, Name, NameType, ToFsName, ToNsName,
-};
+use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
+
+pub(crate) mod os;
 
 pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error> {
-    if GenericNamespaced::is_supported() {
-        return if cfg!(windows) {
-            Ok(placeholder.to_string().to_ns_name::<GenericNamespaced>()?)
-        } else {
-            Ok(format!("{placeholder}.sock").to_ns_name::<GenericNamespaced>()?)
-        };
-    }
+    // TODO: support generic namespaced while I have clear understanding how to change the user group
+    // if GenericNamespaced::is_supported() {
+    //     return if cfg!(windows) {
+    //         Ok(placeholder.to_string().to_ns_name::<GenericNamespaced>()?)
+    //     } else {
+    //         Ok(format!("{placeholder}.sock").to_ns_name::<GenericNamespaced>()?)
+    //     };
+    // }
     let name = if cfg!(windows) {
         format!("\\\\.\\pipe\\{placeholder}")
     } else {

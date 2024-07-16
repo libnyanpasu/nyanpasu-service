@@ -4,7 +4,10 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server,
 };
-use interprocess::local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions};
+use interprocess::{
+    local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions},
+    os::windows::{local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor},
+};
 use nyanpasu_utils::io::unwrap_infallible;
 use std::result::Result as StdResult;
 use thiserror::Error;
@@ -24,10 +27,20 @@ pub enum ServerError {
 
 pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     let name = crate::utils::get_name(placeholder)?;
-    let listener = ListenerOptions::new()
+    let options = ListenerOptions::new()
         .name(name)
-        .nonblocking(ListenerNonblockingMode::Both)
-        .create_tokio()?;
+        .nonblocking(ListenerNonblockingMode::Both);
+    #[cfg(windows)]
+    let options = {
+        use widestring::u16cstr;
+        let sdsf = u16cstr!("D:(A;;GA;;;WD)"); // TODO: allow only the permitted users to connect
+        let sw = SecurityDescriptor::deserialize(sdsf)?;
+        options.security_descriptor(sw)
+    };
+    let listener = options.create_tokio()?;
+    // change the socket group
+    crate::utils::os::change_socket_group(placeholder)?;
+
     let mut make_service = app.route("/ws", get(ws::ws_handler)).into_make_service();
     // See https://github.com/tokio-rs/axum/blob/main/examples/serve-with-hyper/src/main.rs for
     // more details about this setup

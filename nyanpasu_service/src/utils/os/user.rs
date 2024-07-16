@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(windows)]
     {
@@ -57,6 +59,37 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
             anyhow::bail!("failed to create nyanpasu group");
         }
         Ok(())
+    }
+}
+
+pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
+    #[cfg(windows)]
+    {
+        false
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::process::Command;
+        let output = Command::new("id")
+            .arg("-nG")
+            .arg(username)
+            .output()
+            .expect("failed to execute process");
+        let output = String::from_utf8_lossy(&output.stdout);
+        output.contains("nyanpasu")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("dseditgroup")
+            .arg("-o")
+            .arg("checkmember")
+            .arg("-m")
+            .arg(username)
+            .arg("nyanpasu")
+            .output()
+            .expect("failed to execute process");
+        output.status.success()
     }
 }
 

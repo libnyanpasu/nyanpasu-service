@@ -13,7 +13,7 @@ default-run = "nyanpasu-service"
 nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
 ] }
-nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = ["server"] }
+nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = ["server", "client"] }
 axum = { workspace = true, features = ["macros"]}
 tokio = { workspace = true, features = ["full"] }
 clap = { version = "4", features = ["derive"] }
