@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
 pub mod os;
@@ -19,8 +21,13 @@ pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error
     name.to_fs_name::<GenericFilePath>()
 }
 
-pub async fn is_service_installed() -> bool {
-    true
+#[cfg(unix)]
+pub(crate) async fn remove_socket_if_exists(placeholder: &str) -> Result<(), std::io::Error> {
+    let path: PathBuf = PathBuf::from(format!("/var/run/{placeholder}.sock"));
+    if tokio::fs::metadata(&path).await.is_ok() {
+        tokio::fs::remove_file(&path).await?;
+    }
+    Ok(())
 }
 
 /// Get the current millisecond timestamp

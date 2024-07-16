@@ -15,8 +15,11 @@ deadlock_detection = ["parking_lot/deadlock_detection"]
 nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
 ] }
-nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = ["server", "client"] }
-axum = { workspace = true, features = ["macros"]}
+nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = [
+    "server",
+    "client",
+] }
+axum = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
@@ -36,7 +39,8 @@ service-manager = { git = "https://github.com/greenhat616/service-manager-rs.git
 whoami = "1"
 parking_lot = "0.12"
 constcat = "0.5.0"
-ctrlc = {version = "3", features = ["termination"]}
+ctrlc = { version = "3", features = ["termination"] }
+kill_tree = { version = "0.2.4", features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 check_elevation = "0.2.4"

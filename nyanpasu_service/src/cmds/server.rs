@@ -19,6 +19,7 @@ pub struct ServerContext {
 
 #[instrument]
 pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
+    crate::utils::os::kill_service_if_pid_is_running().await?;
     tracing::info!("nyanpasu config dir: {:?}", ctx.nyanpasu_config_dir);
     tracing::info!("nyanpasu data dir: {:?}", ctx.nyanpasu_data_dir);
 
@@ -37,6 +38,13 @@ pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
     if !service_config_dir.exists() {
         std::fs::create_dir_all(&service_config_dir)?;
     }
+
+    // Write current process id to file
+    tokio::fs::write(
+        crate::utils::dirs::service_pid_file(),
+        std::process::id().to_string(),
+    )
+    .await?;
 
     crate::server::consts::RuntimeInfos::set_infos(RuntimeInfos {
         service_data_dir,

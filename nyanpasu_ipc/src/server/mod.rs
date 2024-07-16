@@ -32,6 +32,10 @@ use tracing_attributes::instrument;
 #[instrument]
 pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     let name = crate::utils::get_name(placeholder)?;
+    #[cfg(unix)]
+    {
+        crate::utils::remove_socket_if_exists(placeholder).await?;
+    }
     tracing::debug!("socket name: {:?}", name);
     let options = ListenerOptions::new()
         .name(name)
