@@ -10,18 +10,15 @@ use super::CommandError;
 #[derive(Args, Debug, Clone)]
 pub struct ServerContext {
     #[clap(long)]
-    pub nyanpasu_config_dir: String,
+    pub nyanpasu_config_dir: PathBuf,
     #[clap(long)]
-    pub nyanpasu_data_dir: String,
+    pub nyanpasu_data_dir: PathBuf,
 }
 
 pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
-    let nyanpasu_config_dir = unwrap_infallible(ctx.nyanpasu_config_dir.parse::<PathBuf>());
-    let nyanpasu_data_dir = unwrap_infallible(ctx.nyanpasu_data_dir.parse::<PathBuf>());
-
     // check dirs accessibility
-    let _ = std::fs::metadata(&nyanpasu_config_dir)?;
-    let _ = std::fs::metadata(&nyanpasu_data_dir)?;
+    let _ = std::fs::metadata(&ctx.nyanpasu_config_dir)?;
+    let _ = std::fs::metadata(&ctx.nyanpasu_data_dir)?;
 
     let service_data_dir = crate::utils::dirs::service_data_dir();
     let service_config_dir = crate::utils::dirs::service_config_dir();
@@ -36,8 +33,8 @@ pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
     crate::server::consts::RuntimeInfos::set_infos(RuntimeInfos {
         service_data_dir,
         service_config_dir,
-        nyanpasu_config_dir,
-        nyanpasu_data_dir,
+        nyanpasu_config_dir: ctx.nyanpasu_config_dir,
+        nyanpasu_data_dir: ctx.nyanpasu_data_dir,
     });
     crate::server::run().await?;
     Ok(())
