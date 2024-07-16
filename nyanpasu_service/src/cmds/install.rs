@@ -8,10 +8,13 @@ use super::CommandError;
 
 #[derive(Debug, clap::Args)]
 pub struct InstallCommand {
+    /// The user who will run the service
     #[clap(long)]
     user: String, // Should manual specify because the runner should be administrator/root
+    /// The nyanpasu data directory
     #[clap(long)]
     nyanpasu_data_dir: PathBuf,
+    /// The nyanpasu config directory
     #[clap(long)]
     nyanpasu_config_dir: PathBuf,
 }

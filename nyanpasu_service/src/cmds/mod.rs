@@ -9,10 +9,12 @@ mod start;
 mod status;
 mod stop;
 mod uninstall;
+mod update;
 
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
+    /// Enable verbose logging
     #[clap(long, default_value = "false")]
     verbose: bool,
     #[command(subcommand)]
@@ -21,13 +23,22 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Install the service
     Install(install::InstallCommand),
+    /// Uninstall the service
     Uninstall,
+    /// Start the service
     Start,
+    /// Stop the service
     Stop,
+    /// Restart the service
     Restart,
+    /// Run the server. It should be called by the service manager.
     Server(server::ServerContext), // The main entry point for the service, other commands are the control plane for the service
+    /// Get the status of the service
     Status(status::StatusCommand),
+    /// Update the service
+    Update,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -82,6 +93,10 @@ pub async fn process() -> Result<(), CommandError> {
             Ok(())
         }
         Some(Commands::Status(ctx)) => Ok(status::status(ctx).await?),
+        Some(Commands::Update) => {
+            update::update().await?;
+            Ok(())
+        }
         None => {
             eprintln!("No command specified");
             Ok(())

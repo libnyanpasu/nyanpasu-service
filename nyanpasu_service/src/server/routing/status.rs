@@ -12,7 +12,7 @@ pub async fn status() -> (StatusCode, Json<StatusRes<'static>>) {
     let status = instance.status();
     let runtime_infos = crate::server::consts::RuntimeInfos::global();
     let res = RBuilder::success(StatusResBody {
-        version: Cow::Borrowed(crate::consts::VERSION),
+        version: Cow::Borrowed(crate::consts::APP_VERSION),
         core_infos: status,
         runtime_infos: RuntimeInfos {
             service_data_dir: Cow::Borrowed(&runtime_infos.service_data_dir),

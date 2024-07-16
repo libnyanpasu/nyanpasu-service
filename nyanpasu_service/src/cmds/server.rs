@@ -9,10 +9,13 @@ use super::CommandError;
 
 #[derive(Args, Debug, Clone)]
 pub struct ServerContext {
+    /// nyanpasu config dir
     #[clap(long)]
     pub nyanpasu_config_dir: PathBuf,
+    /// nyanpasu data dir
     #[clap(long)]
     pub nyanpasu_data_dir: PathBuf,
+    /// run as service
     #[clap(long, default_value = "false")]
     pub service: bool,
 }
