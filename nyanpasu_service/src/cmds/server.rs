@@ -13,11 +13,12 @@ pub struct ServerContext {
     pub nyanpasu_config_dir: PathBuf,
     #[clap(long)]
     pub nyanpasu_data_dir: PathBuf,
+    #[clap(long, default_value = "false")]
+    pub service: bool,
 }
 
 #[instrument]
 pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
-    crate::utils::deadlock_detection();
     tracing::info!("nyanpasu config dir: {:?}", ctx.nyanpasu_config_dir);
     tracing::info!("nyanpasu data dir: {:?}", ctx.nyanpasu_data_dir);
 

@@ -69,12 +69,6 @@ pub async fn process() -> Result<(), CommandError> {
         logging::init(cli.verbose, false)?;
     }
 
-    ctrlc::set_handler(|| {
-        tracing::info!("ctrl-c received, exiting...");
-        std::process::exit(0);
-    })
-    .unwrap();
-
     match cli.command {
         Some(Commands::Install(ctx)) => {
             Ok(tokio::task::spawn_blocking(move || install::install(ctx)).await??)

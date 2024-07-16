@@ -5,10 +5,16 @@ pub mod consts;
 mod logging;
 mod server;
 mod utils;
-use tracing::error;
 
-#[tokio::main]
-async fn main() {
+#[cfg(windows)]
+mod win_service;
+
+use nyanpasu_utils::runtime::block_on;
+use tracing::error;
+use utils::{os::register_ctrlc_handler, register_panic_hook};
+
+pub async fn handler() {
+    crate::utils::deadlock_detection();
     let result = cmds::process().await;
     match result {
         Ok(_) => {}
@@ -36,5 +42,23 @@ async fn main() {
             error!("Error: {:#?}", e);
             std::process::exit(consts::ExitCode::Other as i32);
         }
+    }
+}
+
+fn main() {
+    register_ctrlc_handler();
+    register_panic_hook();
+    #[cfg(windows)]
+    {
+        let args = std::env::args_os().any(|arg| &arg == "--service");
+        if args {
+            crate::win_service::run().unwrap();
+        } else {
+            block_on(handler());
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        block_on(handler());
     }
 }
