@@ -58,8 +58,10 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
 
     let listener = options.create_tokio()?;
     // change the socket group
-    tracing::debug!("changing socket group...");
+    tracing::debug!("changing socket group and permissions...");
     crate::utils::os::change_socket_group(placeholder)?;
+    crate::utils::os::change_socket_mode(placeholder)?;
+
     tracing::debug!("mounting service...");
     let mut make_service = app.route("/ws", get(ws::ws_handler)).into_make_service();
     // See https://github.com/tokio-rs/axum/blob/main/examples/serve-with-hyper/src/main.rs for
