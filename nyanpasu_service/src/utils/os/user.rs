@@ -52,11 +52,10 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let output = Command::new("dseditgroup")
-            .arg("-o")
-            .arg("create")
-            .arg("-r")
-            .arg(NYANPASU_USER_GROUP)
+        let output = Command::new("dscl")
+            .arg(".")
+            .arg("-create")
+            .arg(format!("/Groups/{}", NYANPASU_USER_GROUP))
             .output()
             .expect("failed to execute process");
         if !output.status.success() {
