@@ -74,7 +74,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
             ctx.nyanpasu_data_dir.into(),
             OsString::from("--nyanpasu-config-dir"),
             ctx.nyanpasu_config_dir.into(),
-            OsString::from("--service")
+            OsString::from("--service"),
         ],
         contents: None,
         username: None, // because we just need to run the service as root
