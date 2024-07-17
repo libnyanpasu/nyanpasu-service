@@ -21,6 +21,8 @@ pub(crate) fn get_name<'n>(placeholder: &str) -> Result<Name<'n>, std::io::Error
 
 #[cfg(unix)]
 pub(crate) async fn remove_socket_if_exists(placeholder: &str) -> Result<(), std::io::Error> {
+    use std::path::PathBuf;
+
     let path: PathBuf = PathBuf::from(format!("/var/run/{placeholder}.sock"));
     if tokio::fs::metadata(&path).await.is_ok() {
         tokio::fs::remove_file(&path).await?;
