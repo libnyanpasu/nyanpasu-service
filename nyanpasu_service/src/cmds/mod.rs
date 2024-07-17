@@ -4,6 +4,7 @@ use std::backtrace::Backtrace;
 
 mod install;
 mod restart;
+mod rpc;
 mod server;
 mod start;
 mod status;
@@ -39,6 +40,9 @@ enum Commands {
     Status(status::StatusCommand),
     /// Update the service
     Update,
+    /// RPC commands, a shortcut for client rpc calls
+    #[command(subcommand)]
+    Rpc(rpc::RpcCommand),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -95,6 +99,10 @@ pub async fn process() -> Result<(), CommandError> {
         Some(Commands::Status(ctx)) => Ok(status::status(ctx).await?),
         Some(Commands::Update) => {
             update::update().await?;
+            Ok(())
+        }
+        Some(Commands::Rpc(ctx)) => {
+            rpc::rpc(ctx).await?;
             Ok(())
         }
         None => {

@@ -20,7 +20,7 @@ pub async fn update() -> Result<(), CommandError> {
     }
     let client_version = Version::parse(APP_VERSION).unwrap();
     tracing::info!("Get server version...");
-    let client = shortcuts::Client::new(SERVICE_PLACEHOLDER);
+    let client = shortcuts::Client::service_default();
     let status = client.status().await.ok();
     match status {
         None => {

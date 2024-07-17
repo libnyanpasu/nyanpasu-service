@@ -65,7 +65,7 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
             label: label.clone(),
         })?
     };
-    let client = Client::new(SERVICE_PLACEHOLDER);
+    let client = Client::service_default();
     let mut info = StatusInfo {
         name: APP_NAME,
         version: APP_VERSION,

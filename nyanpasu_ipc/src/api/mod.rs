@@ -3,7 +3,11 @@ pub mod log;
 pub mod status;
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::{borrow::Cow, fmt::Debug};
+use std::{
+    borrow::Cow,
+    fmt::Debug,
+    io::{Error as IoError, ErrorKind as IoErrorKind},
+};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]
 pub enum ResponseCode {
@@ -34,6 +38,19 @@ pub struct R<'a, T: Serialize + DeserializeOwned + Debug> {
     pub data: Option<T>,
     #[builder(setter(skip), default = "self.default_ts()")]
     pub ts: i64,
+}
+
+impl<'a, T: Serialize + DeserializeOwned + Debug> R<'a, T> {
+    pub fn ok(self) -> Result<Self, IoError> {
+        if self.code == ResponseCode::Ok {
+            Ok(self)
+        } else {
+            Err(IoError::new(
+                IoErrorKind::Other,
+                format!("Response code is not Ok: {:#?}", self),
+            ))
+        }
+    }
 }
 
 impl<'a, T: Serialize + DeserializeOwned + Debug> RBuilder<'a, T> {
