@@ -1,4 +1,4 @@
-use nyanpasu_ipc::{api::status::StatusResBody, client::shortcuts::Client, SERVICE_PLACEHOLDER};
+use nyanpasu_ipc::{api::status::StatusResBody, client::shortcuts::Client};
 use serde::Serialize;
 use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
 
@@ -58,7 +58,7 @@ struct StatusInfo<'n> {
 pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
-    let mut status = if ctx.skip_service_check {
+    let status = if ctx.skip_service_check {
         ServiceStatus::Running
     } else {
         manager.status(ServiceStatusCtx {

@@ -1,4 +1,4 @@
-use nyanpasu_ipc::{client::shortcuts, SERVICE_PLACEHOLDER};
+use nyanpasu_ipc::client::shortcuts;
 use semver::Version;
 use tokio::task::spawn_blocking;
 

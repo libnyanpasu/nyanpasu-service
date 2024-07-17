@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
 pub mod os;
