@@ -13,11 +13,16 @@ mod uninstall;
 mod update;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(version, author, about, long_about = None, disable_version_flag = true)]
 struct Cli {
     /// Enable verbose logging
     #[clap(long, default_value = "false")]
     verbose: bool,
+
+    /// Print the version
+    #[clap(short, long, default_value = "false")]
+    version: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -73,6 +78,10 @@ pub enum CommandError {
 
 pub async fn process() -> Result<(), CommandError> {
     let cli = Cli::parse();
+    if cli.version {
+        print_version();
+    }
+
     if !matches!(
         cli.command,
         Some(Commands::Status(_)) | Some(Commands::Rpc(_)) | None
@@ -112,4 +121,64 @@ pub async fn process() -> Result<(), CommandError> {
             Ok(())
         }
     }
+}
+
+pub fn print_version() {
+    use crate::consts::*;
+    use chrono::{DateTime, Utc};
+    use colored::*;
+    use timeago::Formatter;
+
+    let now = Utc::now();
+    let formatter = Formatter::new();
+    println!(
+        "{} {} ({} Build)\n", //
+        APP_NAME,
+        format!("v{}", APP_VERSION).yellow(),
+        BUILD_PROFILE.yellow()
+    );
+    println!("{}", "[Build Information]".bright_black());
+    println!(
+        "{:>14}: {:<15}",
+        "Commit Info",
+        format!("{} by {}", COMMIT_HASH.green(), COMMIT_AUTHOR.blue())
+    );
+    println!(
+        "{:>14}: {:<15}",
+        "Commit Time",
+        format!(
+            "{} ({})",
+            formatter
+                .convert_chrono(DateTime::parse_from_rfc3339(COMMIT_DATE).unwrap(), now)
+                .red(),
+            COMMIT_DATE.cyan()
+        )
+    );
+    println!(
+        "{:>14}: {:<15}",
+        "Build Time",
+        format!(
+            "{} ({})",
+            formatter
+                .convert_chrono(DateTime::parse_from_rfc3339(BUILD_DATE).unwrap(), now)
+                .red(),
+            BUILD_DATE.cyan()
+        )
+    );
+    println!(
+        "{:>14}: {:<15}",
+        "Build Target",
+        BUILD_PLATFORM.bright_yellow()
+    );
+    println!(
+        "{:>14}: {:<15}",
+        "Rust Version",
+        RUSTC_VERSION.bright_yellow()
+    );
+    println!(
+        "{:>14}: {:<15}",
+        "LLVM Version",
+        LLVM_VERSION.bright_yellow()
+    );
+    std::process::exit(0);
 }
