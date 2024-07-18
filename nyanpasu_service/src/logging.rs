@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::{fs, io::IsTerminal, sync::OnceLock};
-use tracing::{level_filters::LevelFilter, subscriber};
+use tracing::level_filters::LevelFilter;
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
     rolling::Rotation,
