@@ -47,6 +47,7 @@ bounded-vec-deque = "0.1.1"
 chrono = { workspace = true }
 colored = "2.1.0"
 timeago = "0.4"
+ansi-str = "0.8"
 
 [build-dependencies]
 chrono = { workspace = true }

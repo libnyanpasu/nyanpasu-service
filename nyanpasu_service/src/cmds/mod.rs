@@ -12,11 +12,17 @@ mod stop;
 mod uninstall;
 mod update;
 
+/// Nyanpasu Service, a privileged service for managing the core service.
+///
+/// The main entry point for the service, Other commands are the control plane for the service.
+///
+/// rpc subcommands are shortcuts for client rpc calls,
+/// It is useful for testing and debugging service rpc calls.
 #[derive(Parser)]
-#[command(version, author, about, long_about = None, disable_version_flag = true)]
+#[command(version, author, about, long_about, disable_version_flag = true)]
 struct Cli {
     /// Enable verbose logging
-    #[clap(long, default_value = "false")]
+    #[clap(short = 'V', long, default_value = "false")]
     verbose: bool,
 
     /// Print the version
@@ -125,60 +131,63 @@ pub async fn process() -> Result<(), CommandError> {
 
 pub fn print_version() {
     use crate::consts::*;
+    use ansi_str::AnsiStr;
     use chrono::{DateTime, Utc};
     use colored::*;
     use timeago::Formatter;
 
     let now = Utc::now();
     let formatter = Formatter::new();
+    let commit_time =
+        formatter.convert_chrono(DateTime::parse_from_rfc3339(COMMIT_DATE).unwrap(), now);
+    let commit_time_width = commit_time.len() + COMMIT_DATE.len() + 3;
+    let build_time =
+        formatter.convert_chrono(DateTime::parse_from_rfc3339(BUILD_DATE).unwrap(), now);
+    let build_time_width = build_time.len() + BUILD_DATE.len() + 3;
+    let commit_info_width = COMMIT_HASH.len() + COMMIT_AUTHOR.len() + 4;
+    let col_width = commit_info_width
+        .max(commit_time_width)
+        .max(build_time_width)
+        .max(BUILD_PLATFORM.len())
+        .max(RUSTC_VERSION.len())
+        .max(LLVM_VERSION.len())
+        + 2;
+    let header_width = col_width + 16;
     println!(
-        "{} {} ({} Build)\n", //
+        "{} v{} ({} Build)\n",
         APP_NAME,
-        format!("v{}", APP_VERSION).yellow(),
+        APP_VERSION,
         BUILD_PROFILE.yellow()
     );
-    println!("{}", "[Build Information]".bright_black());
+    println!("┌{:─^width$}┐", " Build Information ", width = header_width);
+
+    let mut line = format!("{} by {}", COMMIT_HASH.green(), COMMIT_AUTHOR.blue());
+    let mut pad = col_width - line.ansi_strip().len();
+    println!("│{:>14}: {}{}│", "Commit Info", line, " ".repeat(pad));
+
+    line = format!("{} ({})", commit_time.red(), COMMIT_DATE.cyan());
+    pad = col_width - line.ansi_strip().len();
+    println!("│{:>14}: {}{}│", "Commit Time", line, " ".repeat(pad));
+
+    line = format!("{} ({})", build_time.red(), BUILD_DATE.cyan());
+    pad = col_width - line.ansi_strip().len();
+    println!("│{:>14}: {}{}│", "Build Time", line, " ".repeat(pad));
+
     println!(
-        "{:>14}: {:<15}",
-        "Commit Info",
-        format!("{} by {}", COMMIT_HASH.green(), COMMIT_AUTHOR.blue())
-    );
-    println!(
-        "{:>14}: {:<15}",
-        "Commit Time",
-        format!(
-            "{} ({})",
-            formatter
-                .convert_chrono(DateTime::parse_from_rfc3339(COMMIT_DATE).unwrap(), now)
-                .red(),
-            COMMIT_DATE.cyan()
-        )
-    );
-    println!(
-        "{:>14}: {:<15}",
-        "Build Time",
-        format!(
-            "{} ({})",
-            formatter
-                .convert_chrono(DateTime::parse_from_rfc3339(BUILD_DATE).unwrap(), now)
-                .red(),
-            BUILD_DATE.cyan()
-        )
-    );
-    println!(
-        "{:>14}: {:<15}",
+        "│{:>14}: {:<col_width$}│",
         "Build Target",
         BUILD_PLATFORM.bright_yellow()
     );
     println!(
-        "{:>14}: {:<15}",
+        "│{:>14}: {:<col_width$}│",
         "Rust Version",
         RUSTC_VERSION.bright_yellow()
     );
     println!(
-        "{:>14}: {:<15}",
+        "│{:>14}: {:<col_width$}│",
         "LLVM Version",
         LLVM_VERSION.bright_yellow()
     );
+    println!("└{:─^width$}┘", "", width = header_width);
     std::process::exit(0);
 }
