@@ -67,7 +67,14 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     };
     match file_layer {
         Some((file_layer, _guard)) => {
-            let subscriber = subscriber.with(file_layer);
+            // TODO: 改善日记注册逻辑
+            use crate::server::Logger;
+            let logger_layer = fmt::layer()
+                .json()
+                .with_writer(Logger::global().clone())
+                .with_line_number(true)
+                .with_file(true);
+            let subscriber = subscriber.with(file_layer).with(logger_layer);
             log_tracer::LogTracer::init()?;
             tracing::subscriber::set_global_default(subscriber)
                 .map_err(|x| anyhow!("setup logging error: {}", x))?;
