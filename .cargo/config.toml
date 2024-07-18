@@ -1,6 +1,3 @@
-[target.'cfg(debug_assertions)']
-rustflags = ["--cfg", "tokio_unstable"]
-
 [alias]
 debug-run = "run --features debug"
 debug-build = "build --features debug"

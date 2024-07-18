@@ -15,6 +15,11 @@ insert_final_newline = true
 [*.{rs,toml}]
 charset = utf-8
 
+[*.yml]
+indent_style = space
+indent_size = 2
+
+
 # 4 space indentation
 [*.rs]
 indent_style = space
