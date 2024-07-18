@@ -159,7 +159,7 @@ pub fn print_version() {
         APP_VERSION,
         BUILD_PROFILE.yellow()
     );
-    println!("┌{:─^width$}┐", " Build Information ", width = header_width);
+    println!("╭{:─^width$}╮", " Build Information ", width = header_width);
 
     let mut line = format!("{} by {}", COMMIT_HASH.green(), COMMIT_AUTHOR.blue());
     let mut pad = col_width - line.ansi_strip().len();
@@ -188,6 +188,6 @@ pub fn print_version() {
         "LLVM Version",
         LLVM_VERSION.bright_yellow()
     );
-    println!("└{:─^width$}┘", "", width = header_width);
+    println!("╰{:─^width$}╯", "", width = header_width);
     std::process::exit(0);
 }

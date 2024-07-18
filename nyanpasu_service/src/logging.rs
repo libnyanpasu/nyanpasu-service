@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::{fs, io::IsTerminal, sync::OnceLock};
-use tracing::level_filters::LevelFilter;
+use tracing::{level_filters::LevelFilter, subscriber};
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
     rolling::Rotation,
@@ -31,10 +31,15 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     }
     let (log_level, log_max_files) = {
         (
-            if debug {
-                LevelFilter::DEBUG
-            } else {
-                LevelFilter::INFO
+            {
+                #[cfg(not(feature = "tracing"))]
+                if debug {
+                    LevelFilter::DEBUG
+                } else {
+                    LevelFilter::INFO
+                }
+                #[cfg(feature = "tracing")]
+                LevelFilter::TRACE
             },
             7,
         )
@@ -51,9 +56,10 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
         .with_line_number(true)
         .with_writer(std::io::stdout);
 
-    let subscriber = tracing_subscriber::registry()
-        .with(filter)
-        .with(terminal_layer);
+    let subscriber = tracing_subscriber::registry();
+    #[cfg(feature = "tracing")]
+    let subscriber = subscriber.with(console_subscriber::spawn());
+    let subscriber = subscriber.with(filter).with(terminal_layer);
     let file_layer = if write_file {
         let (appender, _guard) = get_file_appender(log_max_files)?;
         let file_layer = fmt::layer()

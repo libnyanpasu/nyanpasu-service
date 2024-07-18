@@ -1,0 +1,2 @@
+[target.'cfg(debug_assertions)']
+rustflags = ["--cfg", "tokio_unstable"]

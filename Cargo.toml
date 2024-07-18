@@ -34,7 +34,6 @@ opentelemetry = "0.23"
 opentelemetry_sdk = "0.23"
 opentelemetry-stdout = { version = "0.4", features = ["trace"] }
 tracing-opentelemetry = "0.24"
-console-subscriber = "0.3.0"
 futures = "0.3.30"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
