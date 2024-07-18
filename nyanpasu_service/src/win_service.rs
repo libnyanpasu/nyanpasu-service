@@ -1,7 +1,13 @@
 #![allow(dead_code)]
 
 use nyanpasu_utils::runtime::block_on;
-use std::{ffi::OsString, io::Result, sync::OnceLock, time::Duration};
+use parking_lot::Mutex;
+use std::{
+    ffi::OsString,
+    io::Result,
+    sync::{mpsc, OnceLock},
+    time::Duration,
+};
 use windows_service::{
     define_windows_service,
     service::{
@@ -14,6 +20,8 @@ use windows_service::{
 
 use crate::consts::SERVICE_LABEL;
 
+const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
+
 pub fn run() -> Result<()> {
     service_dispatcher::start(SERVICE_LABEL, ffi_service_main)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
@@ -25,10 +33,9 @@ pub fn service_main(args: Vec<OsString>) {
     if let Err(e) = run_service(args) {
         panic!("Error starting service: {:?}", e);
     }
-    block_on(crate::handler());
 }
 
-static HANDLE_GUARD: OnceLock<ServiceHandleGuard> = OnceLock::new();
+static HANDLE_GUARD: OnceLock<Mutex<Option<ServiceHandleGuard>>> = OnceLock::new();
 struct ServiceHandleGuard(ServiceStatusHandle);
 impl Drop for ServiceHandleGuard {
     fn drop(&mut self) {
@@ -39,15 +46,19 @@ impl Drop for ServiceHandleGuard {
             checkpoint: 0,
             wait_hint: Duration::default(),
             process_id: None,
-            service_type: ServiceType::OWN_PROCESS,
+            service_type: SERVICE_TYPE,
         });
     }
 }
 
 pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
-            ServiceControl::Interrogate | ServiceControl::Stop => {
+            ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
+            ServiceControl::Stop => {
+                tracing::info!("Received stop event. shutting down...");
+                shutdown_tx.send(()).unwrap();
                 ServiceControlHandlerResult::NoError
             }
             _ => ServiceControlHandlerResult::NotImplemented,
@@ -59,7 +70,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     let pid = std::process::id();
     let next_status = ServiceStatus {
         // Should match the one from system service registry
-        service_type: ServiceType::OWN_PROCESS,
+        service_type: SERVICE_TYPE,
         // The new state
         current_state: ServiceState::Running,
         // Accept stop events when running
@@ -76,8 +87,30 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     // Tell the system that the service is running now
     status_handle.set_service_status(next_status)?;
 
-    let _ = HANDLE_GUARD.set(ServiceHandleGuard(status_handle));
+    let _ = HANDLE_GUARD.set(Mutex::new(Some(ServiceHandleGuard(status_handle))));
+    std::thread::spawn(move || {
+        block_on(crate::handler());
+    });
 
-    // Do some work
+    // Poll shutdown event.
+    loop {
+        match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
+            // Break the loop either upon stop or channel disconnect
+            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            // Continue work if no events were received within the timeout
+            Err(mpsc::RecvTimeoutError::Timeout) => (),
+        }
+    }
+
+    tracing::info!("Service stopped.");
+
+    // drop the guard to set the service status to stopped
+    {
+        let mut guard = HANDLE_GUARD.get().unwrap().lock();
+        if guard.is_some() {
+            let handle = guard.take().unwrap();
+            drop(handle);
+        }
+    }
     Ok(())
 }
