@@ -66,4 +66,26 @@ impl<'a> Client<'a> {
         response.ok()?;
         Ok(())
     }
+
+    pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'_>, ClientError> {
+        let request = Request::get(api::log::LOGS_INSPECT_ENDPOINT).body(Body::empty())?;
+        let response = send_request(&self.0, request)
+            .await?
+            .cast_body::<api::log::LogsRes<'_>>()
+            .await?
+            .ok()?;
+        let data = response.data.unwrap();
+        Ok(data)
+    }
+
+    pub async fn retrieve_logs(&self) -> Result<api::log::LogsResBody<'_>, ClientError> {
+        let request = Request::get(api::log::LOGS_RETRIEVE_ENDPOINT).body(Body::empty())?;
+        let response = send_request(&self.0, request)
+            .await?
+            .cast_body::<api::log::LogsRes<'_>>()
+            .await?
+            .ok()?;
+        let data = response.data.unwrap();
+        Ok(data)
+    }
 }

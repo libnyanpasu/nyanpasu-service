@@ -73,8 +73,10 @@ pub enum CommandError {
 
 pub async fn process() -> Result<(), CommandError> {
     let cli = Cli::parse();
-    if !matches!(cli.command, Some(Commands::Status(_)) | None)
-        && !crate::utils::must_check_elevation()
+    if !matches!(
+        cli.command,
+        Some(Commands::Status(_)) | Some(Commands::Rpc(_)) | None
+    ) && !crate::utils::must_check_elevation()
     {
         return Err(CommandError::PermissionDenied);
     }

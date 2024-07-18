@@ -1,14 +1,17 @@
 use axum::{http::StatusCode, Json};
-use nyanpasu_ipc::api::log::LogsResBody;
+use nyanpasu_ipc::api::{
+    log::{LogsRes, LogsResBody},
+    RBuilder,
+};
 
-pub async fn retrieve_logs() -> (StatusCode, Json<LogsResBody<'static>>) {
+pub async fn retrieve_logs() -> (StatusCode, Json<LogsRes<'static>>) {
     let logs = crate::server::logger::Logger::global().retrieve_logs();
-    let logs = LogsResBody { logs };
-    (StatusCode::OK, Json(logs))
+    let res = RBuilder::success(LogsResBody { logs });
+    (StatusCode::OK, Json(res))
 }
 
-pub async fn inspect_logs() -> (StatusCode, Json<LogsResBody<'static>>) {
+pub async fn inspect_logs() -> (StatusCode, Json<LogsRes<'static>>) {
     let logs = crate::server::logger::Logger::global().inspect_logs();
-    let logs = LogsResBody { logs };
-    (StatusCode::OK, Json(logs))
+    let res = RBuilder::success(LogsResBody { logs });
+    (StatusCode::OK, Json(res))
 }

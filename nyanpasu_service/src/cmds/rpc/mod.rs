@@ -63,7 +63,16 @@ pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> 
                 .await
                 .map_err(|e| crate::cmds::CommandError::Other(e.into()))?;
         }
-        _ => unimplemented!(),
+        RpcCommand::InspectLogs => {
+            let client = Client::service_default();
+            let logs = client
+                .inspect_logs()
+                .await
+                .map_err(|e| crate::cmds::CommandError::Other(e.into()))?;
+            for log in logs.logs {
+                println!("{}", log.trim_matches('\n'));
+            }
+        }
     }
     Ok(())
 }
