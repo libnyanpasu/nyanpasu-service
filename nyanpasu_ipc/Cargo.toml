@@ -4,16 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:tower-http", "dep:widestring"]
+server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
 client = []
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nyanpasu-utils = { workspace = true, default-features = false, features = ["core_manager", "serde"]}
+nyanpasu-utils = { workspace = true, default-features = false, features = [
+    "core_manager",
+    "serde",
+] }
 tracing = { workspace = true }
 tracing-attributes = { workspace = true }
-tracing-futures = { workspace = true }
+# tracing-futures = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util"] }
 thiserror = { workspace = true }
@@ -23,7 +26,7 @@ interprocess = { version = "2.2.0", features = ["tokio"] }
 axum = { version = "0.7", features = ["ws"], optional = true }
 axum-extra = { version = "0.9", features = ["typed-header"], optional = true }
 tower = { version = "0.4", features = ["util"], optional = true }
-tower-http = { version = "0.5", features = ["fs", "trace"], optional = true }
+# tower-http = { version = "0.5", features = ["fs", "trace"], optional = true }
 widestring = { version = "1.1.0", optional = true }
 hyper = { version = "1", features = ["full"] }
 http-body-util = "0.1"
@@ -32,5 +35,5 @@ simd-json = { workspace = true }
 futures = { workspace = true }
 futures-util = { workspace = true }
 pin-project-lite = "0.2.14"
-tokio-tungstenite = "0.23" # Websocket impl
+# tokio-tungstenite = "0.23" # Websocket impl
 derive_builder = "0.20"
