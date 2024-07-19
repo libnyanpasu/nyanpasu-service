@@ -54,6 +54,8 @@ ansi-str = "0.8"
 console-subscriber = { version = "0.3", optional = true, features = [
     "parking_lot",
 ] }
+sysinfo = "0.30"
+
 
 [build-dependencies]
 chrono = { workspace = true }
