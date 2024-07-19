@@ -6,7 +6,8 @@ pub mod user;
 
 pub fn pid_exists(pid: u32) -> bool {
     let kind = RefreshKind::new().with_processes(ProcessRefreshKind::new());
-    let system = System::new_with_specifics(kind);
+    let mut system = System::new_with_specifics(kind);
+    system.refresh_specifics(kind);
     system.process(Pid::from_u32(pid)).is_some()
 }
 

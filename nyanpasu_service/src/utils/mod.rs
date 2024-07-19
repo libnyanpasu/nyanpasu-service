@@ -4,14 +4,6 @@ use service_manager::ServiceManager;
 pub mod dirs;
 pub mod os;
 
-pub(crate) fn get_name(is_debug: bool) -> &'static str {
-    if is_debug {
-        "core-nyanpasu"
-    } else {
-        "core-nyanpasu-dev"
-    }
-}
-
 pub fn must_check_elevation() -> bool {
     #[cfg(windows)]
     {
