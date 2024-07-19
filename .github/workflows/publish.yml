@@ -79,7 +79,7 @@ jobs:
       - name: Release
         uses: softprops/action-gh-release@v2
         with:
-          draft: true
+          # draft: true
           body: ${{steps.build-changelog.outputs.content}}
           name: Clash Nyanpasu v${{steps.update-version.outputs.version}}
           tag_name: ${{steps.build-changelog.outputs.version}}

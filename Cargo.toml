@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 resolver = "2"
 members = ["nyanpasu_service", "nyanpasu_ipc"]
@@ -39,3 +41,7 @@ panic = "unwind"
 codegen-units = 1
 lto = true
 opt-level = "s"
+
+
+[profile.dev]
+rustflags = ["--cfg", "tokio_unstable"]
