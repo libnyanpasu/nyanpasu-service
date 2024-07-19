@@ -1,8 +1,9 @@
 #![allow(dead_code)]
-
 #[cfg(not(windows))]
 use nyanpasu_ipc::utils::os::NYANPASU_USER_GROUP;
+use tracing_attributes::instrument;
 
+#[instrument]
 pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(windows)]
     {
@@ -16,6 +17,7 @@ pub fn is_nyanpasu_group_exists() -> bool {
             .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         output.status.success()
     }
     #[cfg(target_os = "macos")]
@@ -28,10 +30,12 @@ pub fn is_nyanpasu_group_exists() -> bool {
             .arg(&group)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         output.status.success()
     }
 }
 
+#[instrument]
 pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
     #[cfg(windows)]
     {
@@ -44,6 +48,7 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
             .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         if !output.status.success() {
             anyhow::bail!("failed to create nyanpasu group");
         }
@@ -58,6 +63,7 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
             .arg(format!("/Groups/{}", NYANPASU_USER_GROUP))
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         if !output.status.success() {
             anyhow::bail!("failed to create nyanpasu group");
         }
@@ -65,6 +71,7 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
     }
 }
 
+#[instrument]
 pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
     #[cfg(windows)]
     {
@@ -79,6 +86,7 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
             .output()
             .expect("failed to execute process");
         let output = String::from_utf8_lossy(&output.stdout);
+        tracing::debug!("output: {:?}", output);
         output.contains(NYANPASU_USER_GROUP)
     }
     #[cfg(target_os = "macos")]
@@ -92,10 +100,12 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
             .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         output.status.success()
     }
 }
 
+#[instrument]
 pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
     #[cfg(windows)]
     {
@@ -110,6 +120,7 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
             .arg(username)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         if !output.status.success() {
             anyhow::bail!("failed to add user to nyanpasu group");
         }
@@ -128,6 +139,7 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
             .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
+        tracing::debug!("output: {:?}", output);
         if !output.status.success() {
             anyhow::bail!("failed to add user to nyanpasu group");
         }
