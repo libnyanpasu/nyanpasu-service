@@ -37,6 +37,9 @@ jobs:
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall cross -y
+      - uses: goto-bus-stop/setup-zig@v2
+        name: Setup Zig
+        if: contains(matrix.profile.target, 'musl') == false
       - name: Setup Cargo zigbuild
         if: contains(matrix.profile.target, 'musl') == false
         run: |
