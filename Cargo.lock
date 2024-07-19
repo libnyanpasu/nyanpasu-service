@@ -420,9 +420,9 @@ checksum = "a12916984aab3fa6e39d655a33e09c0071eb36d6ab3aea5c2d78551f1df6d952"
 
 [[package]]
 name = "cc"
-version = "1.1.5"
+version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "324c74f2155653c90b04f25b2a47a8a631360cb908f92a772695f430c7e31052"
+checksum = "2aba8f4e9906c7ce3c73463f62a7f0c65183ada1a2d47e397cc8810827f9694f"
 
 [[package]]
 name = "cexpr"
@@ -803,7 +803,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#747c142e470b5f8f70b886abe42e997a39efe37a"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#47ceb83a89b04a9094d0698591e1c475f4ce8165"
 dependencies = [
  "dirs-next",
  "thiserror",
@@ -1749,7 +1749,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#747c142e470b5f8f70b886abe42e997a39efe37a"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#47ceb83a89b04a9094d0698591e1c475f4ce8165"
 dependencies = [
  "constcat",
  "derive_builder",
@@ -2427,9 +2427,9 @@ dependencies = [
 
 [[package]]
 name = "thread-id"
-version = "4.2.1"
+version = "4.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f0ec81c46e9eb50deaa257be2f148adf052d1fb7701cfd55ccfab2525280b70b"
+checksum = "cfe8f25bbdd100db7e1d34acf7fd2dc59c4bf8f7483f505eaa7d4f12f76cc0ea"
 dependencies = [
  "libc",
  "winapi",
