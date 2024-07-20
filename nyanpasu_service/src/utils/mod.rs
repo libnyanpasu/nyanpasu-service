@@ -1,5 +1,6 @@
 use anyhow::Context;
 use service_manager::ServiceManager;
+use tracing_panic::panic_hook;
 
 pub mod dirs;
 pub mod os;
@@ -56,15 +57,5 @@ pub fn deadlock_detection() {
 
 /// Register a panic hook to log the panic message and location, then exit the process.
 pub fn register_panic_hook() {
-    std::panic::set_hook(Box::new(|panic_info| {
-        let location = panic_info.location().unwrap();
-        let message = panic_info.payload().downcast_ref::<&str>().unwrap();
-        tracing::error!(
-            "panic occurred at {}:{}: {}",
-            location.file(),
-            location.line(),
-            message
-        );
-        std::process::exit(1);
-    }));
+    std::panic::set_hook(Box::new(panic_hook));
 }
