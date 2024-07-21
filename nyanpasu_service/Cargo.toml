@@ -12,17 +12,23 @@ build = "build.rs"
 [features]
 debug = ["deadlock_detection", "tracing"]
 tracing = ["tokio/tracing", "dep:console-subscriber"]
-deadlock_detection = ["parking_lot/deadlock_detection"]
+deadlock_detection = [
+    "parking_lot/deadlock_detection",
+    "nyanpasu-utils/deadlock_detection",
+]
+hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
 
 [dependencies]
 nyanpasu-utils = { workspace = true, default-features = false, features = [
     "dirs",
+    "os",
 ] }
 nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = [
     "server",
     "client",
 ] }
 axum = { workspace = true, features = ["macros"] }
+tower-http = { version = "0.5", features = ["trace"] }
 tokio = { workspace = true, features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
@@ -43,7 +49,6 @@ service-manager = { git = "https://github.com/greenhat616/service-manager-rs.git
 parking_lot = "0.12"
 constcat = "0.5.0"
 ctrlc = { version = "3", features = ["termination"] }
-kill_tree = { version = "0.2.4", features = ["tokio"] }
 semver = "1"
 bounded-vec-deque = "0.1.1"
 chrono = { workspace = true }
@@ -53,7 +58,7 @@ ansi-str = "0.8"
 console-subscriber = { version = "0.3", optional = true, features = [
     "parking_lot",
 ] }
-sysinfo = "0.30"
+oneshot = "0.1"
 
 [build-dependencies]
 chrono = { workspace = true }

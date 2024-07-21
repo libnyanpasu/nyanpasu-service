@@ -1,3 +1,4 @@
+use core::error;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
@@ -15,8 +16,10 @@ pub mod shortcuts;
 mod wrapper;
 use wrapper::BodyDataStreamExt;
 
+use crate::api::R;
+
 #[derive(Debug, thiserror::Error)]
-pub enum ClientError {
+pub enum ClientError<'a> {
     #[error("An IO error occurred: {0}")]
     Io(#[from] std::io::Error),
     #[error("A network error occurred: {0}")]
@@ -25,6 +28,8 @@ pub enum ClientError {
     Http(#[from] hyper::http::Error),
     #[error("An error occurred: {0}")]
     ParseFailed(#[from] simd_json::Error),
+    #[error("An server error respond: {0:?}")]
+    ServerResponseFailed(R<'a, Option<()>>),
     #[error("An error occurred: {0}")]
     Other(#[from] anyhow::Error),
 }
@@ -56,6 +61,12 @@ where
     let response = sender.send_request(request).await?;
 
     if response.status().is_client_error() || response.status().is_server_error() {
+        // if server respond 500. It is also might be custom error respond, so that, let we have a try to parse to body
+        if response.status() == 500 {
+            let res = Response { response };
+            let r = res.cast_body::<crate::api::R<Option<()>>>().await?;
+            return Err(ClientError::ServerResponseFailed(r));
+        }
         return Err(ClientError::Other(anyhow::anyhow!(
             "Received an error response: {:#?}",
             response
@@ -69,7 +80,7 @@ impl Response {
         &self.response
     }
     /// use simd_json to cast the body of the response to a specific type
-    pub async fn cast_body<T>(self) -> Result<T, ClientError>
+    pub async fn cast_body<'a, T>(self) -> Result<T, ClientError<'a>>
     where
         T: for<'de> serde::Deserialize<'de>,
     {

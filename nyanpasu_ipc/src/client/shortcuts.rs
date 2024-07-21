@@ -7,7 +7,11 @@ use crate::{api, SERVICE_PLACEHOLDER};
 
 use super::{send_request, ClientError};
 
+use std::result::Result as StdResult;
+
 pub struct Client<'a>(Cow<'a, str>);
+
+type Result<'a, T, E = ClientError<'a>> = StdResult<T, E>;
 
 impl<'a> Client<'a> {
     pub fn new(placeholder: &'a str) -> Self {
@@ -19,7 +23,7 @@ impl<'a> Client<'a> {
         CLIENT.get_or_init(|| Client::new(SERVICE_PLACEHOLDER))
     }
 
-    pub async fn status(&self) -> Result<api::status::StatusResBody<'_>, ClientError> {
+    pub async fn status(&self) -> Result<api::status::StatusResBody<'_>> {
         let request = Request::get(api::status::STATUS_ENDPOINT).body(Body::empty())?;
         let response = send_request(&self.0, request)
             .await?
@@ -30,10 +34,7 @@ impl<'a> Client<'a> {
         Ok(data)
     }
 
-    pub async fn start_core(
-        &self,
-        payload: &api::core::start::CoreStartReq,
-    ) -> Result<(), ClientError> {
+    pub async fn start_core(&self, payload: &api::core::start::CoreStartReq) -> Result<()> {
         let payload = simd_json::serde::to_string(payload)?;
         let request = Request::post(api::core::start::CORE_START_ENDPOINT)
             .header(CONTENT_TYPE, "application/json")
@@ -46,7 +47,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    pub async fn stop_core(&self) -> Result<(), ClientError> {
+    pub async fn stop_core(&self) -> Result<()> {
         let request = Request::post(api::core::stop::CORE_STOP_ENDPOINT).body(Body::empty())?;
         let response = send_request(&self.0, request)
             .await?
@@ -56,7 +57,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    pub async fn restart_core(&self) -> Result<(), ClientError> {
+    pub async fn restart_core(&self) -> Result<()> {
         let request =
             Request::post(api::core::restart::CORE_RESTART_ENDPOINT).body(Body::empty())?;
         let response = send_request(&self.0, request)
@@ -67,7 +68,7 @@ impl<'a> Client<'a> {
         Ok(())
     }
 
-    pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'_>, ClientError> {
+    pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'_>> {
         let request = Request::get(api::log::LOGS_INSPECT_ENDPOINT).body(Body::empty())?;
         let response = send_request(&self.0, request)
             .await?
@@ -78,7 +79,7 @@ impl<'a> Client<'a> {
         Ok(data)
     }
 
-    pub async fn retrieve_logs(&self) -> Result<api::log::LogsResBody<'_>, ClientError> {
+    pub async fn retrieve_logs(&self) -> Result<api::log::LogsResBody<'_>> {
         let request = Request::get(api::log::LOGS_RETRIEVE_ENDPOINT).body(Body::empty())?;
         let response = send_request(&self.0, request)
             .await?

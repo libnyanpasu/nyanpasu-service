@@ -25,6 +25,6 @@ pub fn service_pid_file() -> PathBuf {
 }
 
 /// Service owned core PID file
-pub fn service_core_pid_file(core_name: &str) -> PathBuf {
+pub fn service_core_pid_file() -> PathBuf {
     nyanpasu_utils::dirs::suggest_service_data_dir(consts::APP_NAME).join(CORE_PID_FILE_NAME)
 }

@@ -18,10 +18,12 @@ pub mod status;
 #[instrument]
 pub fn apply_routes(app: Router) -> Router {
     tracing::info!("Applying routes...");
+    let tracing_layer = tower_http::trace::TraceLayer::new_for_http();
     app.route(STATUS_ENDPOINT, get(status::status))
         .route(CORE_START_ENDPOINT, post(core::start::start))
         .route(CORE_STOP_ENDPOINT, post(core::stop::stop))
         .route(CORE_RESTART_ENDPOINT, post(core::restart::restart))
         .route(LOGS_RETRIEVE_ENDPOINT, get(log::retrieve_logs))
         .route(LOGS_INSPECT_ENDPOINT, get(log::inspect_logs))
+        .layer(tracing_layer)
 }

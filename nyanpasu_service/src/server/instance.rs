@@ -1,14 +1,19 @@
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
-use nyanpasu_utils::core::{
-    instance::{CoreInstance, CoreInstanceBuilder},
-    CommandEvent, CoreType,
+use nyanpasu_utils::{
+    core::{
+        instance::{CoreInstance, CoreInstanceBuilder},
+        CommandEvent, CoreType,
+    },
+    runtime::block_on,
 };
 use parking_lot::RwLock;
 use std::{
     borrow::Cow,
+    fs,
     path::PathBuf,
     sync::{Arc, OnceLock},
 };
+use tokio::spawn;
 use tracing::instrument;
 
 use super::consts;
@@ -21,6 +26,7 @@ struct CoreManager {
 type StateChangedAt = i64;
 
 const SIGKILL: i32 = 9;
+const SIGTERM: i32 = 15;
 
 pub struct CoreManagerWrapper(Arc<RwLock<(Option<CoreManager>, StateChangedAt)>>);
 
@@ -78,11 +84,13 @@ impl CoreManagerWrapper {
         let infos = consts::RuntimeInfos::global();
         let app_dir = infos.nyanpasu_data_dir.clone();
         let binary_path = app_dir.join(core_type.get_executable_name());
+        let pid_path = crate::utils::dirs::service_core_pid_file();
         let instance = CoreInstanceBuilder::default()
             .core_type(core_type.clone())
             .app_dir(app_dir)
             .binary_path(binary_path)
             .config_path(config_path.clone())
+            .pid_path(pid_path)
             .build()?;
         let instance = {
             let mut this = self.0.write();
@@ -99,60 +107,70 @@ impl CoreManagerWrapper {
         let inner = self.0.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<()>>(1); // use mpsc channel just to avoid type moved error, though it never fails
         tokio::spawn(async move {
-            match instance.run() {
+            match instance.run().await {
                 Ok((_, mut rx)) => {
                     let mut err_buf: Vec<String> = Vec::with_capacity(6);
-                    while let Some(event) = rx.recv().await {
-                        match event {
-                            CommandEvent::Stdout(line) => {
-                                tracing::info!("{}", line);
-                            }
-                            CommandEvent::Stderr(line) => {
-                                tracing::error!("{}", line);
-                                err_buf.push(line);
-                            }
-                            CommandEvent::Error(e) => {
-                                tracing::error!("{}", e);
-                                let err = anyhow::anyhow!(format!("{}\n{}", e, err_buf.join("\n")));
-                                let _ = tx.send(Err(err)).await;
-                                {
-                                    let mut this = inner.write();
-                                    this.1 = get_current_ts();
+                    loop {
+                        if let Some(event) = rx.recv().await {
+                            match event {
+                                CommandEvent::Stdout(line) => {
+                                    tracing::info!("{}", line);
                                 }
-                                break;
-                            }
-                            CommandEvent::Terminated(status) => {
-                                tracing::info!("core terminated with status: {:?}", status);
-                                {
-                                    let mut this = inner.write();
-                                    this.1 = get_current_ts();
+                                CommandEvent::Stderr(line) => {
+                                    tracing::error!("{}", line);
+                                    err_buf.push(line);
                                 }
-                                if status.code != Some(0) || status.signal != Some(SIGKILL) {
-                                    let err = anyhow::anyhow!(format!(
-                                        "core terminated with status: {:?}\n{}",
-                                        status,
-                                        err_buf.join("\n")
-                                    ));
-                                    tracing::error!("{}\n{}", err, err_buf.join("\n"));
+                                CommandEvent::Error(e) => {
+                                    tracing::error!("{}", e);
+                                    let err =
+                                        anyhow::anyhow!(format!("{}\n{}", e, err_buf.join("\n")));
                                     let _ = tx.send(Err(err)).await;
+                                    {
+                                        let mut this = inner.write();
+                                        this.1 = get_current_ts();
+                                    }
+                                    break;
                                 }
-                            }
-                            CommandEvent::DelayCheckpointPass => {
-                                {
-                                    let mut this = inner.write();
-                                    this.1 = get_current_ts();
+                                CommandEvent::Terminated(status) => {
+                                    tracing::info!("core terminated with status: {:?}", status);
+                                    {
+                                        let mut this = inner.write();
+                                        this.1 = get_current_ts();
+                                    }
+                                    if status.code != Some(0)
+                                        || !matches!(status.signal, Some(SIGKILL) | Some(SIGTERM))
+                                    {
+                                        let err = anyhow::anyhow!(format!(
+                                            "core terminated with status: {:?}\n{}",
+                                            status,
+                                            err_buf.join("\n")
+                                        ));
+                                        tracing::error!("{}\n{}", err, err_buf.join("\n"));
+                                        let _ = tx.send(Err(err)).await;
+                                    }
+                                    break;
                                 }
-                                tx.send(Ok(())).await.unwrap();
+                                CommandEvent::DelayCheckpointPass => {
+                                    tracing::debug!("delay checkpoint pass");
+                                    {
+                                        let mut this = inner.write();
+                                        this.1 = get_current_ts();
+                                    }
+                                    tx.send(Ok(())).await.unwrap();
+                                }
                             }
                         }
                     }
                 }
                 Err(err) => {
-                    tx.send(Err(err.into())).await.unwrap();
+                    spawn(async move {
+                        tx.send(Err(err.into())).await.unwrap();
+                    });
                 }
             }
         });
         rx.recv().await.unwrap()?;
+        drop(rx);
         Ok(())
     }
 
