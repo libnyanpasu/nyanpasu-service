@@ -1,4 +1,3 @@
-use core::error;
 use http_body_util::BodyExt;
 use hyper::{
     body::{Body, Incoming},
