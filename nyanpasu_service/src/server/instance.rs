@@ -1,8 +1,8 @@
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
 use nyanpasu_utils::core::{
-        instance::{CoreInstance, CoreInstanceBuilder},
-        CommandEvent, CoreType,
-    };
+    instance::{CoreInstance, CoreInstanceBuilder},
+    CommandEvent, CoreType,
+};
 use parking_lot::RwLock;
 use std::{
     borrow::Cow,
