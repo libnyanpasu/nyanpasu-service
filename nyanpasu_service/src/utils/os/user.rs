@@ -92,16 +92,22 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let output = Command::new("dseditgroup")
-            .arg("-o")
-            .arg("checkmember")
-            .arg("-m")
-            .arg(username)
-            .arg(NYANPASU_USER_GROUP)
+        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
+        let output = Command::new("dscl")
+            .arg(".")
+            .arg("-read")
+            .arg(&group)
+            .arg("GroupMembership")
             .output()
             .expect("failed to execute process");
         tracing::debug!("output: {:?}", output);
-        output.status.success()
+        if output.status.success() {
+            let output = String::from_utf8_lossy(&output.stdout);
+            tracing::debug!("output: {:?}", output);
+            output.contains(username)
+        } else {
+            false
+        }
     }
 }
 
@@ -129,17 +135,15 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let output = Command::new("dseditgroup")
-            .arg("-o")
-            .arg("edit")
-            .arg("-a")
+        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
+        let output = Command::new("dscl")
+            .arg(".")
+            .arg("-append")
+            .arg(&group)
+            .arg("GroupMembership")
             .arg(username)
-            .arg("-t")
-            .arg("user")
-            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
-        tracing::debug!("output: {:?}", output);
         if !output.status.success() {
             anyhow::bail!("failed to add user to nyanpasu group");
         }
