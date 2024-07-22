@@ -809,7 +809,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8dd6a696aa2d692fba88ca632b0e1f1e98884e84"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8266761304ea5b535036bc4a4389479e14782577"
 dependencies = [
  "dirs-next",
  "thiserror",
@@ -1768,7 +1768,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8dd6a696aa2d692fba88ca632b0e1f1e98884e84"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8266761304ea5b535036bc4a4389479e14782577"
 dependencies = [
  "constcat",
  "derive_builder",
@@ -1812,7 +1812,7 @@ checksum = "e296cf87e61c9cfc1a61c3c63a0f7f286ed4554e0e22be84e8a38e1d264a2a29"
 [[package]]
 name = "os-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8dd6a696aa2d692fba88ca632b0e1f1e98884e84"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#8266761304ea5b535036bc4a4389479e14782577"
 dependencies = [
  "nix 0.29.0",
  "shared_child",
