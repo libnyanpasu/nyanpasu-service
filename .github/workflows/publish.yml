@@ -83,7 +83,7 @@ jobs:
         with:
           # draft: true
           body: ${{steps.build-changelog.outputs.content}}
-          name: Clash Nyanpasu v${{steps.update-version.outputs.version}}
+          name: Nyanpasu Service v${{steps.update-version.outputs.version}}
           tag_name: "v${{ steps.update-version.outputs.version }}"
           # target_commitish: ${{ steps.tag.outputs.sha }}
   release_unix:
