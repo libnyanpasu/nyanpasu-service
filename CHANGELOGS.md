@@ -1,0 +1,209 @@
+## [1.0.0] - 2024-07-24
+
+### ✨ Features
+
+- Better version print by @greenhat616 
+
+- Add a logs cmd to get server logs by @greenhat616 
+
+- Add core rpc calls by @greenhat616 
+
+- Add slef update command by @greenhat616 
+
+- Cleanup socket file and cleanup zombie instance before startup by @greenhat616 
+
+- Add deadlock detection and status skip-service-check flag by @greenhat616 
+
+- Add status client rpc check by @greenhat616 
+
+- Add acl for server by @greenhat616 
+
+- Core restart & stop rpc api by @greenhat616 
+
+- Core start rpc api by @greenhat616 
+
+- Service server startup and status inspect rpc by @greenhat616 
+
+- Status command by @greenhat616 
+
+- Restart command by @greenhat616 
+
+- Stop command by @greenhat616 
+
+- Stop command by @greenhat616 
+
+- Start command by @greenhat616 
+
+- Unstall command by @greenhat616 
+
+- Install command by @greenhat616 
+
+- Add core manager util by @greenhat616 
+
+- Draft http client ipc by @greenhat616 
+
+- Draft server ipc by @greenhat616 
+
+- Add config file by @zzzgydi 
+
+- Update by @zzzgydi 
+
+- Add install and uninstall bin by @zzzgydi 
+
+
+### 🐛 Bug Fixes
+
+- Publish ci by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Macos user ops by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Issues by @greenhat616 
+
+- Ci by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Ci by @greenhat616 
+
+- Ci by @greenhat616 
+
+- Refresh process table before kill process by @greenhat616 
+
+- Check pid whether is exist before killing zombie server by @greenhat616 
+
+- Publish version ctx by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Rpc inspect logs by @greenhat616 
+
+- Process service stop signal by @greenhat616 
+
+- Missing PathBuf mod import by @keiko233 
+
+- Lint by @greenhat616 
+
+- Socket file permission is not changed by @greenhat616 
+
+- Mark socket not execuable by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Mark unix socket group rw able by @greenhat616 
+
+- State match by @greenhat616 
+
+- Lint by @greenhat616 
+
+- The status query for launchd by @greenhat616 
+
+- Setup windows service manager by @greenhat616 
+
+- Setup windows service manager by @greenhat616 
+
+- Correct macOS group creation command in create_nyanpasu_group function by @keiko233 
+
+- Logging guard is dropped too early by @greenhat616 
+
+- Service manager encoding issue by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Missing use by @greenhat616 
+
+- Issue by @greenhat616 
+
+- Correct server args by @greenhat616 
+
+- Error handling in `check_and_create_nyanpasu_group` function by @keiko233 
+
+- Correct return type for is_nyanpasu_group_exists function by @keiko233 
+
+- Upstream status check by @greenhat616 
+
+- Update dependencies by @greenhat616 
+
+- Rename meta to mihomo and support clash-rs, mihomo-alpha by @greenhat616 
+
+
+### 📚 Documentation
+
+- Update readme by @greenhat616 
+
+
+### 🧹 Miscellaneous Tasks
+
+- Bump crates by @greenhat616 
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Use tracing-panic to better capture panic info by @greenhat616 
+
+- Add debug info for os operations by @greenhat616 
+
+- Cleanup deps by @greenhat616 
+
+- Enable tokio-console for debug by @greenhat616 
+
+- Version info use table output by @greenhat616 
+
+- Add editorconfig by @greenhat616 
+
+- Fmt by @greenhat616 
+
+- Add debug print by @greenhat616 
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Add stop advice by @greenhat616 
+
+- Update actions/checkout action to v4 (#24) by @renovate[bot]  in [#24](https://github.com/LibNyanpasu/nyanpasu-service/pull/24)
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Apply linting fixes with clippy by @github-actions[bot] 
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Apply linting fixes with clippy by @github-actions[bot] 
+
+- Commit workspace by @greenhat616 
+
+- Draft api ctx definition by @greenhat616 
+
+- Rename --debug to --verbose by @greenhat616 
+
+- Commit workspace by @greenhat616 
+
+- Commit workspace by @greenhat616 
+
+- Update actions/checkout action to v4 (#3) by @renovate[bot]  in [#3](https://github.com/LibNyanpasu/nyanpasu-service/pull/3)
+
+- Add renovate.json (#2) by @renovate[bot]  in [#2](https://github.com/LibNyanpasu/nyanpasu-service/pull/2)
+
+- Code format by @zzzgydi 
+
+- Ci by @zzzgydi 
+
+- Init by @zzzgydi 
+
+-----------------
+
+
+
+## New Contributors
+* @github-actions[bot] made their first contribution
+* @keiko233 made their first contribution
+* @renovate[bot] made their first contribution in [#24](https://github.com/LibNyanpasu/nyanpasu-service/pull/24)
+* @zzzgydi made their first contribution
+
+
+
