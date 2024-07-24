@@ -207,3 +207,26 @@
 
 
 
+## [1.0.1] - 2024-07-24
+
+### 🐛 Bug Fixes
+
+- Replace dscl to dseditgroup by @keiko233 
+
+- Update rust crate clap to v4.5.10 (#29) by @renovate[bot]  in [#29](https://github.com/LibNyanpasu/nyanpasu-service/pull/29)
+
+
+### 🧹 Miscellaneous Tasks
+
+- Up by @greenhat616 
+
+- Update rust crate tokio to v1.39.1 (#30) by @renovate[bot]  in [#30](https://github.com/LibNyanpasu/nyanpasu-service/pull/30)
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/LibNyanpasu/nyanpasu-service/compare/v1.0.0...v1.0.1
+
+
+
