@@ -183,5 +183,5 @@ jobs:
         with:
           tag_name: "v${{ needs.publish.outputs.version }}"
           files: |
-            nyanpasu-service-${{ matrix.profile.target }}.tar.gz
-            nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
+            nyanpasu-service-${{ matrix.profile.target }}.zip
+            nyanpasu-service-${{ matrix.profile.target }}.zip.sha256
