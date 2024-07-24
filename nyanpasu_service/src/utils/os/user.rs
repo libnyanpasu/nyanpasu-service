@@ -23,11 +23,10 @@ pub fn is_nyanpasu_group_exists() -> bool {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
-        let output = Command::new("dscl")
-            .arg(".")
-            .arg("-read")
-            .arg(&group)
+        let output = Command::new("dseditgroup")
+            .arg("-o")
+            .arg("read")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         tracing::debug!("output: {:?}", output);
@@ -57,10 +56,10 @@ pub fn create_nyanpasu_group() -> Result<(), anyhow::Error> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let output = Command::new("dscl")
-            .arg(".")
-            .arg("-create")
-            .arg(format!("/Groups/{}", NYANPASU_USER_GROUP))
+        let output = Command::new("dseditgroup")
+            .arg("-o")
+            .arg("create")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         tracing::debug!("output: {:?}", output);
@@ -92,12 +91,10 @@ pub fn is_user_in_nyanpasu_group(username: &str) -> bool {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
-        let output = Command::new("dscl")
-            .arg(".")
-            .arg("-read")
-            .arg(&group)
-            .arg("GroupMembership")
+        let output = Command::new("dseditgroup")
+            .arg("-o")
+            .arg("read")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         tracing::debug!("output: {:?}", output);
@@ -135,13 +132,14 @@ pub fn add_user_to_nyanpasu_group(username: &str) -> Result<(), anyhow::Error> {
     #[cfg(target_os = "macos")]
     {
         use std::process::Command;
-        let group = format!("/Groups/{}", NYANPASU_USER_GROUP);
-        let output = Command::new("dscl")
-            .arg(".")
-            .arg("-append")
-            .arg(&group)
-            .arg("GroupMembership")
+        let output = Command::new("dseditgroup")
+            .arg("-o")
+            .arg("edit")
+            .arg("-a")
             .arg(username)
+            .arg("-t")
+            .arg("user")
+            .arg(NYANPASU_USER_GROUP)
             .output()
             .expect("failed to execute process");
         if !output.status.success() {
