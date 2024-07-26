@@ -79,7 +79,7 @@ impl CoreManagerWrapper {
         tokio::fs::metadata(&config_path).await?; // check if the file exists
         let infos = consts::RuntimeInfos::global();
         let app_dir = infos.nyanpasu_data_dir.clone();
-        let binary_path = app_dir.join(core_type.get_executable_name());
+        let binary_path = find_binary_path(core_type)?;
         let pid_path = crate::utils::dirs::service_core_pid_file();
         let instance = CoreInstanceBuilder::default()
             .core_type(core_type.clone())
@@ -200,4 +200,24 @@ impl CoreManagerWrapper {
         };
         self.start(&core_type, &config_path).await
     }
+}
+
+// TODO: support system path search via a config or flag
+/// Search the binary path of the core: Data Dir -> Sidecar Dir
+pub fn find_binary_path(core_type: &CoreType) -> std::io::Result<PathBuf> {
+    let infos = consts::RuntimeInfos::global();
+    let data_dir = &infos.nyanpasu_data_dir;
+    let binary_path = data_dir.join(core_type.get_executable_name());
+    if binary_path.exists() {
+        return Ok(binary_path);
+    }
+    let app_dir = &infos.nyanpasu_app_dir;
+    let binary_path = app_dir.join(core_type.get_executable_name());
+    if binary_path.exists() {
+        return Ok(binary_path);
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("{} not found", core_type.get_executable_name()),
+    ))
 }

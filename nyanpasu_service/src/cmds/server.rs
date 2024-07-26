@@ -15,6 +15,9 @@ pub struct ServerContext {
     /// nyanpasu data dir
     #[clap(long)]
     pub nyanpasu_data_dir: PathBuf,
+    /// The nyanpasu install directory, allowing to search the sidecar binary
+    #[clap(long)]
+    pub nyanpasu_app_dir: PathBuf,
     /// run as service
     #[clap(long, default_value = "false")]
     pub service: bool,
@@ -29,6 +32,7 @@ pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
     // check dirs accessibility
     let _ = std::fs::metadata(&ctx.nyanpasu_config_dir)?;
     let _ = std::fs::metadata(&ctx.nyanpasu_data_dir)?;
+    let _ = std::fs::metadata(&ctx.nyanpasu_app_dir)?;
 
     let service_data_dir = crate::utils::dirs::service_data_dir();
     let service_config_dir = crate::utils::dirs::service_config_dir();
@@ -57,6 +61,7 @@ pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
         service_config_dir,
         nyanpasu_config_dir: ctx.nyanpasu_config_dir,
         nyanpasu_data_dir: ctx.nyanpasu_data_dir,
+        nyanpasu_app_dir: ctx.nyanpasu_app_dir,
     });
     crate::server::run().await?;
     Ok(())

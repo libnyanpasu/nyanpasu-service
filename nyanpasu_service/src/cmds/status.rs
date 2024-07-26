@@ -1,10 +1,7 @@
-use nyanpasu_ipc::{api::status::StatusResBody, client::shortcuts::Client};
-use serde::Serialize;
-use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
-
-use crate::consts::{APP_NAME, APP_VERSION, SERVICE_LABEL};
-
 use super::CommandError;
+use crate::consts::{APP_NAME, APP_VERSION, SERVICE_LABEL};
+use nyanpasu_ipc::{client::shortcuts::Client, types::StatusInfo};
+use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
 
 #[derive(Debug, clap::Args)]
 pub struct StatusCommand {
@@ -15,42 +12,6 @@ pub struct StatusCommand {
     /// Skip the service check
     #[clap(long, default_value = "false")]
     skip_service_check: bool,
-}
-
-#[derive(Debug)]
-struct ServiceStatusWrapper(ServiceStatus);
-
-impl Serialize for ServiceStatusWrapper {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        match self.0 {
-            ServiceStatus::NotInstalled => serializer.serialize_str("not_installed"),
-            ServiceStatus::Stopped(_) => serializer.serialize_str("stopped"),
-            ServiceStatus::Running => serializer.serialize_str("running"),
-        }
-    }
-}
-
-impl PartialEq<ServiceStatus> for ServiceStatusWrapper {
-    fn eq(&self, other: &ServiceStatus) -> bool {
-        &self.0 == other
-    }
-}
-
-impl From<ServiceStatus> for ServiceStatusWrapper {
-    fn from(status: ServiceStatus) -> Self {
-        Self(status)
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct StatusInfo<'n> {
-    name: &'n str,    // The client program name
-    version: &'n str, // The client program version
-    status: ServiceStatusWrapper,
-    server: Option<StatusResBody<'n>>,
 }
 
 // TODO: impl the health check if service is running
@@ -69,17 +30,19 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let mut info = StatusInfo {
         name: APP_NAME,
         version: APP_VERSION,
-        status: status.into(),
+        status: match status {
+            ServiceStatus::NotInstalled => nyanpasu_ipc::types::ServiceStatus::NotInstalled,
+            ServiceStatus::Stopped(_) => nyanpasu_ipc::types::ServiceStatus::Stopped,
+            ServiceStatus::Running => nyanpasu_ipc::types::ServiceStatus::Running,
+        },
         server: None,
     };
-    if info.status == ServiceStatus::Running {
+    if info.status == nyanpasu_ipc::types::ServiceStatus::Running {
         let server = match client.status().await {
             Ok(server) => Some(server),
             Err(e) => {
                 tracing::debug!("failed to get server status: {}", e);
-                info.status =
-                    ServiceStatus::Stopped(Some(format!("failed to get server status: {}", e)))
-                        .into();
+                info.status = nyanpasu_ipc::types::ServiceStatus::Stopped;
                 None
             }
         };

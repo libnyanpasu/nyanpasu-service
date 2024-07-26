@@ -17,6 +17,9 @@ pub struct InstallCommand {
     /// The nyanpasu config directory
     #[clap(long)]
     nyanpasu_config_dir: PathBuf,
+    /// The nyanpasu install directory, allowing to search the sidecar binary
+    #[clap(long)]
+    nyanpasu_app_dir: PathBuf,
 }
 
 pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
@@ -77,6 +80,8 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
             ctx.nyanpasu_data_dir.into(),
             OsString::from("--nyanpasu-config-dir"),
             ctx.nyanpasu_config_dir.into(),
+            OsString::from("--nyanpasu-app-dir"),
+            ctx.nyanpasu_app_dir.into(),
             OsString::from("--service"),
         ],
         contents: None,

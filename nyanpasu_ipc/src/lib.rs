@@ -6,6 +6,7 @@ pub mod api;
 pub mod client;
 #[cfg(feature = "server")]
 pub mod server;
+pub mod types;
 pub mod utils;
 
 pub const SERVICE_PLACEHOLDER: &str = "nyanpasu_ipc";
