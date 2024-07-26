@@ -253,3 +253,17 @@
 
 
 
+## [1.0.3] - 2024-07-26
+
+### ✨ Features
+
+- Support sidecar path search and share the status type with ui by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/LibNyanpasu/nyanpasu-service/compare/v1.0.2...v1.0.3
+
+
+
