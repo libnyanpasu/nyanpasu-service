@@ -138,7 +138,10 @@ jobs:
         run: |
           mkdir -p target/release
           cp target/${{ matrix.profile.target }}/release/nyanpasu-service target/release/nyanpasu-service
-          tar -czf nyanpasu-service-${{ matrix.profile.target }}.tar.gz target/release/nyanpasu-service
+          cd target/release
+          tar -czf nyanpasu-service-${{ matrix.profile.target }}.tar.gz ./nyanpasu-service
+          cd ../..
+          mv target/release/nyanpasu-service-${{ matrix.profile.target }}.tar.gz .
       - name: Calc the archive signature
         run: sha256sum nyanpasu-service-${{ matrix.profile.target }}.tar.gz > nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
       - name: Upload Release Asset
