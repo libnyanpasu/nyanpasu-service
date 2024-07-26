@@ -230,3 +230,26 @@
 
 
 
+## [1.0.2] - 2024-07-26
+
+### 🐛 Bug Fixes
+
+- Update rust crate interprocess to 2.2.1 by @renovate[bot]  in [#34](https://github.com/LibNyanpasu/nyanpasu-service/pull/34)
+
+
+### 🧹 Miscellaneous Tasks
+
+- Update rust crate parking_lot to 0.12.3 by @renovate[bot]  in [#33](https://github.com/LibNyanpasu/nyanpasu-service/pull/33)
+
+- Update rust crate clap to 4.5.10 by @renovate[bot]  in [#32](https://github.com/LibNyanpasu/nyanpasu-service/pull/32)
+
+- Update rust crate axum to 0.7.5 by @renovate[bot]  in [#31](https://github.com/LibNyanpasu/nyanpasu-service/pull/31)
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/LibNyanpasu/nyanpasu-service/compare/v1.0.1...v1.0.2
+
+
+
