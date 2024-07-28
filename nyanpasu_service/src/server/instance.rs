@@ -1,6 +1,6 @@
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
 use nyanpasu_utils::core::{
-    instance::{CoreInstance, CoreInstanceBuilder},
+    instance::{self, CoreInstance, CoreInstanceBuilder},
     CommandEvent, CoreType,
 };
 use parking_lot::Mutex;
@@ -55,23 +55,31 @@ impl CoreManagerWrapper {
     }
 
     pub fn status(&self) -> nyanpasu_ipc::api::status::CoreInfos {
-        let instance = self.instance.lock();
         let state_changed_at = self
             .state_changed_at
             .load(std::sync::atomic::Ordering::Relaxed);
-        match *instance {
-            None => nyanpasu_ipc::api::status::CoreInfos {
-                r#type: None,
-                state: nyanpasu_ipc::api::status::CoreState::Stopped(None),
-                state_changed_at,
-                config_path: None,
-            },
-            Some(ref manager) => nyanpasu_ipc::api::status::CoreInfos {
-                r#type: Some(manager.instance.core_type.clone()),
-                state: self.state().into_owned(),
-                state_changed_at,
-                config_path: Some(manager.config_path.clone()),
-            },
+        let (core_type, config_path) = {
+            let instance = self.instance.lock();
+            if instance.is_none() {
+                return nyanpasu_ipc::api::status::CoreInfos {
+                    r#type: None,
+                    state: nyanpasu_ipc::api::status::CoreState::Stopped(None),
+                    state_changed_at,
+                    config_path: None,
+                };
+            }
+            let manager = instance.as_ref().unwrap();
+            (
+                manager.instance.core_type.clone(),
+                manager.config_path.clone(),
+            )
+        };
+
+        nyanpasu_ipc::api::status::CoreInfos {
+            r#type: Some(core_type),
+            state: self.state().into_owned(),
+            state_changed_at,
+            config_path: Some(config_path),
         }
     }
 
