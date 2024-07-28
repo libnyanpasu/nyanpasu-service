@@ -291,3 +291,32 @@
 
 
 
+## [1.0.5] - 2024-07-28
+
+### 🐛 Bug Fixes
+
+- Fetch status deadlock by @greenhat616 
+
+- Up by @greenhat616 
+
+
+### 🧹 Miscellaneous Tasks
+
+- Add a error log for deadlock debug use by @greenhat616 
+
+- Add a timeout seq for status by @greenhat616 
+
+- Update rust crate clap to 4.5.11 by @renovate[bot]  in [#35](https://github.com/LibNyanpasu/nyanpasu-service/pull/35)
+
+- Apply linting fixes with rustfmt by @github-actions[bot] 
+
+- Mark start req as Cow by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/LibNyanpasu/nyanpasu-service/compare/v1.0.4...v1.0.5
+
+
+
