@@ -36,6 +36,8 @@ pub async fn update() -> Result<(), CommandError> {
                 spawn_blocking(super::stop::stop).await??; // stop the service before updating
                 tracing::info!("Copying the binary...");
                 tokio::fs::copy(std::env::current_exe()?, &service_binary).await?;
+                tracing::info!("Service binary updated, starting the service...");
+                spawn_blocking(super::start::start).await??; // start the service after updating
             } else {
                 tracing::info!("Client version is the same as server version, no need to update.");
             }
