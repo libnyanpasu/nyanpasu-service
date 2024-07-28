@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
-client = []
+client = ["dep:axum"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
