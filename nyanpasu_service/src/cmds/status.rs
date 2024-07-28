@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use super::CommandError;
 use crate::consts::{APP_NAME, APP_VERSION, SERVICE_LABEL};
 use nyanpasu_ipc::{client::shortcuts::Client, types::StatusInfo};
@@ -28,8 +30,8 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     };
     let client = Client::service_default();
     let mut info = StatusInfo {
-        name: APP_NAME,
-        version: APP_VERSION,
+        name: Cow::Borrowed(APP_NAME),
+        version: Cow::Borrowed(APP_VERSION),
         status: match status {
             ServiceStatus::NotInstalled => nyanpasu_ipc::types::ServiceStatus::NotInstalled,
             ServiceStatus::Stopped(_) => nyanpasu_ipc::types::ServiceStatus::Stopped,
