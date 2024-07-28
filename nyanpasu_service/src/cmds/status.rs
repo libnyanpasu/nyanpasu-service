@@ -1,9 +1,10 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, time::Duration};
 
 use super::CommandError;
 use crate::consts::{APP_NAME, APP_VERSION, SERVICE_LABEL};
 use nyanpasu_ipc::{client::shortcuts::Client, types::StatusInfo};
 use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
+use tokio::time::timeout;
 
 #[derive(Debug, clap::Args)]
 pub struct StatusCommand {
@@ -28,6 +29,7 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
             label: label.clone(),
         })?
     };
+    tracing::debug!("Note that the service original state is: {:?}", status);
     let client = Client::service_default();
     let mut info = StatusInfo {
         name: Cow::Borrowed(APP_NAME),
@@ -40,10 +42,15 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
         server: None,
     };
     if info.status == nyanpasu_ipc::types::ServiceStatus::Running {
-        let server = match client.status().await {
-            Ok(server) => Some(server),
-            Err(e) => {
+        let server = match timeout(Duration::from_secs(3), client.status()).await {
+            Ok(Ok(server)) => Some(server),
+            Ok(Err(e)) => {
                 tracing::debug!("failed to get server status: {}", e);
+                info.status = nyanpasu_ipc::types::ServiceStatus::Stopped;
+                None
+            }
+            Err(e) => {
+                tracing::debug!("get server status timeout: {}", e);
                 info.status = nyanpasu_ipc::types::ServiceStatus::Stopped;
                 None
             }
