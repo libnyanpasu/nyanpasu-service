@@ -43,12 +43,16 @@ pub fn deadlock_detection() {
                 continue;
             }
 
-            println!("{} deadlocks detected", deadlocks.len());
+            eprintln!("{} deadlocks detected", deadlocks.len());
+            tracing::error!("{} deadlocks detected", deadlocks.len());
             for (i, threads) in deadlocks.iter().enumerate() {
-                println!("Deadlock #{}", i);
+                eprintln!("Deadlock #{}", i);
+                tracing::error!("Deadlock #{}", i);
                 for t in threads {
-                    println!("Thread Id {:#?}", t.thread_id());
-                    println!("{:#?}", t.backtrace());
+                    eprintln!("Thread Id {:#?}", t.thread_id());
+                    eprintln!("{:#?}", t.backtrace());
+                    tracing::error!("Thread Id {:#?}", t.thread_id());
+                    tracing::error!("{:#?}", t.backtrace());
                 }
             }
         });
