@@ -42,7 +42,7 @@ pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> 
             config_file,
         } => {
             let client = Client::service_default();
-            
+
             let payload = nyanpasu_ipc::api::core::start::CoreStartReq {
                 core_type: Cow::Borrowed(&core_type),
                 config_file: Cow::Borrowed(&config_file),
