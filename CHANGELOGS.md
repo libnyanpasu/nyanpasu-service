@@ -267,3 +267,27 @@
 
 
 
+## [1.0.4] - 2024-07-28
+
+### 🐛 Bug Fixes
+
+- Should start service after updated by @greenhat616 
+
+
+### 🔨 Refactor
+
+- Use atomic cell to hold flag and state, and add a recover core logic by @greenhat616 
+
+
+### 🧹 Miscellaneous Tasks
+
+- Sync latest nyanpasu-utils by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/LibNyanpasu/nyanpasu-service/compare/v1.0.3...v1.0.4
+
+
+
