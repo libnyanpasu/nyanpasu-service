@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 /// This module is a shortcut for client rpc calls.
 /// It is useful for testing and debugging service rpc calls.
 use clap::Subcommand;
@@ -40,9 +42,10 @@ pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> 
             config_file,
         } => {
             let client = Client::service_default();
+            
             let payload = nyanpasu_ipc::api::core::start::CoreStartReq {
-                core_type,
-                config_file,
+                core_type: Cow::Borrowed(&core_type),
+                config_file: Cow::Borrowed(&config_file),
             };
             client
                 .start_core(&payload)

@@ -6,7 +6,7 @@ use nyanpasu_ipc::api::{
     RBuilder,
 };
 
-pub async fn start(Json(payload): Json<CoreStartReq>) -> (StatusCode, Json<CoreStartRes<'static>>) {
+pub async fn start(Json(payload): Json<CoreStartReq<'_>>) -> (StatusCode, Json<CoreStartRes<'static>>) {
     let instance = crate::server::CoreManager::global();
     let res = instance
         .start(&payload.core_type, &payload.config_file)

@@ -34,7 +34,7 @@ impl<'a> Client<'a> {
         Ok(data)
     }
 
-    pub async fn start_core(&self, payload: &api::core::start::CoreStartReq) -> Result<()> {
+    pub async fn start_core(&self, payload: &api::core::start::CoreStartReq<'_>) -> Result<()> {
         let payload = simd_json::serde::to_string(payload)?;
         let request = Request::post(api::core::start::CORE_START_ENDPOINT)
             .header(CONTENT_TYPE, "application/json")
