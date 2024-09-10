@@ -1,3 +1,19 @@
+
+## [1.0.6] - 2024-09-10
+
+
+### 🐛 Bug Fixes
+
+- Bump simd-json to fix x86 build by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.0.5...v1.0.6
+
+
+
 ## [1.0.0] - 2024-07-24
 
 ### ✨ Features
