@@ -57,7 +57,7 @@ jobs:
           git-cliff --config  cliff.toml --verbose --strip header --unreleased --tag v${{ steps.update-version.outputs.version }} > /tmp/changelog.md
           if [ $? -eq 0 ]; then
             CONTENT=$(cat /tmp/changelog.md)
-            cat /tmp/changelog.md  >> ./CHANGELOGS.md
+            cat /tmp/changelog.md | cat - ./CHANGELOGS.md > temp && mv temp ./CHANGELOGS.md
             {
               echo 'content<<EOF'
               echo "$CONTENT"
