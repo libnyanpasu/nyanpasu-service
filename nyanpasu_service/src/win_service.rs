@@ -56,7 +56,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            ServiceControl::Stop => {
+            ServiceControl::Stop | ServiceControl::Shutdown => {
                 tracing::info!("Received stop event. shutting down...");
                 shutdown_tx.send(()).unwrap();
                 ServiceControlHandlerResult::NoError
