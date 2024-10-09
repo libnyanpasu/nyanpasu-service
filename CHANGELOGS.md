@@ -1,4 +1,25 @@
 
+## [1.0.7] - 2024-10-09
+
+
+### ✨ Features
+
+- Support clash rs alpha by @greenhat616 
+
+
+### 🐛 Bug Fixes
+
+- Handle service shutdown signal by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.0.6...v1.0.7
+
+
+
+
 ## [1.0.6] - 2024-09-10
 
 
