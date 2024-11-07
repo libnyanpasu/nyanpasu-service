@@ -12,7 +12,7 @@ repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false }
 axum = "0.7.5"
 anyhow = "1.0"
-thiserror = "1"
+thiserror = "2"
 parking_lot = "0.12.3"
 simd-json = "0.14.0-rc.3"
 tokio = { version = "1", features = ["full"] }
