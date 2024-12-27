@@ -10,15 +10,15 @@ repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
 [workspace.dependencies]
 nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false }
-axum = "0.7.5"
-anyhow = "1.0"
-thiserror = "1"
-parking_lot = "0.12.3"
-simd-json = "0.14.0-rc.3"
+axum = "0.7"
+anyhow = "1"
+thiserror = "2"
+parking_lot = "0.12"
+simd-json = "0.14"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7" }
-serde = { version = "1.0", features = ["derive"] }
-clap = { version = "4.5.11", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
 tracing-attributes = "0.1"
 tracing-futures = "0.2"
