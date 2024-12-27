@@ -86,7 +86,47 @@ jobs:
           name: Nyanpasu Service v${{steps.update-version.outputs.version}}
           tag_name: "v${{ steps.update-version.outputs.version }}"
           # target_commitish: ${{ steps.tag.outputs.sha }}
-  release_unix:
+  release_macos:
+    needs: [publish]
+    name: Release v${{ needs.publish.outputs.version }} for macOS
+    strategy:
+      matrix:
+        profile:
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.profile.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: v${{ needs.publish.outputs.version }}
+      - name: Install coreutils for macOS
+        run: brew install coreutils
+      - name: Install Rust toolchain and target toolchain
+        run: rustup toolchain install nightly --profile minimal && rustup target add ${{ matrix.profile.target }} --toolchain nightly
+      - name: Build
+        run: cargo +nightly build --release --target ${{ matrix.profile.target }}
+      - name: Archive
+        run: |
+          mkdir -p target/release
+          cp target/${{ matrix.profile.target }}/release/nyanpasu-service target/release/nyanpasu-service
+          cd target/release
+          tar -czf nyanpasu-service-${{ matrix.profile.target }}.tar.gz ./nyanpasu-service
+          cd ../..
+          mv target/release/nyanpasu-service-${{ matrix.profile.target }}.tar.gz .
+      - name: Calc the archive signature
+        run: sha256sum nyanpasu-service-${{ matrix.profile.target }}.tar.gz > nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
+      - name: Upload Release Asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "v${{ needs.publish.outputs.version }}"
+          files: |
+            nyanpasu-service-${{ matrix.profile.target }}.tar.gz
+            nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
+  release_linux:
     needs: [publish]
     name: Release v${{ needs.publish.outputs.version }} for ${{ matrix.profile.target }}
     strategy:
@@ -112,10 +152,6 @@ jobs:
             target: armv7-unknown-linux-musleabihf
           - os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
     runs-on: ${{ matrix.profile.os }}
     steps:
       - name: Checkout
@@ -125,9 +161,6 @@ jobs:
           ref: v${{ needs.publish.outputs.version }}
       - name: Install Rust toolchain and target toolchain
         run: rustup toolchain install nightly --profile minimal && rustup target add ${{ matrix.profile.target }} --toolchain nightly
-      - name: Install coreutils for macOS
-        if: contains(matrix.profile.os, 'macos')
-        run: brew install coreutils
       - name: Setup Cross
         if: contains(matrix.profile.target, 'musl')
         run: |
