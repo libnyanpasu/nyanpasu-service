@@ -35,7 +35,10 @@ pub fn stop() -> Result<(), CommandError> {
         label: label.clone(),
     })?;
     // macOS possibly returns ServiceStatus::NotInstalled
-    if !matches!(status, ServiceStatus::Stopped(None) | ServiceStatus::NotInstalled) {
+    if !matches!(
+        status,
+        ServiceStatus::Stopped(None) | ServiceStatus::NotInstalled
+    ) {
         return Err(CommandError::Other(anyhow::anyhow!(
             "service stop failed, status: {:?}",
             status
