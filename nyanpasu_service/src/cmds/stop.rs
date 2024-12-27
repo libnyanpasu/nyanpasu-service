@@ -34,7 +34,8 @@ pub fn stop() -> Result<(), CommandError> {
     let status = manager.status(ServiceStatusCtx {
         label: label.clone(),
     })?;
-    if status != ServiceStatus::Stopped(None) {
+    // macOS possibly returns ServiceStatus::NotInstalled
+    if !matches!(status, ServiceStatus::Stopped(None) | ServiceStatus::NotInstalled) {
         return Err(CommandError::Other(anyhow::anyhow!(
             "service stop failed, status: {:?}",
             status
