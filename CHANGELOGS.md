@@ -1,4 +1,24 @@
 
+## [1.1.0] - 2024-12-27
+
+
+### 🐛 Bug Fixes
+
+- **ci:** Try to fix release ci by @greenhat616 
+
+- **lifecycle:** Make service exit gracefully by @greenhat616 
+
+- **macos:** Fix a status check condition by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.0.7...v1.1.0
+
+
+
+
 ## [1.0.7] - 2024-10-09
 
 
