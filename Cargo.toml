@@ -10,7 +10,7 @@ repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
 [workspace.dependencies]
 nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false }
-axum = "0.7"
+axum = "0.8"
 anyhow = "1"
 thiserror = "2"
 parking_lot = "0.12"
