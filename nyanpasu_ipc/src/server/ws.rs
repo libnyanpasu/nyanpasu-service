@@ -1,13 +1,12 @@
 use axum::{
-    extract::{
+    body::Bytes, extract::{
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         ConnectInfo,
-    },
-    response::IntoResponse,
+    }, response::IntoResponse
 };
 use axum_extra::{headers, TypedHeader};
 use futures::{sink::SinkExt, stream::StreamExt};
-use std::{borrow::Cow, net::SocketAddr, ops::ControlFlow};
+use std::{net::SocketAddr, ops::ControlFlow};
 
 /// The handler for the HTTP request (this gets called when the HTTP GET lands at the start
 /// of websocket negotiation). After this completes, the actual switching from HTTP to
@@ -33,7 +32,7 @@ pub(super) async fn ws_handler(
 /// Actual websocket statemachine (one will be spawned per connection)
 async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
     // send a ping (unsupported by some browsers) just to kick things off and get a response
-    if socket.send(Message::Ping(vec![1, 2, 3])).await.is_ok() {
+    if socket.send(Message::Ping(Bytes::from_static(&[1, 2, 3]))).await.is_ok() {
         tracing::debug!("Pinged {who}...");
     } else {
         tracing::debug!("Could not send ping {who}!");
@@ -63,7 +62,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
     // connecting to server and receiving their greetings.
     for i in 1..5 {
         if socket
-            .send(Message::Text(format!("Hi {i} times!")))
+            .send(Message::Text(format!("Hi {i} times!").into()))
             .await
             .is_err()
         {
@@ -83,7 +82,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
         for i in 0..n_msg {
             // In case of any websocket error, we exit.
             if sender
-                .send(Message::Text(format!("Server message {i} ...")))
+                .send(Message::Text(format!("Server message {i} ...").into()))
                 .await
                 .is_err()
             {
@@ -97,7 +96,7 @@ async fn handle_socket(mut socket: WebSocket, who: SocketAddr) {
         if let Err(e) = sender
             .send(Message::Close(Some(CloseFrame {
                 code: axum::extract::ws::close_code::NORMAL,
-                reason: Cow::from("Goodbye"),
+                reason: "Goodbye".into(),
             })))
             .await
         {
