@@ -52,7 +52,7 @@ ctrlc = { version = "3", features = ["termination"] }
 semver = "1"
 bounded-vec-deque = "0.1.1"
 chrono = { workspace = true }
-colored = "2.1.0"
+colored = "3.0.0"
 timeago = "0.4"
 ansi-str = "0.8"
 console-subscriber = { version = "0.4", optional = true, features = [
