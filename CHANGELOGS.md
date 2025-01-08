@@ -1,4 +1,24 @@
 
+## [1.1.1] - 2025-01-08
+
+
+### 🐛 Bug Fixes
+
+- Do not replace binary if src and dst are same by @greenhat616 
+
+- Use /usr/bin on linux by @greenhat616 
+
+- Bump axum to 0.8 by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.1.0...v1.1.1
+
+
+
+
 ## [1.1.0] - 2024-12-27
 
 
