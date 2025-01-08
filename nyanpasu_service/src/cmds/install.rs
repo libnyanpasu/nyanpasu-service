@@ -45,8 +45,12 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     if !service_data_dir.exists() {
         std::fs::create_dir_all(&service_data_dir)?;
     }
+    let binary_name = format!("{}{}", APP_NAME, std::env::consts::EXE_SUFFIX);
+    #[cfg(not(target_os = "linux"))]
     let service_binary =
-        service_data_dir.join(format!("{}{}", APP_NAME, std::env::consts::EXE_SUFFIX));
+        service_data_dir.join(binary_name);
+    #[cfg(target_os = "linux")]
+    let service_binary = PathBuf::from("/usr/bin").join(binary_name);
     tracing::info!("copying service binary to: {:?}", service_binary);
     std::fs::copy(current_exe()?, &service_binary)?;
 
