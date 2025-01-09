@@ -1,4 +1,22 @@
 
+## [1.1.3] - 2025-01-09
+
+
+### 🐛 Bug Fixes
+
+- **server:** Use merge instead of nest for axum by @greenhat616 
+
+- Clippy by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.1.2...v1.1.3
+
+
+
+
 ## [1.1.2] - 2025-01-09
 
 
