@@ -1,11 +1,16 @@
 use std::borrow::Cow;
 
-use axum::{http::StatusCode, Json};
+use axum::{http::StatusCode, routing::get, Json, Router};
 
 use nyanpasu_ipc::api::{
-    status::{RuntimeInfos, StatusRes, StatusResBody},
+    status::{RuntimeInfos, StatusRes, StatusResBody, STATUS_ENDPOINT},
     RBuilder,
 };
+
+pub fn setup() -> Router {
+    let router = Router::new();
+    router.route(STATUS_ENDPOINT, get(status))
+}
 
 pub async fn status() -> (StatusCode, Json<StatusRes<'static>>) {
     let instance = crate::server::CoreManager::global();

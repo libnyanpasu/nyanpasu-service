@@ -1,9 +1,9 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, net::IpAddr};
 
 /// This module is a shortcut for client rpc calls.
 /// It is useful for testing and debugging service rpc calls.
 use clap::Subcommand;
-use nyanpasu_ipc::client::shortcuts::Client;
+use nyanpasu_ipc::{api::network::set_dns::NetworkSetDnsReq, client::shortcuts::Client};
 
 fn core_type_parser(s: &str) -> Result<nyanpasu_utils::core::CoreType, String> {
     let mut s = s.to_string();
@@ -32,6 +32,8 @@ pub enum RpcCommand {
     RestartCore,
     /// Get the logs of the service
     InspectLogs,
+    /// Set the dns servers
+    SetDns { dns_servers: Option<Vec<IpAddr>> },
 }
 
 pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> {
@@ -75,6 +77,17 @@ pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> 
             for log in logs.logs {
                 println!("{}", log.trim_matches('\n'));
             }
+        }
+        RpcCommand::SetDns { dns_servers } => {
+            let client = Client::service_default();
+            client
+                .set_dns(&NetworkSetDnsReq {
+                    dns_servers: dns_servers
+                        .as_ref()
+                        .map(|v| v.into_iter().map(|v| Cow::Borrowed(v)).collect()),
+                })
+                .await
+                .map_err(|e| crate::cmds::CommandError::Other(e.into()))?;
         }
     }
     Ok(())

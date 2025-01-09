@@ -89,4 +89,20 @@ impl<'a> Client<'a> {
         let data = response.data.unwrap();
         Ok(data)
     }
+
+    pub async fn set_dns(
+        &self,
+        payload: &api::network::set_dns::NetworkSetDnsReq<'_>,
+    ) -> Result<()> {
+        let payload = simd_json::serde::to_string(payload)?;
+        let request = Request::post(api::network::set_dns::NETWORK_SET_DNS_ENDPOINT)
+            .header(CONTENT_TYPE, "application/json")
+            .body(Body::from(payload))?;
+        let response = send_request(&self.0, request)
+            .await?
+            .cast_body::<api::network::set_dns::NetworkSetDnsRes>()
+            .await?;
+        response.ok()?;
+        Ok(())
+    }
 }
