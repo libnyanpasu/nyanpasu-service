@@ -12,40 +12,41 @@ mod win_service;
 use nyanpasu_utils::runtime::block_on;
 use tracing::error;
 use utils::{os::register_ctrlc_handler, register_panic_hook};
+use consts::ExitCode;
 
-pub async fn handler() -> Result<(), i32> {
+pub async fn handler() -> ExitCode {
     crate::utils::deadlock_detection();
     let result = cmds::process().await;
     match result {
-        Ok(_) => Ok(()),
+        Ok(_) => ExitCode::Normal,
         Err(cmds::CommandError::PermissionDenied) => {
             eprintln!("Permission denied, please run as administrator or root");
-            Err(consts::ExitCode::PermissionDenied as i32)
+            ExitCode::PermissionDenied
         }
         Err(cmds::CommandError::ServiceNotInstalled) => {
             eprintln!("Service not installed");
-            Err(consts::ExitCode::ServiceNotInstalled as i32)
+            ExitCode::ServiceNotInstalled
         }
         Err(cmds::CommandError::ServiceAlreadyInstalled) => {
             eprintln!("Service already installed");
-            Err(consts::ExitCode::ServiceAlreadyInstalled as i32)
+            ExitCode::ServiceAlreadyInstalled
         }
         Err(cmds::CommandError::ServiceAlreadyStopped) => {
             eprintln!("Service already stopped");
-            Err(consts::ExitCode::ServiceAlreadyStopped as i32)
+            ExitCode::ServiceAlreadyStopped
         }
         Err(cmds::CommandError::ServiceAlreadyRunning) => {
             eprintln!("Service already running");
-            Err(consts::ExitCode::ServiceAlreadyRunning as i32)
+            ExitCode::ServiceAlreadyRunning
         }
         Err(e) => {
             error!("Error: {:#?}", e);
-            Err(consts::ExitCode::Other as i32)
+            ExitCode::Other
         }
     }
 }
 
-fn main() -> Result<(), i32> {
+fn main() -> ExitCode {
     let mut rx = register_ctrlc_handler();
     register_panic_hook();
     #[cfg(windows)]
@@ -53,7 +54,7 @@ fn main() -> Result<(), i32> {
         let args = std::env::args_os().any(|arg| &arg == "--service");
         if args {
             crate::win_service::run().unwrap();
-            return Ok(());
+            return ExitCode::Normal;
         }
     }
 
@@ -61,10 +62,10 @@ fn main() -> Result<(), i32> {
         tokio::select! {
             biased;
             Some(_) = rx.recv() => {
-                Ok(())
+                ExitCode::Normal
             }
-            res = handler() => {
-                res
+            exit_code = handler() => {
+                exit_code
             }
         }
     })
