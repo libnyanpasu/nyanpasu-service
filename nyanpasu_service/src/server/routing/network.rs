@@ -1,7 +1,10 @@
 use axum::{http::StatusCode, routing::post, Json, Router};
-use nyanpasu_ipc::api::network::set_dns::{
-    NetworkSetDnsReq, NetworkSetDnsRes, NETWORK_SET_DNS_ENDPOINT,
+use nyanpasu_ipc::api::{
+    network::set_dns::{NetworkSetDnsReq, NetworkSetDnsRes, NETWORK_SET_DNS_ENDPOINT},
+    RBuilder,
 };
+use std::borrow::Cow;
+
 #[cfg(target_os = "macos")]
 use nyanpasu_utils::network::macos::{get_default_network_hardware_port, set_dns};
 
@@ -13,10 +16,6 @@ pub fn setup() -> Router {
 pub async fn network(
     Json(mut req): Json<NetworkSetDnsReq<'static>>,
 ) -> (StatusCode, Json<NetworkSetDnsRes<'static>>) {
-    use std::borrow::Cow;
-
-    use nyanpasu_ipc::api::RBuilder;
-
     let default_interface = match get_default_network_hardware_port() {
         Ok(interface) => interface,
         Err(e) => {
@@ -45,6 +44,6 @@ pub async fn network(
 ) -> (StatusCode, Json<NetworkSetDnsRes<'static>>) {
     (
         StatusCode::NOT_IMPLEMENTED,
-        Json(RBuilder::not_implemented()),
+        Json(RBuilder::other_error(Cow::Borrowed("Not implemented"))),
     )
 }
