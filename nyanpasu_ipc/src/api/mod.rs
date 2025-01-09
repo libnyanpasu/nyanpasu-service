@@ -41,7 +41,7 @@ pub struct R<'a, T: Serialize + DeserializeOwned + Debug> {
     pub ts: i64,
 }
 
-impl<'a, T: Serialize + DeserializeOwned + Debug> R<'a, T> {
+impl<T: Serialize + DeserializeOwned + Debug> R<'_, T> {
     pub fn ok(self) -> Result<Self, IoError> {
         if self.code == ResponseCode::Ok {
             Ok(self)

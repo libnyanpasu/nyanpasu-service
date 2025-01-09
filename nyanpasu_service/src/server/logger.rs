@@ -42,7 +42,7 @@ impl<'n> Logger<'n> {
     }
 }
 
-impl<'a> std::io::Write for Logger<'a> {
+impl std::io::Write for Logger<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut buffer = self.buffer.lock();
         let msg = String::from_utf8_lossy(buf);

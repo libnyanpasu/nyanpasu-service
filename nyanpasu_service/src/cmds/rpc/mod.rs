@@ -84,7 +84,7 @@ pub async fn rpc(commands: RpcCommand) -> Result<(), crate::cmds::CommandError> 
                 .set_dns(&NetworkSetDnsReq {
                     dns_servers: dns_servers
                         .as_ref()
-                        .map(|v| v.into_iter().map(|v| Cow::Borrowed(v)).collect()),
+                        .map(|v| v.iter().map(Cow::Borrowed).collect()),
                 })
                 .await
                 .map_err(|e| crate::cmds::CommandError::Other(e.into()))?;
