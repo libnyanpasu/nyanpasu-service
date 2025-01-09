@@ -1,6 +1,5 @@
 use crate::logging;
 use clap::{Parser, Subcommand};
-use std::backtrace::Backtrace;
 
 mod install;
 mod restart;
@@ -70,14 +69,18 @@ pub enum CommandError {
     ServiceAlreadyRunning,
     #[error("join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
-    #[error("io error: {source}")]
-    IO {
+    #[error("io error: {0}")]
+    IO(
         #[from]
-        source: std::io::Error,
-        backtrace: Backtrace,
-    },
+        #[backtrace]
+        std::io::Error,
+    ),
     #[error("serde error: {0}")]
-    SimdError(#[from] simd_json::Error),
+    SimdError(
+        #[from]
+        #[backtrace]
+        simd_json::Error,
+    ),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

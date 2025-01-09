@@ -10,9 +10,9 @@ pub mod status;
 pub fn apply_routes(app: Router) -> Router {
     tracing::info!("Applying routes...");
     let tracing_layer = tower_http::trace::TraceLayer::new_for_http();
-    app.nest("/", status::setup())
-        .nest("/", core::setup())
-        .nest("/", logs::setup())
-        .nest("/", network::setup())
+    app.merge(status::setup())
+        .merge(core::setup())
+        .merge(logs::setup())
+        .merge(network::setup())
         .layer(tracing_layer)
 }
