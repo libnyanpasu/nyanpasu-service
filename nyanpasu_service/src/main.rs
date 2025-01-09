@@ -9,10 +9,10 @@ mod utils;
 #[cfg(windows)]
 mod win_service;
 
+use consts::ExitCode;
 use nyanpasu_utils::runtime::block_on;
 use tracing::error;
 use utils::{os::register_ctrlc_handler, register_panic_hook};
-use consts::ExitCode;
 
 pub async fn handler() -> ExitCode {
     crate::utils::deadlock_detection();
