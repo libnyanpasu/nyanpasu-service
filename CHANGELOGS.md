@@ -1,4 +1,24 @@
 
+## [1.1.2] - 2025-01-09
+
+
+### 🐛 Bug Fixes
+
+- **macos:** Support set dns by @greenhat616 
+
+- Lint by @greenhat616 
+
+- Correct exit code usage by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.1.1...v1.1.2
+
+
+
+
 ## [1.1.1] - 2025-01-08
 
 
