@@ -802,7 +802,7 @@ version = "0.1.0"
 source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#f3a4ca29800484524643c02b96b76004384d5ec6"
 dependencies = [
  "dirs 5.0.1",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "tracing",
  "windows 0.59.0",
 ]
@@ -1572,7 +1572,7 @@ dependencies = [
  "pin-project-lite",
  "serde",
  "simd-json",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "tokio",
  "tokio-util",
  "tower 0.5.2",
@@ -1605,7 +1605,7 @@ dependencies = [
  "serde",
  "service-manager",
  "simd-json",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "timeago",
  "tokio",
  "tower-http",
@@ -1637,7 +1637,7 @@ dependencies = [
  "serde",
  "shared_child",
  "sysinfo",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "tokio",
  "tracing",
  "tracing-attributes",
@@ -2310,11 +2310,11 @@ dependencies = [
 
 [[package]]
 name = "thiserror"
-version = "2.0.10"
+version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3ac7f54ca534db81081ef1c1e7f6ea8a3ef428d2fc069097c079443d24124d3"
+checksum = "d452f284b73e6d76dd36758a0c8684b1d5be31f92b89d07fd5822175732206fc"
 dependencies = [
- "thiserror-impl 2.0.10",
+ "thiserror-impl 2.0.11",
 ]
 
 [[package]]
@@ -2330,9 +2330,9 @@ dependencies = [
 
 [[package]]
 name = "thiserror-impl"
-version = "2.0.10"
+version = "2.0.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e9465d30713b56a37ede7185763c3492a91be2f5fa68d958c44e41ab9248beb"
+checksum = "26afc1baea8a989337eeb52b6e72a039780ce45c3edfcc9c5b9d112feeb173c2"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2679,7 +2679,7 @@ dependencies = [
  "log",
  "rand",
  "sha1",
- "thiserror 2.0.10",
+ "thiserror 2.0.11",
  "utf-8",
 ]
 
