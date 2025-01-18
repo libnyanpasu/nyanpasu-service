@@ -6,6 +6,7 @@ edition = "2021"
 [features]
 server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
 client = ["dep:axum"]
+specta = ["dep:specta", "nyanpasu-utils/specta"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -37,3 +38,4 @@ futures-util = { workspace = true }
 pin-project-lite = "0.2"
 # tokio-tungstenite = "0.23" # Websocket impl
 derive_builder = "0.20"
+specta = { version = "^2.0.0-rc.22", features = ["derive"], optional = true }

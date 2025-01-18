@@ -5,6 +5,7 @@ use std::{borrow::Cow, path::PathBuf};
 pub const STATUS_ENDPOINT: &str = "/status";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum CoreState {
     Running,
     Stopped(Option<String>),
@@ -17,6 +18,7 @@ impl Default for CoreState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CoreInfos {
     pub r#type: Option<nyanpasu_utils::core::CoreType>,
     pub state: CoreState,
@@ -25,6 +27,7 @@ pub struct CoreInfos {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct RuntimeInfos<'a> {
     pub service_data_dir: Cow<'a, PathBuf>,
     pub service_config_dir: Cow<'a, PathBuf>,
@@ -34,6 +37,7 @@ pub struct RuntimeInfos<'a> {
 
 // TODO: more health check fields
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct StatusResBody<'a> {
     pub version: Cow<'a, str>,
     pub core_infos: CoreInfos,
