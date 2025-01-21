@@ -25,7 +25,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 interprocess = { version = "2", features = ["tokio"] }
 axum = { version = "0.8", features = ["ws"], optional = true }
-axum-extra = { version = "0.10", features = ["typed-header"], optional = true }
+axum-extra = { version = "0.11", features = ["typed-header"], optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
 # tower-http = { version = "0.5", features = ["fs", "trace"], optional = true }
 widestring = { version = "1", optional = true }
