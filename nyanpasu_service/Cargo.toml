@@ -68,7 +68,7 @@ rustc_version = "0.4"
 
 [target.'cfg(windows)'.dependencies]
 check_elevation = "0.2.4"
-windows-service = "0.7"
+windows-service = "0.8"
 
 [target.'cfg(unix)'.dependencies]
 whoami = "1"
