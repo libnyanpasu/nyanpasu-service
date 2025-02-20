@@ -81,11 +81,6 @@ pub async fn server_inner(
 pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
     let token = CancellationToken::new();
     SHUTDOWN_TOKEN.set(token.clone()).unwrap();
-    tokio::select! {
-        _ = server_inner(ctx, token.clone()) => {}
-        _ = token.cancelled() => {
-            tracing::info!("shutdown signal received");
-        }
-    }
+    server_inner(ctx, token).await?;
     Ok(())
 }

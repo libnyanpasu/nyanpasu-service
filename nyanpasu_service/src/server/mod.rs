@@ -16,6 +16,13 @@ use tracing_attributes::instrument;
 pub async fn run(token: CancellationToken) -> Result<(), anyhow::Error> {
     let app = apply_routes(Router::new());
     tracing::info!("Starting server...");
-    create_server(SERVICE_PLACEHOLDER, app).await?;
+    create_server(
+        SERVICE_PLACEHOLDER,
+        app,
+        Some(async move {
+            token.cancelled().await;
+        }),
+    )
+    .await?;
     Ok(())
 }

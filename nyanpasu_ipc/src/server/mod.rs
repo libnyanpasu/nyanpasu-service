@@ -1,22 +1,20 @@
-use axum::{Router, http::Request, routing::get};
-use hyper::body::Incoming;
-use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
-    server,
+use std::result::Result as StdResult;
+
+mod ws;
+
+use axum::{Router, routing::get};
+use interprocess::local_socket::{
+    GenericFilePath, ListenerNonblockingMode, ListenerOptions,
+    tokio::{Listener, Stream as InterProcessStream, prelude::*},
 };
-use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, tokio::prelude::*};
 #[cfg(unix)]
 use interprocess::os::unix::local_socket::ListenerOptionsExt;
 #[cfg(windows)]
 use interprocess::os::windows::{
     local_socket::ListenerOptionsExt, security_descriptor::SecurityDescriptor,
 };
-use nyanpasu_utils::io::unwrap_infallible;
-use std::result::Result as StdResult;
 use thiserror::Error;
-use tower::Service;
-
-mod ws;
+use tracing_attributes::instrument;
 
 type Result<T> = StdResult<T, ServerError>;
 
@@ -27,11 +25,67 @@ pub enum ServerError {
     #[error("Other error: {0}")]
     Other(#[from] anyhow::Error),
 }
-use tracing_attributes::instrument;
 
-#[instrument]
-pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
-    let name = crate::utils::get_name(placeholder)?;
+pub struct InterProcessListener(Listener, String);
+
+/// copy from axum::serve::listener.rs
+async fn handle_accept_error(e: std::io::Error) {
+    if is_connection_error(&e) {
+        return;
+    }
+
+    // [From `hyper::Server` in 0.14](https://github.com/hyperium/hyper/blob/v0.14.27/src/server/tcp.rs#L186)
+    //
+    // > A possible scenario is that the process has hit the max open files
+    // > allowed, and so trying to accept a new connection will fail with
+    // > `EMFILE`. In some cases, it's preferable to just wait for some time, if
+    // > the application will likely close some files (or connections), and try
+    // > to accept the connection again. If this option is `true`, the error
+    // > will be logged at the `error` level, since it is still a big deal,
+    // > and then the listener will sleep for 1 second.
+    //
+    // hyper allowed customizing this but axum does not.
+    tracing::error!("accept error: {e}");
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+}
+
+fn is_connection_error(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::ConnectionRefused
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::ConnectionReset
+    )
+}
+
+impl axum::serve::Listener for InterProcessListener {
+    type Io = InterProcessStream;
+    // FIXME: it should be supported by upstream, or waiting for upstream got supported listener trait
+    type Addr = String;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            match self.0.accept().await {
+                Ok(stream) => return (stream, self.1.clone()),
+                Err(e) => handle_accept_error(e).await,
+            }
+        }
+    }
+
+    #[inline]
+    fn local_addr(&self) -> tokio::io::Result<Self::Addr> {
+        Ok(self.1.clone())
+    }
+}
+
+#[instrument(skip(with_graceful_shutdown))]
+pub async fn create_server(
+    placeholder: &str,
+    app: Router,
+    with_graceful_shutdown: Option<impl Future<Output = ()> + Send + 'static>,
+) -> Result<()> {
+    let name_str = crate::utils::get_name_string(placeholder);
+    let name = name_str.as_str().to_fs_name::<GenericFilePath>()?;
     #[cfg(unix)]
     {
         crate::utils::remove_socket_if_exists(placeholder).await?;
@@ -61,32 +115,18 @@ pub async fn create_server(placeholder: &str, app: Router) -> Result<()> {
     });
 
     let listener = options.create_tokio()?;
+    let listener = InterProcessListener(listener, name_str);
     // change the socket group
     tracing::debug!("changing socket group and permissions...");
     crate::utils::os::change_socket_group(placeholder)?;
     crate::utils::os::change_socket_mode(placeholder)?;
 
     tracing::debug!("mounting service...");
-    let mut make_service = app.route("/ws", get(ws::ws_handler)).into_make_service();
-    // See https://github.com/tokio-rs/axum/blob/main/examples/serve-with-hyper/src/main.rs for
-    // more details about this setup
-    loop {
-        let socket = listener.accept().await?;
-        let tower_service = unwrap_infallible(make_service.call(&socket).await);
-
-        tokio::spawn(async move {
-            let socket = TokioIo::new(socket);
-
-            let hyper_service = hyper::service::service_fn(move |request: Request<Incoming>| {
-                tower_service.clone().call(request)
-            });
-
-            if let Err(err) = server::conn::auto::Builder::new(TokioExecutor::new())
-                .serve_connection_with_upgrades(socket, hyper_service)
-                .await
-            {
-                tracing::error!("failed to serve connection: {err:#}");
-            }
-        });
-    }
+    let app = app.route("/ws", get(ws::ws_handler));
+    let server = axum::serve(listener, app);
+    match with_graceful_shutdown {
+        Some(graceful_shutdown) => server.with_graceful_shutdown(graceful_shutdown).await?,
+        None => server.await?,
+    };
+    Ok(())
 }
