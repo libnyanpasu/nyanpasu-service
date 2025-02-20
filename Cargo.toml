@@ -3,7 +3,7 @@ resolver = "2"
 members = ["nyanpasu_service", "nyanpasu_ipc"]
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 license = "GPL-3.0"
 authors = ["zzzgydi", "LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
