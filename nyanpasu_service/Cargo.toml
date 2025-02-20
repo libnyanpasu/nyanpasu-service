@@ -31,6 +31,7 @@ nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = 
 axum = { workspace = true, features = ["macros"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tokio = { workspace = true, features = ["full"] }
+tokio-util = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 simd-json = { workspace = true }

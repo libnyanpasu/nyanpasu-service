@@ -1,13 +1,7 @@
 #![allow(dead_code)]
+use std::{ffi::OsString, io::Result, time::Duration};
 
 use nyanpasu_utils::runtime::block_on;
-use parking_lot::Mutex;
-use std::{
-    ffi::OsString,
-    io::Result,
-    sync::{OnceLock, mpsc},
-    time::Duration,
-};
 use windows_service::{
     define_windows_service,
     service::{
@@ -35,7 +29,6 @@ pub fn service_main(args: Vec<OsString>) {
     }
 }
 
-static HANDLE_GUARD: OnceLock<Mutex<Option<ServiceHandleGuard>>> = OnceLock::new();
 struct ServiceHandleGuard(ServiceStatusHandle);
 impl Drop for ServiceHandleGuard {
     fn drop(&mut self) {
@@ -52,13 +45,19 @@ impl Drop for ServiceHandleGuard {
 }
 
 pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
-    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    let shutdown_token_clone = shutdown_token.clone();
     let event_handler = move |control_event| -> ServiceControlHandlerResult {
         match control_event {
             ServiceControl::Interrogate => ServiceControlHandlerResult::NoError,
-            ServiceControl::Stop | ServiceControl::Shutdown => {
+            ServiceControl::Stop => {
                 tracing::info!("Received stop event. shutting down...");
-                shutdown_tx.send(()).unwrap();
+                shutdown_token_clone.cancel();
+                ServiceControlHandlerResult::NoError
+            }
+            ServiceControl::Preshutdown => {
+                tracing::info!("Received shutdown event. shutting down...");
+                shutdown_token_clone.cancel();
                 ServiceControlHandlerResult::NoError
             }
             _ => ServiceControlHandlerResult::NotImplemented,
@@ -74,7 +73,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
         // The new state
         current_state: ServiceState::Running,
         // Accept stop events when running
-        controls_accepted: ServiceControlAccept::STOP,
+        controls_accepted: ServiceControlAccept::STOP | ServiceControlAccept::PRESHUTDOWN,
         // Used to report an error when starting or stopping only, otherwise must be zero
         exit_code: ServiceExitCode::Win32(0),
         // Only used for pending states, otherwise must be zero
@@ -87,30 +86,23 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     // Tell the system that the service is running now
     status_handle.set_service_status(next_status)?;
 
-    let _ = HANDLE_GUARD.set(Mutex::new(Some(ServiceHandleGuard(status_handle))));
-    std::thread::spawn(move || {
+    let guard = ServiceHandleGuard(status_handle);
+    let handle = std::thread::spawn(move || {
         block_on(crate::handler());
     });
 
-    // Poll shutdown event.
-    loop {
-        match shutdown_rx.recv_timeout(Duration::from_secs(1)) {
-            // Break the loop either upon stop or channel disconnect
-            Ok(_) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
-            // Continue work if no events were received within the timeout
-            Err(mpsc::RecvTimeoutError::Timeout) => (),
-        }
+    // Wait for shutdown signal
+    block_on(shutdown_token.cancelled());
+
+    // cancel the server handle
+    if let Some(token) = crate::cmds::SERVER_SHUTDOWN_TOKEN.get() {
+        token.cancel();
     }
+    handle.join().unwrap();
 
     tracing::info!("Service stopped.");
 
     // drop the guard to set the service status to stopped
-    {
-        let mut guard = HANDLE_GUARD.get().unwrap().lock();
-        if guard.is_some() {
-            let handle = guard.take().unwrap();
-            drop(handle);
-        }
-    }
+    drop(guard);
     Ok(())
 }

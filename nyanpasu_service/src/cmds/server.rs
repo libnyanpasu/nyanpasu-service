@@ -1,6 +1,7 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, sync::OnceLock};
 
 use clap::Args;
+use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
 use crate::server::consts::RuntimeInfos;
@@ -23,8 +24,12 @@ pub struct ServerContext {
     pub service: bool,
 }
 
-#[instrument]
-pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
+pub static SHUTDOWN_TOKEN: OnceLock<CancellationToken> = OnceLock::new();
+
+pub async fn server_inner(
+    ctx: ServerContext,
+    token: CancellationToken,
+) -> Result<(), CommandError> {
     nyanpasu_utils::os::kill_by_pid_file(
         crate::utils::dirs::service_pid_file(),
         // TODO: use common name
@@ -68,6 +73,19 @@ pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
         nyanpasu_data_dir: ctx.nyanpasu_data_dir,
         nyanpasu_app_dir: ctx.nyanpasu_app_dir,
     });
-    crate::server::run().await?;
+    crate::server::run(token).await?;
+    Ok(())
+}
+
+#[instrument]
+pub async fn server(ctx: ServerContext) -> Result<(), CommandError> {
+    let token = CancellationToken::new();
+    SHUTDOWN_TOKEN.set(token.clone()).unwrap();
+    tokio::select! {
+        _ = server_inner(ctx, token.clone()) => {}
+        _ = token.cancelled() => {
+            tracing::info!("shutdown signal received");
+        }
+    }
     Ok(())
 }
