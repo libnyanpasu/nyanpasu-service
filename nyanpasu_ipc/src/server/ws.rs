@@ -1,12 +1,12 @@
 use axum::{
     body::Bytes,
     extract::{
-        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         ConnectInfo,
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
     },
     response::IntoResponse,
 };
-use axum_extra::{headers, TypedHeader};
+use axum_extra::{TypedHeader, headers};
 use futures::{sink::SinkExt, stream::StreamExt};
 use std::{net::SocketAddr, ops::ControlFlow};
 

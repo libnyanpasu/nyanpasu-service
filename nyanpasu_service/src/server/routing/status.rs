@@ -1,10 +1,10 @@
 use std::borrow::Cow;
 
-use axum::{http::StatusCode, routing::get, Json, Router};
+use axum::{Json, Router, http::StatusCode, routing::get};
 
 use nyanpasu_ipc::api::{
-    status::{RuntimeInfos, StatusRes, StatusResBody, STATUS_ENDPOINT},
     RBuilder,
+    status::{RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody},
 };
 
 pub fn setup() -> Router {

@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
-use axum::{http::StatusCode, Json};
-use nyanpasu_ipc::api::{core::stop::CoreStopRes, RBuilder};
+use axum::{Json, http::StatusCode};
+use nyanpasu_ipc::api::{RBuilder, core::stop::CoreStopRes};
 
 pub async fn stop() -> (StatusCode, Json<CoreStopRes<'static>>) {
     let manager = crate::server::instance::CoreManagerWrapper::global();

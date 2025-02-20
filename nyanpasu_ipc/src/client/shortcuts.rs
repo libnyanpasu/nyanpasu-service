@@ -1,11 +1,11 @@
 use std::{borrow::Cow, sync::OnceLock};
 
 use axum::body::Body;
-use hyper::{header::CONTENT_TYPE, Request};
+use hyper::{Request, header::CONTENT_TYPE};
 
-use crate::{api, SERVICE_PLACEHOLDER};
+use crate::{SERVICE_PLACEHOLDER, api};
 
-use super::{send_request, ClientError};
+use super::{ClientError, send_request};
 
 use std::result::Result as StdResult;
 

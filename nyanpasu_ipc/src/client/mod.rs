@@ -1,15 +1,15 @@
 use http_body_util::BodyExt;
 use hyper::{
+    Response as HyperResponse,
     body::{Body, Incoming},
     http::Request,
-    Response as HyperResponse,
 };
 use hyper_util::rt::TokioIo;
 use simd_json::Buffers;
 use std::error::Error as StdError;
 use tokio::io::AsyncReadExt;
 
-use interprocess::local_socket::tokio::{prelude::*, Stream};
+use interprocess::local_socket::tokio::{Stream, prelude::*};
 
 pub mod shortcuts;
 mod wrapper;

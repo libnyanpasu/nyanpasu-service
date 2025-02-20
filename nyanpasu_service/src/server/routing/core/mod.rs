@@ -1,4 +1,4 @@
-use axum::{routing::post, Router};
+use axum::{Router, routing::post};
 use nyanpasu_ipc::api::core::{
     restart::CORE_RESTART_ENDPOINT, start::CORE_START_ENDPOINT, stop::CORE_STOP_ENDPOINT,
 };

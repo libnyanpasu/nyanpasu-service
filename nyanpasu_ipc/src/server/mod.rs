@@ -1,10 +1,10 @@
-use axum::{http::Request, routing::get, Router};
+use axum::{Router, http::Request, routing::get};
 use hyper::body::Incoming;
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server,
 };
-use interprocess::local_socket::{tokio::prelude::*, ListenerNonblockingMode, ListenerOptions};
+use interprocess::local_socket::{ListenerNonblockingMode, ListenerOptions, tokio::prelude::*};
 #[cfg(unix)]
 use interprocess::os::unix::local_socket::ListenerOptionsExt;
 #[cfg(windows)]

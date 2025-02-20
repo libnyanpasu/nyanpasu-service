@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use nyanpasu_ipc::api::{
-    core::start::{CoreStartReq, CoreStartRes},
     RBuilder,
+    core::start::{CoreStartReq, CoreStartRes},
 };
 
 pub async fn start(

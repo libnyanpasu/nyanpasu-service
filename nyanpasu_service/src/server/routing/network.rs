@@ -1,7 +1,7 @@
-use axum::{http::StatusCode, routing::post, Json, Router};
+use axum::{Json, Router, http::StatusCode, routing::post};
 use nyanpasu_ipc::api::{
-    network::set_dns::{NetworkSetDnsReq, NetworkSetDnsRes, NETWORK_SET_DNS_ENDPOINT},
     RBuilder,
+    network::set_dns::{NETWORK_SET_DNS_ENDPOINT, NetworkSetDnsReq, NetworkSetDnsRes},
 };
 use std::borrow::Cow;
 
@@ -22,7 +22,7 @@ pub async fn network(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(RBuilder::other_error(Cow::Owned(e.to_string()))),
-            )
+            );
         }
     };
     let dns_servers = req

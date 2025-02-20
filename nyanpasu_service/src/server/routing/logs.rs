@@ -1,7 +1,7 @@
-use axum::{http::StatusCode, routing::get, Json, Router};
+use axum::{Json, Router, http::StatusCode, routing::get};
 use nyanpasu_ipc::api::{
-    log::{LogsRes, LogsResBody, LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT},
     RBuilder,
+    log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT, LogsRes, LogsResBody},
 };
 
 pub fn setup() -> Router {

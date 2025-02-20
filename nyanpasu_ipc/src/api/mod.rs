@@ -3,7 +3,7 @@ pub mod log;
 pub mod network;
 pub mod status;
 
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     borrow::Cow,
     fmt::Debug,

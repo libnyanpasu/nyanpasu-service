@@ -1,15 +1,15 @@
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
 use nyanpasu_utils::core::{
-    instance::{CoreInstance, CoreInstanceBuilder},
     CommandEvent, CoreType,
+    instance::{CoreInstance, CoreInstanceBuilder},
 };
 use parking_lot::Mutex;
 use std::{
     borrow::Cow,
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, AtomicI64, Ordering},
         Arc, OnceLock,
+        atomic::{AtomicBool, AtomicI64, Ordering},
     },
 };
 use tokio::spawn;

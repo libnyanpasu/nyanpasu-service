@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::{fs, io::IsTerminal, sync::OnceLock};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::{
@@ -6,7 +6,7 @@ use tracing_appender::{
     rolling::Rotation,
 };
 use tracing_log::log_tracer;
-use tracing_subscriber::{fmt, layer::SubscriberExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt};
 
 static GUARD: OnceLock<WorkerGuard> = OnceLock::new();
 

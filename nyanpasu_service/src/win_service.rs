@@ -5,7 +5,7 @@ use parking_lot::Mutex;
 use std::{
     ffi::OsString,
     io::Result,
-    sync::{mpsc, OnceLock},
+    sync::{OnceLock, mpsc},
     time::Duration,
 };
 use windows_service::{

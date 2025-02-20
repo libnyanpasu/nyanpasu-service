@@ -36,23 +36,25 @@ pub fn deadlock_detection() {
         use std::{thread, time::Duration};
 
         // Create a background thread which checks for deadlocks every 10s
-        thread::spawn(move || loop {
-            thread::sleep(Duration::from_secs(10));
-            let deadlocks = deadlock::check_deadlock();
-            if deadlocks.is_empty() {
-                continue;
-            }
+        thread::spawn(move || {
+            loop {
+                thread::sleep(Duration::from_secs(10));
+                let deadlocks = deadlock::check_deadlock();
+                if deadlocks.is_empty() {
+                    continue;
+                }
 
-            eprintln!("{} deadlocks detected", deadlocks.len());
-            tracing::error!("{} deadlocks detected", deadlocks.len());
-            for (i, threads) in deadlocks.iter().enumerate() {
-                eprintln!("Deadlock #{}", i);
-                tracing::error!("Deadlock #{}", i);
-                for t in threads {
-                    eprintln!("Thread Id {:#?}", t.thread_id());
-                    eprintln!("{:#?}", t.backtrace());
-                    tracing::error!("Thread Id {:#?}", t.thread_id());
-                    tracing::error!("{:#?}", t.backtrace());
+                eprintln!("{} deadlocks detected", deadlocks.len());
+                tracing::error!("{} deadlocks detected", deadlocks.len());
+                for (i, threads) in deadlocks.iter().enumerate() {
+                    eprintln!("Deadlock #{}", i);
+                    tracing::error!("Deadlock #{}", i);
+                    for t in threads {
+                        eprintln!("Thread Id {:#?}", t.thread_id());
+                        eprintln!("{:#?}", t.backtrace());
+                        tracing::error!("Thread Id {:#?}", t.thread_id());
+                        tracing::error!("{:#?}", t.backtrace());
+                    }
                 }
             }
         });

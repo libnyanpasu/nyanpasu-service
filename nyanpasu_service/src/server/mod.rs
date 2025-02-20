@@ -7,7 +7,7 @@ use anyhow::Ok;
 use axum::Router;
 pub use instance::CoreManagerWrapper as CoreManager;
 pub use logger::Logger;
-use nyanpasu_ipc::{server::create_server, SERVICE_PLACEHOLDER};
+use nyanpasu_ipc::{SERVICE_PLACEHOLDER, server::create_server};
 use routing::apply_routes;
 use tracing_attributes::instrument;
 
