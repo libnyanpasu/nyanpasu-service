@@ -7,10 +7,11 @@ pub const EVENT_URI: &str = "/ws/events";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TraceLog {
-    pub timestamp: i64,
+    pub timestamp: String,
     pub level: String,
     pub message: String,
-    fields: IndexMap<String, serde_json::Value>,
+    pub target: String,
+    pub fields: IndexMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
