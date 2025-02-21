@@ -9,7 +9,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, OnceLock,
-        atomic::{AtomicBool, AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
     },
 };
 use tokio::spawn;
@@ -25,22 +25,24 @@ struct CoreManager {
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
 
-pub struct CoreManagerWrapper {
+#[derive(Clone)]
+pub struct CoreManagerHandle {
     instance: Arc<Mutex<Option<CoreManager>>>,
     state_changed_at: Arc<AtomicI64>,
     kill_flag: Arc<AtomicBool>,
 }
 
-impl CoreManagerWrapper {
-    pub fn global() -> &'static CoreManagerWrapper {
-        static INSTANCE: OnceLock<CoreManagerWrapper> = OnceLock::new();
-        INSTANCE.get_or_init(|| CoreManagerWrapper {
+impl Default for CoreManagerHandle {
+    fn default() -> Self {
+        Self {
             instance: Arc::new(Mutex::new(None)),
             state_changed_at: Arc::new(AtomicI64::new(0)),
             kill_flag: Arc::new(AtomicBool::new(false)),
-        })
+        }
     }
+}
 
+impl CoreManagerHandle {
     pub fn state<'a>(&self) -> Cow<'a, CoreState> {
         let instance = self.instance.lock();
         match *instance {
@@ -83,17 +85,17 @@ impl CoreManagerWrapper {
         }
     }
 
-    pub(self) fn recover_core(&'static self) {
+    async fn recover_core(self, counter: usize) {
         tracing::info!("Try to recover the core instance");
-        std::thread::spawn(move || {
-            nyanpasu_utils::runtime::block_on(async move {
-                if let Err(e) = CoreManagerWrapper::global().restart().await {
-                    tracing::error!("Failed to recover the core instance: {}", e);
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                    CoreManagerWrapper::global().recover_core();
-                }
-            });
-        });
+        if let Err(e) = self.restart().await {
+            tracing::error!("Failed to recover the core instance: {}", e);
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            if counter < 5 {
+                Box::pin(self.recover_core(counter + 1)).await;
+            } else {
+                tracing::error!("Failed to recover the core instance after 5 times");
+            }
+        }
     }
 
     #[instrument(skip(self))]
@@ -137,6 +139,7 @@ impl CoreManagerWrapper {
         let state_changed_at = self.state_changed_at.clone();
         let kill_flag = self.kill_flag.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<()>>(1); // use mpsc channel just to avoid type moved error, though it never fails
+        let handle = self.clone();
         tokio::spawn(async move {
             match instance.run().await {
                 Ok((_, mut rx)) => {
@@ -175,7 +178,7 @@ impl CoreManagerWrapper {
                                         if tx.send(Err(err)).await.is_err()
                                             && !kill_flag.load(Ordering::Relaxed)
                                         {
-                                            CoreManagerWrapper::global().recover_core();
+                                            handle.recover_core(0);
                                         }
                                     }
                                     break;

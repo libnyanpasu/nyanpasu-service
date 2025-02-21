@@ -2,6 +2,7 @@ pub mod core;
 pub mod log;
 pub mod network;
 pub mod status;
+pub mod ws;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{

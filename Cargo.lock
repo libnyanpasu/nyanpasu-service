@@ -594,6 +594,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4938185353434999ef52c81753c8cca8955ed38042fc29913db3751916f3b7ab"
 
 [[package]]
+name = "constcat"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ffb5df6dd5dadb422897e8132f415d7a054e3cd757e5070b663f75bea1840fb"
+
+[[package]]
 name = "core-foundation-sys"
 version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -704,6 +710,20 @@ dependencies = [
  "darling_core",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "dashmap"
+version = "6.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5041cc499144891f3790297212f32a74fb938e5136a14943f338ef9e0ae276cf"
+dependencies = [
+ "cfg-if",
+ "crossbeam-utils",
+ "hashbrown 0.14.5",
+ "lock_api",
+ "once_cell",
+ "parking_lot_core",
 ]
 
 [[package]]
@@ -1287,6 +1307,7 @@ checksum = "62f822373a4fe84d4bb149bf54e584a7f4abec90e072ed49cda0edea5b95471f"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.2",
+ "serde",
 ]
 
 [[package]]
@@ -1574,10 +1595,12 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "indexmap 2.7.0",
  "interprocess",
  "nyanpasu-utils",
  "pin-project-lite",
  "serde",
+ "serde_json",
  "simd-json",
  "specta",
  "thiserror 2.0.11",
@@ -1602,8 +1625,10 @@ dependencies = [
  "clap",
  "colored",
  "console-subscriber",
- "constcat",
+ "constcat 0.6.0",
  "ctrlc",
+ "dashmap",
+ "futures-util",
  "nyanpasu-ipc",
  "nyanpasu-utils",
  "oneshot",
@@ -1623,6 +1648,7 @@ dependencies = [
  "tracing-attributes",
  "tracing-log",
  "tracing-panic",
+ "tracing-serde",
  "tracing-subscriber",
  "whoami",
  "windows-service",
@@ -1633,7 +1659,7 @@ name = "nyanpasu-utils"
 version = "0.1.0"
 source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#bb5339c93a3b82971b9720be9350ced9a1eae03a"
 dependencies = [
- "constcat",
+ "constcat 0.5.1",
  "derive_builder",
  "dirs-utils",
  "encoding_rs",

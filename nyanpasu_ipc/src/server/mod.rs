@@ -1,7 +1,5 @@
 use std::result::Result as StdResult;
 
-mod ws;
-
 use axum::{Router, routing::get};
 use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions,
@@ -122,7 +120,6 @@ pub async fn create_server(
     crate::utils::os::change_socket_mode(placeholder)?;
 
     tracing::debug!("mounting service...");
-    let app = app.route("/ws", get(ws::ws_handler));
     let server = axum::serve(listener, app);
     match with_graceful_shutdown {
         Some(graceful_shutdown) => server.with_graceful_shutdown(graceful_shutdown).await?,

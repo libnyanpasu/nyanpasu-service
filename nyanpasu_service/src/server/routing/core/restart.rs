@@ -1,11 +1,12 @@
 use std::borrow::Cow;
 
-use axum::{Json, http::StatusCode};
+use axum::{Json, extract::State, http::StatusCode};
 use nyanpasu_ipc::api::{RBuilder, core::restart::CoreRestartRes};
 
-pub async fn restart() -> (StatusCode, Json<CoreRestartRes<'static>>) {
-    let manager = crate::server::instance::CoreManagerWrapper::global();
-    let res = manager.restart().await;
+use crate::server::routing::AppState;
+
+pub async fn restart(State(state): State<AppState>) -> (StatusCode, Json<CoreRestartRes<'static>>) {
+    let res = state.core_manager.restart().await;
     match res {
         Ok(_) => (StatusCode::OK, Json(RBuilder::success(()))),
         Err(e) => (

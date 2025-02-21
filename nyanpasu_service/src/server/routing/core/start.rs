@@ -1,16 +1,19 @@
 use std::borrow::Cow;
 
-use axum::{Json, http::StatusCode};
+use axum::{Json, extract::State, http::StatusCode};
 use nyanpasu_ipc::api::{
     RBuilder,
     core::start::{CoreStartReq, CoreStartRes},
 };
 
+use crate::server::routing::AppState;
+
 pub async fn start(
+    State(state): State<AppState>,
     Json(payload): Json<CoreStartReq<'_>>,
 ) -> (StatusCode, Json<CoreStartRes<'static>>) {
-    let instance = crate::server::CoreManager::global();
-    let res = instance
+    let res = state
+        .core_manager
         .start(&payload.core_type, &payload.config_file)
         .await;
 

@@ -4,7 +4,10 @@ use nyanpasu_ipc::api::{
     log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT, LogsRes, LogsResBody},
 };
 
-pub fn setup() -> Router {
+pub fn setup<S>() -> Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     Router::new()
         .route(LOGS_RETRIEVE_ENDPOINT, get(retrieve_logs))
         .route(LOGS_INSPECT_ENDPOINT, get(inspect_logs))
