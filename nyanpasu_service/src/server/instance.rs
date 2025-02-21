@@ -1,18 +1,19 @@
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicI64, Ordering},
+    },
+};
+
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
 use nyanpasu_utils::core::{
     CommandEvent, CoreType,
     instance::{CoreInstance, CoreInstanceBuilder},
 };
 use parking_lot::Mutex;
-use std::{
-    borrow::Cow,
-    path::PathBuf,
-    sync::{
-        Arc, OnceLock,
-        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-    },
-};
-use tokio::spawn;
+use tokio::{spawn, sync::mpsc::Sender as MpscSender};
 use tracing::instrument;
 
 use super::consts;
@@ -29,6 +30,7 @@ const SIGTERM: i32 = 15;
 pub struct CoreManagerHandle {
     instance: Arc<Mutex<Option<CoreManager>>>,
     state_changed_at: Arc<AtomicI64>,
+    state_changed_notify: Arc<Option<MpscSender<CoreState>>>,
     kill_flag: Arc<AtomicBool>,
 }
 
@@ -38,11 +40,29 @@ impl Default for CoreManagerHandle {
             instance: Arc::new(Mutex::new(None)),
             state_changed_at: Arc::new(AtomicI64::new(0)),
             kill_flag: Arc::new(AtomicBool::new(false)),
+            state_changed_notify: Arc::new(None),
         }
     }
 }
 
 impl CoreManagerHandle {
+    pub fn new_with_notify(notify: MpscSender<CoreState>) -> Self {
+        Self {
+            instance: Arc::new(Mutex::new(None)),
+            state_changed_at: Arc::new(AtomicI64::new(0)),
+            kill_flag: Arc::new(AtomicBool::new(false)),
+            state_changed_notify: Arc::new(Some(notify)),
+        }
+    }
+
+    fn notify_state_changed(tx: Arc<Option<MpscSender<CoreState>>>, state: CoreState) {
+        tokio::spawn(async move {
+            if let Some(notify) = tx.as_ref() {
+                let _ = notify.send(state).await;
+            }
+        });
+    }
+
     pub fn state<'a>(&self) -> Cow<'a, CoreState> {
         let instance = self.instance.lock();
         match *instance {
@@ -85,15 +105,18 @@ impl CoreManagerHandle {
         }
     }
 
-    async fn recover_core(self, counter: usize) {
-        tracing::info!("Try to recover the core instance");
-        if let Err(e) = self.restart().await {
-            tracing::error!("Failed to recover the core instance: {}", e);
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            if counter < 5 {
-                Box::pin(self.recover_core(counter + 1)).await;
-            } else {
-                tracing::error!("Failed to recover the core instance after 5 times");
+    #[allow(clippy::manual_async_fn)]
+    fn recover_core(self, counter: usize) -> impl Future<Output = ()> + Send + Sync + 'static {
+        async move {
+            tracing::info!("Try to recover the core instance");
+            if let Err(e) = self.restart().await {
+                tracing::error!("Failed to recover the core instance: {}", e);
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                if counter < 5 {
+                    Box::pin(self.recover_core(counter + 1)).await;
+                } else {
+                    tracing::error!("Failed to recover the core instance after 5 times");
+                }
             }
         }
     }
@@ -132,14 +155,13 @@ impl CoreManagerHandle {
             });
             instance
         };
-        self.state_changed_at
-            .store(get_current_ts(), Ordering::Relaxed);
 
         // start the core instance
         let state_changed_at = self.state_changed_at.clone();
         let kill_flag = self.kill_flag.clone();
         let (tx, mut rx) = tokio::sync::mpsc::channel::<anyhow::Result<()>>(1); // use mpsc channel just to avoid type moved error, though it never fails
         let handle = self.clone();
+        let state_changed_notify = self.state_changed_notify.clone();
         tokio::spawn(async move {
             match instance.run().await {
                 Ok((_, mut rx)) => {
@@ -160,6 +182,10 @@ impl CoreManagerHandle {
                                     let err =
                                         anyhow::anyhow!(format!("{}\n{}", e, err_buf.join("\n")));
                                     let _ = tx.send(Err(err)).await;
+                                    Self::notify_state_changed(
+                                        state_changed_notify.clone(),
+                                        CoreState::Stopped(None),
+                                    );
                                     state_changed_at.store(get_current_ts(), Ordering::Relaxed);
                                     break;
                                 }
@@ -175,10 +201,16 @@ impl CoreManagerHandle {
                                             err_buf.join("\n")
                                         ));
                                         tracing::error!("{}\n{}", err, err_buf.join("\n"));
+                                        Self::notify_state_changed(
+                                            state_changed_notify.clone(),
+                                            CoreState::Stopped(None),
+                                        );
                                         if tx.send(Err(err)).await.is_err()
                                             && !kill_flag.load(Ordering::Relaxed)
                                         {
-                                            handle.recover_core(0);
+                                            tokio::spawn(async move {
+                                                handle.recover_core(0).await;
+                                            });
                                         }
                                     }
                                     break;
@@ -201,6 +233,7 @@ impl CoreManagerHandle {
         });
         rx.recv().await.unwrap()?;
         drop(rx);
+        Self::notify_state_changed(self.state_changed_notify.clone(), CoreState::Running);
         Ok(())
     }
 
@@ -215,6 +248,7 @@ impl CoreManagerHandle {
             instance.as_ref().unwrap().instance.clone()
         };
         instance.kill().await?;
+        Self::notify_state_changed(self.state_changed_notify.clone(), CoreState::Stopped(None));
         Ok(())
     }
 

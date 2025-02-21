@@ -18,7 +18,7 @@ use tokio::sync::mpsc::Sender as MpscSender;
 type SocketId = usize;
 
 #[derive(Default, Clone)]
-pub(super) struct WsState {
+pub struct WsState {
     pub events_subscribers: Arc<DashMap<SocketId, MpscSender<Event>>>,
 }
 

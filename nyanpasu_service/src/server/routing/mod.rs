@@ -11,13 +11,13 @@ pub mod status;
 pub mod ws;
 
 #[derive(Default, Clone)]
-struct AppState {
-    core_manager: CoreManager,
-    ws_state: WsState,
+pub struct AppState {
+    pub core_manager: CoreManager,
+    pub ws_state: WsState,
 }
 
-#[instrument]
-pub fn create_router() -> Router {
+#[instrument(skip(state))]
+pub fn create_router(state: AppState) -> Router {
     tracing::info!("Applying routes...");
     let tracing_layer = tower_http::trace::TraceLayer::new_for_http();
     Router::new()
@@ -26,6 +26,6 @@ pub fn create_router() -> Router {
         .merge(logs::setup())
         .merge(network::setup())
         .merge(ws::setup())
-        .with_state(AppState::default())
+        .with_state(state)
         .layer(tracing_layer)
 }
