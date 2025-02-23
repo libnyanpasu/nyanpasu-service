@@ -1,4 +1,42 @@
 
+## [1.2.0] - 2025-02-23
+
+
+### ✨ Features
+
+- **ws:** Support log notify by @greenhat616 
+
+- **ws:** Support core state changed notify by @greenhat616 
+
+- Static crt for windows by @greenhat616 
+
+- Ws events layer and refactor core manager handle to owned by app state by @greenhat616 
+
+- Support win service gracefully shutdown by @greenhat616 
+
+- Specta support by @greenhat616 
+
+
+### 🐛 Bug Fixes
+
+- Linter by @greenhat616 
+
+
+### 🔨 Refactor
+
+- Use deno script to get version by @greenhat616 
+
+- Use axum listener trait and axum gracefully shutdown by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.1.3...v1.2.0
+
+
+
+
 ## [1.1.3] - 2025-01-09
 
 
