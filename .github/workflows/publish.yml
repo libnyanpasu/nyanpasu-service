@@ -29,10 +29,18 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - run: rustup toolchain install nightly --profile minimal --component clippy rustfmt && rustup default nightly && cargo install cargo-edit
+      - run: rustup toolchain install nightly --profile minimal --component clippy rustfmt && rustup default nightly
         name: Install Rust nightly toolchain
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@v1.11.1
+      - name: Install cargo-edit
+        run: |
+          cargo binstall cargo-edit -y
       - name: Install git-cliff
         uses: taiki-e/install-action@git-cliff
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
       - uses: Swatinem/rust-cache@v2
         name: Setup Rust cache
         with:
@@ -45,8 +53,7 @@ jobs:
         # Use npm because yarn is for some reason not able to output only the version name
         run: |
           cargo set-version --workspace --bump ${{ inputs.versionType }}
-          chmod +x .github/scripts/get-version.rs
-          VERSION=$(.github/scripts/get-version.rs --path ./nyanpasu_service/Cargo.toml | head -n 1)
+          VERSION=$(deno run --allow-read .github/scripts/get-version.ts --path ./nyanpasu_service/Cargo.toml | head -n 1)
           echo "$VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
       - name: Generate a changelog for the new version
