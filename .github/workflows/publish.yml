@@ -32,7 +32,7 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component clippy rustfmt && rustup default nightly
         name: Install Rust nightly toolchain
       - name: Install cargo-binstall
-        uses: cargo-bins/cargo-binstall@v1.11.1
+        uses: cargo-bins/cargo-binstall@v1.11.2
       - name: Install cargo-edit
         run: |
           cargo binstall cargo-edit -y
