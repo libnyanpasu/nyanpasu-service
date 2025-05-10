@@ -44,6 +44,20 @@ impl Drop for ServiceHandleGuard {
     }
 }
 
+fn set_stop_pending(status_handle: &ServiceStatusHandle) -> windows_service::Result<()> {
+    let next_status = ServiceStatus {
+        service_type: SERVICE_TYPE,
+        current_state: ServiceState::StopPending,
+        exit_code: ServiceExitCode::Win32(0),
+        checkpoint: 1,
+        wait_hint: Duration::from_secs(15),
+        process_id: Some(std::process::id()),
+        controls_accepted: ServiceControlAccept::empty(),
+    };
+    status_handle.set_service_status(next_status)?;
+    Ok(())
+}
+
 pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let shutdown_token_clone = shutdown_token.clone();
@@ -93,6 +107,9 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
 
     // Wait for shutdown signal
     block_on(shutdown_token.cancelled());
+
+    // Give the service 15 seconds to stop
+    set_stop_pending(&status_handle)?;
 
     // cancel the server handle
     if let Some(token) = crate::cmds::SERVER_SHUTDOWN_TOKEN.get() {
