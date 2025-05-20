@@ -1,4 +1,20 @@
 
+## [1.3.1] - 2025-05-20
+
+
+### 🐛 Bug Fixes
+
+- Follow SAFE_PATHS windows styles by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.3.0...v1.3.1
+
+
+
+
 ## [1.3.0] - 2025-05-20
 
 
