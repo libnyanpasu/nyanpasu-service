@@ -14,7 +14,11 @@ pub async fn start(
 ) -> (StatusCode, Json<CoreStartRes<'static>>) {
     let res = state
         .core_manager
-        .start(&payload.core_type, &payload.config_file)
+        .start(
+            &payload.core_type,
+            camino::Utf8Path::from_path(&payload.config_file)
+                .expect("failed to convert config_file to Utf8Path"),
+        )
         .await;
 
     match res {

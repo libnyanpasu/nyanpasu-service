@@ -7,6 +7,7 @@ use std::{
     },
 };
 
+use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_ipc::{api::status::CoreState, utils::get_current_ts};
 use nyanpasu_utils::core::{
     CommandEvent, CoreType,
@@ -20,7 +21,7 @@ use super::consts;
 
 struct CoreManager {
     instance: Arc<CoreInstance>,
-    config_path: PathBuf,
+    config_path: Utf8PathBuf,
 }
 
 const SIGKILL: i32 = 9;
@@ -101,7 +102,7 @@ impl CoreManagerHandle {
             r#type: Some(core_type),
             state: self.state().into_owned(),
             state_changed_at,
-            config_path: Some(config_path),
+            config_path: Some(config_path.into()),
         }
     }
 
@@ -125,7 +126,7 @@ impl CoreManagerHandle {
     pub async fn start(
         &self,
         core_type: &CoreType,
-        config_path: &PathBuf,
+        config_path: &Utf8Path,
     ) -> Result<(), anyhow::Error> {
         let state = self.state();
         if matches!(state.as_ref(), CoreState::Running) {
@@ -133,12 +134,18 @@ impl CoreManagerHandle {
         }
 
         // check config_path
-        let config_path = config_path.canonicalize()?;
+        let config_path = config_path.canonicalize_utf8()?;
         tokio::fs::metadata(&config_path).await?; // check if the file exists
         let infos = consts::RuntimeInfos::global();
         let app_dir = infos.nyanpasu_data_dir.clone();
         let binary_path = find_binary_path(core_type)?;
         let pid_path = crate::utils::dirs::service_core_pid_file();
+        let app_dir = Utf8PathBuf::from_path_buf(app_dir)
+            .map_err(|_| anyhow::anyhow!("failed to convert app_dir to Utf8PathBuf"))?;
+        let binary_path = Utf8PathBuf::from_path_buf(binary_path)
+            .map_err(|_| anyhow::anyhow!("failed to convert binary_path to Utf8PathBuf"))?;
+        let pid_path = Utf8PathBuf::from_path_buf(pid_path)
+            .map_err(|_| anyhow::anyhow!("failed to convert pid_path to Utf8PathBuf"))?;
         let instance = CoreInstanceBuilder::default()
             .core_type(core_type.clone())
             .app_dir(app_dir)
@@ -151,7 +158,7 @@ impl CoreManagerHandle {
             let instance = Arc::new(instance);
             *this = Some(CoreManager {
                 instance: instance.clone(),
-                config_path,
+                config_path: config_path.to_path_buf(),
             });
             instance
         };
@@ -271,7 +278,7 @@ impl CoreManagerHandle {
                 manager.config_path.clone(),
             )
         };
-        self.start(&core_type, &config_path).await
+        self.start(&core_type, config_path.as_path()).await
     }
 }
 

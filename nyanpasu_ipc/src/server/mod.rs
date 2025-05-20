@@ -1,6 +1,6 @@
 use std::result::Result as StdResult;
 
-use axum::{Router, routing::get};
+use axum::Router;
 use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions,
     tokio::{Listener, Stream as InterProcessStream, prelude::*},

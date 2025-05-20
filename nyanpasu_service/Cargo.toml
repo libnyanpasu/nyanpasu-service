@@ -66,6 +66,7 @@ console-subscriber = { version = "0.4", optional = true, features = [
 oneshot = "0.1"
 indexmap = { version = "2", features = ["serde"] }
 serde_json = "1"
+camino = { version = "1.1", features = ["serde1"] }
 
 [build-dependencies]
 chrono = { workspace = true }
