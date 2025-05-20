@@ -1,4 +1,27 @@
 
+## [1.3.0] - 2025-05-20
+
+
+### ✨ Features
+
+- Support SAFE_PATHS by @greenhat616 
+
+
+### 🐛 Bug Fixes
+
+- Ci by @greenhat616 
+
+- Provide service stop pending ttl by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.2.0...v1.3.0
+
+
+
+
 ## [1.2.0] - 2025-02-23
 
 
