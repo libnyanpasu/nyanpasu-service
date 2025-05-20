@@ -29,8 +29,11 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
-      - run: rustup toolchain install nightly --profile minimal --component clippy rustfmt && rustup default nightly
-        name: Install Rust nightly toolchain
+      - name: Install Rust nightly toolchain
+        run: |
+          rustup toolchain install -c clippy -c rustfmt --profile minimal nightly
+          rustup default nightly
+
       - name: Install cargo-binstall
         uses: cargo-bins/cargo-binstall@v1.12.0
       - name: Install cargo-edit

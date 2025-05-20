@@ -40,7 +40,9 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install Rust toolchain and target toolchain
-        run: rustup toolchain install nightly --profile minimal && rustup target add ${{ matrix.profile.target }} --toolchain nightly
+        run: |
+          rustup toolchain install nightly --profile minimal
+          rustup target add ${{ matrix.profile.target }} --toolchain nightly
       - name: Install coreutils for macOS
         if: contains(matrix.profile.os, 'macos')
         run: brew install coreutils
