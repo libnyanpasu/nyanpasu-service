@@ -448,9 +448,9 @@ checksum = "613afe47fcd5fac7ccf1db93babcb082c5994d996f20b8b159f2ad1658eb5724"
 
 [[package]]
 name = "check_elevation"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78dea1f501b18c88cf6cab940f682582b37d44aab8acefdad2d50947e3cbdda1"
+checksum = "a7fe1fbbd8bd3174109071530f12932ff471eeff30d83e9c485d6ff424ac534b"
 dependencies = [
  "windows 0.51.1",
 ]
