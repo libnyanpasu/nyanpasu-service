@@ -58,7 +58,7 @@ semver = "1"
 bounded-vec-deque = "0.1.1"
 chrono = { workspace = true }
 colored = "3.0.0"
-timeago = "0.4"
+timeago = "0.5"
 ansi-str = "0.9"
 console-subscriber = { version = "0.4", optional = true, features = [
     "parking_lot",
