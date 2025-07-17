@@ -17,7 +17,7 @@ use crate::consts::SERVICE_LABEL;
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
 pub fn run() -> Result<()> {
-    service_dispatcher::start(SERVICE_LABEL, ffi_service_main).map_err(|e| std::io::Error::other(e))
+    service_dispatcher::start(SERVICE_LABEL, ffi_service_main).map_err(std::io::Error::other)
 }
 
 define_windows_service!(ffi_service_main, service_main);

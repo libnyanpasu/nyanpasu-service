@@ -1,4 +1,6 @@
 #![allow(unused_imports)]
+#![allow(unused_variables)]
+#![allow(dead_code)]
 
 use std::ffi::OsStr;
 
@@ -38,10 +40,10 @@ impl NamedPipeACL {
 
     /// 方法1: 使用 GetNamedSecurityInfo 直接获取 SDDL
     pub fn get_sddl_direct(pipe_name: &str) -> anyhow::Result<String> {
-        let pipe_path = format!("\\\\.\\pipe\\{}", pipe_name);
+        let pipe_path = format!("\\\\.\\pipe\\{pipe_name}");
 
-        println!("尝试直接获取管道 '{}' 的 SDDL...", pipe_name);
-        println!("管道路径: {}", pipe_path);
+        println!("尝试直接获取管道 '{pipe_name}' 的 SDDL...");
+        println!("管道路径: {pipe_path}");
 
         let pipe_path_wide = Self::to_wide_string(&pipe_path);
 
@@ -180,17 +182,17 @@ impl NamedPipeACL {
         println!("\n=== 扫描常见系统管道 ===");
 
         for pipe_name in common_pipes {
-            print!("检查管道 '{}' ... ", pipe_name);
+            print!("检查管道 '{pipe_name}' ... ");
 
             // 尝试方法1
             match Self::get_sddl_direct(pipe_name) {
                 Ok(sddl) => {
                     println!("✓ 可访问");
-                    println!("  SDDL: {}", sddl);
+                    println!("  SDDL: {sddl}");
                     accessible_pipes.push(pipe_name.to_string());
                 }
                 Err(e) => {
-                    eprintln!("✗ 不可访问: {}", e);
+                    eprintln!("✗ 不可访问: {e}");
                 }
             }
         }
@@ -269,8 +271,8 @@ fn main() -> Result<()> {
         // 方法1: 直接获取
         println!("方法1 (GetNamedSecurityInfo):");
         match NamedPipeACL::get_sddl_direct(pipe_name) {
-            Ok(sddl) => println!("✓ SDDL: {}", sddl),
-            Err(e) => println!("✗ 失败: {}", e),
+            Ok(sddl) => println!("✓ SDDL: {sddl}"),
+            Err(e) => println!("✗ 失败: {e}"),
         }
 
         println!();

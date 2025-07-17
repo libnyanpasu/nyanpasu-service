@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     borrow::Cow,
     fmt::Debug,
-    io::{Error as IoError, ErrorKind as IoErrorKind},
+    io::Error as IoError,
 };
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]

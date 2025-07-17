@@ -40,7 +40,7 @@ pub struct Response {
 pub async fn send_request<R>(
     placeholder: &str,
     request: Request<R>,
-) -> Result<Response, ClientError>
+) -> Result<Response, ClientError<'_>>
 where
     R: Body + 'static + Send,
     R::Data: Send,
