@@ -5,11 +5,7 @@ pub mod status;
 pub mod ws;
 
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{
-    borrow::Cow,
-    fmt::Debug,
-    io::Error as IoError,
-};
+use std::{borrow::Cow, fmt::Debug, io::Error as IoError};
 
 #[derive(Debug, Serialize, Deserialize, Clone, Copy, Default, PartialEq)]
 pub enum ResponseCode {
