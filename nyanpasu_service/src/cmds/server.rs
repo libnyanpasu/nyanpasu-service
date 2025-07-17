@@ -91,10 +91,12 @@ pub async fn server_inner(
                     .expect("failed to get current user sid"),
             ]
         });
+    #[cfg(windows)]
+    let sids_str = &sids.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     #[cfg(not(windows))]
-    let sids = ();
+    let sids_str = ();
 
-    crate::server::run(token, &sids.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
+    crate::server::run(token, sids_str).await?;
     Ok(())
 }
 

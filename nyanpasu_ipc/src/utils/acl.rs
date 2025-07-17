@@ -345,6 +345,8 @@ pub fn create_default_pipe_security_descriptor() -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    use windows::Win32::Storage::FileSystem::*;
+
     use super::*;
 
     #[test]

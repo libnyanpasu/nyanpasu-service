@@ -1,6 +1,12 @@
-use std::{ffi::OsStr, os::windows::ffi::OsStrExt};
+#![allow(unused_imports)]
+
+use std::ffi::OsStr;
 
 use anyhow::Context;
+
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
 use windows::{
     Win32::{
         Foundation::*,
@@ -10,8 +16,10 @@ use windows::{
     core::*,
 };
 
+#[cfg(windows)]
 pub struct NamedPipeACL;
 
+#[cfg(windows)]
 impl NamedPipeACL {
     /// 将字符串转换为 Windows 宽字符
     fn to_wide_string(s: &str) -> Vec<u16> {
@@ -192,6 +200,7 @@ impl NamedPipeACL {
 }
 
 /// 检查是否以管理员身份运行
+#[cfg(windows)]
 fn is_running_as_admin() -> bool {
     use windows::Win32::{
         Foundation::TRUE,
@@ -232,6 +241,7 @@ fn is_running_as_admin() -> bool {
     }
 }
 
+#[cfg(windows)]
 fn main() -> Result<()> {
     println!("=== Rust 命名管道 ACL 获取工具 ===");
     println!("使用 windows crate");
@@ -277,4 +287,9 @@ fn main() -> Result<()> {
     // }
 
     Ok(())
+}
+
+#[cfg(not(windows))]
+fn main() {
+    panic!("not supported on non-windows platform");
 }
