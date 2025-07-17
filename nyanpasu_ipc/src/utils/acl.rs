@@ -9,7 +9,6 @@ use windows::{
     Win32::{
         Foundation::*,
         Security::{Authorization::*, *},
-        Storage::FileSystem::*,
         System::{SystemServices::*, Threading::*},
     },
     core::*,

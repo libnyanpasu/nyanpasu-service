@@ -28,7 +28,7 @@ where
         match futures_util::StreamExt::poll_next_unpin(&mut this.inner, cx) {
             Poll::Ready(Some(Ok(bytes))) => Poll::Ready(Some(Ok(bytes))),
             Poll::Ready(Some(Err(e))) => {
-                let io_err = std::io::Error::new(std::io::ErrorKind::Other, e.into());
+                let io_err = std::io::Error::other(e.into());
                 Poll::Ready(Some(Err(io_err)))
             }
             Poll::Ready(None) => Poll::Ready(None),

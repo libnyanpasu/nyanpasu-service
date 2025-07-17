@@ -9,7 +9,7 @@ fn core_type_parser(s: &str) -> Result<nyanpasu_utils::core::CoreType, String> {
     let mut s = s.to_string();
     unsafe {
         simd_json::serde::from_slice(s.as_bytes_mut())
-            .map_err(|e| format!("Failed to parse core type: {}", e))
+            .map_err(|e| format!("Failed to parse core type: {e}"))
     }
 }
 

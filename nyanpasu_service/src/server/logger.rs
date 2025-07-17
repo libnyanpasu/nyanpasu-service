@@ -67,10 +67,10 @@ impl std::io::Write for Logger<'_> {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         let mut buffer = self.buffer.lock();
         let msg = String::from_utf8_lossy(buf);
-        if let Some(subscriber) = self.subscriber.get() {
-            if let Ok(logging) = serde_json::from_str::<TracingLogging>(&msg) {
-                subscriber(logging);
-            }
+        if let Some(subscriber) = self.subscriber.get()
+            && let Ok(logging) = serde_json::from_str::<TracingLogging>(&msg)
+        {
+            subscriber(logging);
         }
         buffer.push_back(Cow::Owned(msg.into_owned()));
         Ok(buf.len())

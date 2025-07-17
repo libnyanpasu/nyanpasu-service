@@ -25,11 +25,11 @@ fn main() {
         .unwrap()
         .with_timezone(&Utc)
         .to_rfc3339_opts(SecondsFormat::Millis, true);
-    println!("cargo:rustc-env=COMMIT_DATE={}", commit_date);
+    println!("cargo:rustc-env=COMMIT_DATE={commit_date}");
 
     // Build Date
     let build_date = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-    println!("cargo:rustc-env=BUILD_DATE={}", build_date);
+    println!("cargo:rustc-env=BUILD_DATE={build_date}");
 
     // Build Profile
     println!(

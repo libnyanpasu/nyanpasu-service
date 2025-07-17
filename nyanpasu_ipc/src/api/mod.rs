@@ -47,10 +47,9 @@ impl<T: Serialize + DeserializeOwned + Debug> R<'_, T> {
         if self.code == ResponseCode::Ok {
             Ok(self)
         } else {
-            Err(IoError::new(
-                IoErrorKind::Other,
-                format!("Response code is not Ok: {:#?}", self),
-            ))
+            Err(IoError::other(format!(
+                "Response code is not Ok: {self:#?}"
+            )))
         }
     }
 }

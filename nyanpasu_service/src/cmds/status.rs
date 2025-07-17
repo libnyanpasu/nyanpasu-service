@@ -61,7 +61,7 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     if ctx.json {
         println!("{}", simd_json::serde::to_string_pretty(&info)?);
     } else {
-        println!("{:#?}", info);
+        println!("{info:#?}");
     }
     Ok(())
 }

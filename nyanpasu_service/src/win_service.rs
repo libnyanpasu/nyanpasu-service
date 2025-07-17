@@ -17,15 +17,14 @@ use crate::consts::SERVICE_LABEL;
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
 pub fn run() -> Result<()> {
-    service_dispatcher::start(SERVICE_LABEL, ffi_service_main)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    service_dispatcher::start(SERVICE_LABEL, ffi_service_main).map_err(|e| std::io::Error::other(e))
 }
 
 define_windows_service!(ffi_service_main, service_main);
 
 pub fn service_main(args: Vec<OsString>) {
     if let Err(e) = run_service(args) {
-        panic!("Error starting service: {:?}", e);
+        panic!("Error starting service: {e:?}");
     }
 }
 
