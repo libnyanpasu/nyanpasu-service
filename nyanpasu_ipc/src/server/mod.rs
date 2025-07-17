@@ -81,6 +81,8 @@ pub async fn create_server(
     placeholder: &str,
     app: Router,
     with_graceful_shutdown: Option<impl Future<Output = ()> + Send + 'static>,
+    #[cfg(windows)] sids: &[&str],
+    #[cfg(not(windows))] sids: (),
 ) -> Result<()> {
     let name_str = crate::utils::get_name_string(placeholder);
     let name = name_str.as_str().to_fs_name::<GenericFilePath>()?;
@@ -94,9 +96,12 @@ pub async fn create_server(
         .nonblocking(ListenerNonblockingMode::Both);
     #[cfg(windows)]
     let options = {
-        use widestring::u16cstr;
-        let sdsf = u16cstr!("D:(A;;GA;;;WD)"); // TODO: allow only the permitted users to connect
-        let sw = SecurityDescriptor::deserialize(sdsf)?;
+        use anyhow::Context;
+        use widestring::U16CString;
+        let sdsf = crate::utils::acl::generate_windows_security_descriptor(sids, None, None)
+            .context("failed to generate sdsf")?;
+        let sdsf = U16CString::from_str(&sdsf).context("failed to convert sdsf to u16cstring")?;
+        let sw = SecurityDescriptor::deserialize(&sdsf)?;
         options.security_descriptor(sw)
     };
     // allow owner and group to read and write

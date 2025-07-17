@@ -15,7 +15,11 @@ use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
 #[instrument]
-pub async fn run(token: CancellationToken) -> Result<(), anyhow::Error> {
+pub async fn run(
+    token: CancellationToken,
+    #[cfg(windows)] sids: &[&str],
+    #[cfg(not(windows))] sids: (),
+) -> Result<(), anyhow::Error> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
     let core_manager = CoreManager::new_with_notify(tx);
     let state = AppState {
@@ -63,6 +67,7 @@ pub async fn run(token: CancellationToken) -> Result<(), anyhow::Error> {
         Some(async move {
             token.cancelled().await;
         }),
+        sids,
     )
     .await?;
     Ok(())

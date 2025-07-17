@@ -1643,6 +1643,7 @@ dependencies = [
  "tracing",
  "tracing-attributes",
  "widestring",
+ "windows 0.61.3",
 ]
 
 [[package]]

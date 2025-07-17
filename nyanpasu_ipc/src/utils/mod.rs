@@ -1,5 +1,7 @@
 use interprocess::local_socket::{GenericFilePath, Name, ToFsName};
 
+#[cfg(windows)]
+pub mod acl;
 pub mod os;
 
 #[inline]

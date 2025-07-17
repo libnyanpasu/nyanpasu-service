@@ -4,7 +4,10 @@ use clap::Args;
 use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
-use crate::server::consts::RuntimeInfos;
+use crate::{
+    consts::{ENV_USER_LIST, USER_LIST_SEPARATOR},
+    server::consts::RuntimeInfos,
+};
 
 use super::CommandError;
 
@@ -73,7 +76,25 @@ pub async fn server_inner(
         nyanpasu_data_dir: ctx.nyanpasu_data_dir,
         nyanpasu_app_dir: ctx.nyanpasu_app_dir,
     });
-    crate::server::run(token).await?;
+
+    #[cfg(windows)]
+    let sids = std::env::var(ENV_USER_LIST)
+        .ok()
+        .map(|v| {
+            v.split(USER_LIST_SEPARATOR)
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            vec![
+                nyanpasu_ipc::utils::acl::get_current_user_sid_string()
+                    .expect("failed to get current user sid"),
+            ]
+        });
+    #[cfg(not(windows))]
+    let sids = ();
+
+    crate::server::run(token, &sids.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
     Ok(())
 }
 

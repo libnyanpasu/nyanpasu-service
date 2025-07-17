@@ -74,7 +74,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     }
     tracing::info!("working dir: {:?}", service_data_dir);
     let mut envs = Vec::new();
-    envs.push(("USER_LIST".to_string(), ctx.user));
+    envs.push((crate::consts::ENV_USER_LIST.to_string(), ctx.user));
     if let Ok(home) = std::env::var("HOME") {
         envs.push(("HOME".to_string(), home));
     }
