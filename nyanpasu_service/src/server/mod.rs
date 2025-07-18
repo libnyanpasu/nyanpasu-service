@@ -38,9 +38,10 @@ pub async fn run(
         }
     });
     let ws_state = state.ws_state.clone();
+    let tokio_handle = tokio::runtime::Handle::current();
     Logger::global().set_subscriber(Box::new(move |logging| {
         let ws_state = ws_state.clone();
-        tokio::spawn(async move {
+        tokio_handle.spawn(async move {
             ws_state
                 .event_broadcast(WsEvent::new_log(TraceLog {
                     timestamp: logging.timestamp,

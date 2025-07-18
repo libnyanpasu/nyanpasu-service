@@ -198,6 +198,9 @@ impl CoreManagerService {
 
         // check config_path
         let config_path = config_path.canonicalize_utf8()?;
+        let config_path =
+            Utf8PathBuf::from_path_buf(dunce::simplified(config_path.as_std_path()).to_path_buf())
+                .unwrap();
         tokio::fs::metadata(&config_path).await?; // check if the file exists
         let infos = consts::RuntimeInfos::global();
         let app_dir = infos.nyanpasu_data_dir.clone();

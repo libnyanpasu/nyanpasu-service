@@ -1,8 +1,6 @@
-use std::{io::Stdout, process::Stdio, thread};
+use std::{process::Stdio, thread};
 
-use service_manager::{
-    ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx,
-};
+use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceUninstallCtx};
 
 use crate::consts::SERVICE_LABEL;
 

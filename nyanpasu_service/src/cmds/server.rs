@@ -46,9 +46,9 @@ pub async fn server_inner(
     tracing::info!(environments = ?envs, "collected current envs.");
 
     // check dirs accessibility
-    let _ = std::fs::metadata(&ctx.nyanpasu_config_dir)?;
-    let _ = std::fs::metadata(&ctx.nyanpasu_data_dir)?;
-    let _ = std::fs::metadata(&ctx.nyanpasu_app_dir)?;
+    let nyanpasu_config_dir = dunce::canonicalize(&ctx.nyanpasu_config_dir)?;
+    let nyanpasu_data_dir = dunce::canonicalize(&ctx.nyanpasu_data_dir)?;
+    let nyanpasu_app_dir = dunce::canonicalize(&ctx.nyanpasu_app_dir)?;
 
     let service_data_dir = crate::utils::dirs::service_data_dir();
     let service_config_dir = crate::utils::dirs::service_config_dir();
@@ -75,9 +75,9 @@ pub async fn server_inner(
     crate::server::consts::RuntimeInfos::set_infos(RuntimeInfos {
         service_data_dir,
         service_config_dir,
-        nyanpasu_config_dir: ctx.nyanpasu_config_dir,
-        nyanpasu_data_dir: ctx.nyanpasu_data_dir,
-        nyanpasu_app_dir: ctx.nyanpasu_app_dir,
+        nyanpasu_config_dir,
+        nyanpasu_data_dir,
+        nyanpasu_app_dir,
     });
 
     #[cfg(windows)]
