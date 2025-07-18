@@ -112,6 +112,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
 
     // cancel the server handle
     if let Some(token) = crate::cmds::SERVER_SHUTDOWN_TOKEN.get() {
+        tracing::info!("Cancelling server shutdown token");
         token.cancel();
     }
     handle.join().unwrap();

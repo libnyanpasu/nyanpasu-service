@@ -3,7 +3,7 @@ mod instance;
 mod logger;
 mod routing;
 
-pub use instance::CoreManagerHandle as CoreManager;
+pub use instance::CoreManagerService as CoreManager;
 pub use logger::Logger;
 use nyanpasu_ipc::{
     SERVICE_PLACEHOLDER,
@@ -14,6 +14,8 @@ use routing::{AppState, create_router};
 use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
+use crate::server::routing::ws::WsState;
+
 #[instrument]
 pub async fn run(
     token: CancellationToken,
@@ -21,10 +23,10 @@ pub async fn run(
     #[cfg(not(windows))] sids: (),
 ) -> Result<(), anyhow::Error> {
     let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let core_manager = CoreManager::new_with_notify(tx);
+    let core_manager = CoreManager::new_with_notify(tx, token.clone());
     let state = AppState {
         core_manager,
-        ..Default::default()
+        ws_state: WsState::default(),
     };
     let ws_state = state.ws_state.clone();
     tokio::spawn(async move {

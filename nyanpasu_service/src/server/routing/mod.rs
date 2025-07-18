@@ -10,7 +10,7 @@ pub mod network;
 pub mod status;
 pub mod ws;
 
-#[derive(Default, Clone)]
+#[derive(Clone)]
 pub struct AppState {
     pub core_manager: CoreManager,
     pub ws_state: WsState,

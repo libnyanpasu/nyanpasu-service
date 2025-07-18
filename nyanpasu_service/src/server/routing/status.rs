@@ -15,7 +15,7 @@ pub fn setup() -> Router<AppState> {
 }
 
 pub async fn status(State(state): State<AppState>) -> (StatusCode, Json<StatusRes<'static>>) {
-    let status = state.core_manager.status();
+    let status = state.core_manager.status().await;
     let runtime_infos = crate::server::consts::RuntimeInfos::global();
     let res = RBuilder::success(StatusResBody {
         version: Cow::Borrowed(crate::consts::APP_VERSION),
