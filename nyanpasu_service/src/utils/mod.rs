@@ -2,6 +2,8 @@ use anyhow::Context;
 use service_manager::ServiceManager;
 use tracing_panic::panic_hook;
 
+#[cfg(windows)]
+pub mod acl;
 pub mod dirs;
 pub mod os;
 

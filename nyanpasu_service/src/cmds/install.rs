@@ -74,11 +74,23 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     }
     tracing::info!("working dir: {:?}", service_data_dir);
     let mut envs = Vec::new();
-    envs.push((crate::consts::ENV_USER_LIST.to_string(), ctx.user));
+    #[cfg(windows)]
+    {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        tracing::info!("Creating acl file...");
+        rt.block_on(crate::utils::acl::create_acl_file())?;
+        tracing::info!("Reading acl file...");
+        let mut list =
+            std::collections::BTreeSet::from_iter(rt.block_on(crate::utils::acl::read_acl_file())?);
+        list.insert(ctx.user);
+        let list = list.into_iter().collect::<Vec<_>>();
+        tracing::info!(list = ?list, "Writing acl file...");
+        rt.block_on(crate::utils::acl::write_acl_file(list.as_slice()))?;
+    }
     if let Ok(home) = std::env::var("HOME") {
         envs.push(("HOME".to_string(), home));
     }
-    tracing::info!("installing service...");
+    tracing::info!("Installing service...");
     manager.install(ServiceInstallCtx {
         label: label.clone(),
         program: service_binary,

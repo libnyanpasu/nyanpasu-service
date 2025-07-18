@@ -49,7 +49,10 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
         .from_env_lossy();
 
     let terminal_layer = fmt::Layer::new()
-        .with_ansi(std::io::stdout().is_terminal())
+        .with_ansi(
+            std::io::stdout().is_terminal()
+                && supports_color::on(supports_color::Stream::Stdout).is_some(),
+        )
         .compact()
         .with_target(false)
         .with_file(true)

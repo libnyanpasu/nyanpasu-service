@@ -1,13 +1,12 @@
-use std::{path::PathBuf, sync::OnceLock};
+use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock};
 
+#[cfg(windows)]
+use anyhow::Context;
 use clap::Args;
 use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
-use crate::{
-    consts::{ENV_USER_LIST, USER_LIST_SEPARATOR},
-    server::consts::RuntimeInfos,
-};
+use crate::server::consts::RuntimeInfos;
 
 use super::CommandError;
 
@@ -41,6 +40,10 @@ pub async fn server_inner(
     .await?;
     tracing::info!("nyanpasu config dir: {:?}", ctx.nyanpasu_config_dir);
     tracing::info!("nyanpasu data dir: {:?}", ctx.nyanpasu_data_dir);
+
+    // Print current envs
+    let envs: BTreeMap<String, String> = std::env::vars().collect();
+    tracing::info!(environments = ?envs, "collected current envs.");
 
     // check dirs accessibility
     let _ = std::fs::metadata(&ctx.nyanpasu_config_dir)?;
@@ -78,23 +81,16 @@ pub async fn server_inner(
     });
 
     #[cfg(windows)]
-    let sids = std::env::var(ENV_USER_LIST)
-        .ok()
-        .map(|v| {
-            v.split(USER_LIST_SEPARATOR)
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_else(|| {
-            vec![
-                nyanpasu_ipc::utils::acl::get_current_user_sid_string()
-                    .expect("failed to get current user sid"),
-            ]
-        });
+    let sids = crate::utils::acl::read_acl_file()
+        .await
+        .context("failed to read acl file")?;
     #[cfg(windows)]
     let sids_str = &sids.iter().map(|s| s.as_str()).collect::<Vec<_>>();
     #[cfg(not(windows))]
     let sids_str = ();
+
+    #[cfg(windows)]
+    tracing::info!(sids = ?sids_str, "Loaded acl file");
 
     crate::server::run(token, sids_str).await?;
     Ok(())

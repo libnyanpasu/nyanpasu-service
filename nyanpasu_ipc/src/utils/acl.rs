@@ -176,7 +176,7 @@ fn generate_security_descriptor_internal<T: AsRef<str>>(
 /// # Returns
 /// Returns SDDL string
 #[cfg(windows)]
-pub(crate) fn generate_windows_security_descriptor<T: AsRef<str> + core::fmt::Debug>(
+pub fn generate_windows_security_descriptor<T: AsRef<str> + core::fmt::Debug>(
     sids: &[T],
     owner: Option<&str>,
     group: Option<&str>,

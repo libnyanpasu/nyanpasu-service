@@ -33,6 +33,7 @@ tracing-appender = { version = "0.2", features = ["parking_lot"] }
 futures = "0.3.30"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+windows = { version = "0.61", features = ["Win32_Security"] }
 
 [profile.release]
 panic = "unwind"

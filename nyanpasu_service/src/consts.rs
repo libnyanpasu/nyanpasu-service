@@ -1,8 +1,5 @@
 use constcat::concat;
 
-pub const USER_LIST_SEPARATOR: char = ',';
-pub const ENV_USER_LIST: &str = "USER_LIST";
-
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
 pub const SERVICE_LABEL: &str = concat!("moe.elaina.", APP_NAME);
