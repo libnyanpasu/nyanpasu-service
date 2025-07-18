@@ -72,7 +72,7 @@ pub enum CommandError {
     #[error("join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
     #[error("io error: {0}")]
-    IO(
+    Io(
         #[from]
         #[backtrace]
         std::io::Error,

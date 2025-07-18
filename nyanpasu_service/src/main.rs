@@ -1,4 +1,5 @@
 #![feature(error_generic_member_access)]
+#![feature(exit_status_error)]
 
 mod cmds;
 pub mod consts;

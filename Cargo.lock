@@ -1682,6 +1682,7 @@ dependencies = [
  "service-manager",
  "simd-json",
  "supports-color",
+ "sysinfo",
  "thiserror 2.0.12",
  "timeago",
  "tokio",

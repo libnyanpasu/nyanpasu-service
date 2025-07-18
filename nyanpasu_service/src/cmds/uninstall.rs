@@ -1,4 +1,4 @@
-use std::thread;
+use std::{io::Stdout, process::Stdio, thread};
 
 use service_manager::{
     ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceStopCtx, ServiceUninstallCtx,
@@ -26,10 +26,17 @@ pub fn uninstall() -> Result<(), CommandError> {
             })?;
         }
         ServiceStatus::Running => {
-            tracing::info!("service is running, we need to stop it first");
-            manager.stop(ServiceStopCtx {
-                label: label.clone(),
-            })?;
+            tracing::info!("Service is running, we need to stop it first");
+            std::process::Command::new(std::env::current_exe()?)
+                .arg("stop")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .status()
+                .inspect_err(|e| tracing::error!("failed to stop service: {:?}", e))
+                .map_err(CommandError::Io)?
+                .exit_ok()
+                .inspect_err(|e| tracing::error!("failed to stop service: {:?}", e))
+                .map_err(|e| CommandError::Other(e.into()))?;
             thread::sleep(std::time::Duration::from_secs(5)); // wait for the service to stop
             manager.uninstall(ServiceUninstallCtx {
                 label: label.clone(),
