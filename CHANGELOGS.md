@@ -1,4 +1,36 @@
 
+## [1.4.0] - 2025-07-18
+
+
+### ✨ Features
+
+- **acl:** Finish windows acl by @greenhat616 
+
+
+### 🐛 Bug Fixes
+
+- **core:** Ws report panic and remove UNC prefix by @greenhat616 
+
+- **service:** Add a force kill logic by @greenhat616 
+
+- **service:** Use acl file directly by @greenhat616 
+
+- Example by @greenhat616 
+
+
+### 🔨 Refactor
+
+- **instance:** Improve instance management by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.3.1...v1.4.0
+
+
+
+
 ## [1.3.1] - 2025-05-20
 
 
