@@ -45,6 +45,9 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     if !service_data_dir.exists() {
         std::fs::create_dir_all(&service_data_dir)?;
     }
+    if !service_config_dir.exists() {
+        std::fs::create_dir_all(&service_config_dir)?;
+    }
     let binary_name = format!("{}{}", APP_NAME, std::env::consts::EXE_SUFFIX);
     #[cfg(not(target_os = "linux"))]
     let service_binary = service_data_dir.join(binary_name);
@@ -54,7 +57,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     // Prevent both src and target binary are the same
     // It possible happens when a app was installed by a linux package manager
     if current_binary != service_binary {
-        tracing::info!("copying service binary to: {:?}", service_binary);
+        tracing::info!("Copying service binary to: {:?}", service_binary);
         std::fs::copy(current_binary, &service_binary)?;
     }
 
@@ -72,7 +75,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
             crate::utils::os::user::add_user_to_nyanpasu_group(&ctx.user)?;
         }
     }
-    tracing::info!("working dir: {:?}", service_data_dir);
+    tracing::info!("Working dir: {:?}", service_data_dir);
     let mut envs = Vec::new();
     #[cfg(windows)]
     {
@@ -111,15 +114,16 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
         autostart: true,
         disable_restart_on_failure: false,
     })?;
-    // confirm the service is installed
+    // Confirm the service is installed
     if matches!(
         manager.status(ServiceStatusCtx { label })?,
         ServiceStatus::NotInstalled
     ) {
+        tracing::error!("Service install failed");
         return Err(CommandError::Other(anyhow::anyhow!(
-            "service install failed"
+            "Service install failed"
         )));
     }
-    tracing::info!("service installed");
+    tracing::info!("Service installed");
     Ok(())
 }
