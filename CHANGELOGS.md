@@ -1,4 +1,20 @@
 
+## [1.4.1] - 2025-07-19
+
+
+### 🐛 Bug Fixes
+
+- Create service config dir while service install by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.0...v1.4.1
+
+
+
+
 ## [1.4.0] - 2025-07-18
 
 
