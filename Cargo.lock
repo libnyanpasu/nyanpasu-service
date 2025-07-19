@@ -809,7 +809,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b667b551a38076c483aa9aef432e9fc6a425ea4c"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b6372cb3e46e0c07da2f10fd87026436694e2ec4"
 dependencies = [
  "dirs 6.0.0",
  "thiserror 2.0.12",
@@ -1554,7 +1554,7 @@ dependencies = [
 [[package]]
 name = "network-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b667b551a38076c483aa9aef432e9fc6a425ea4c"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b6372cb3e46e0c07da2f10fd87026436694e2ec4"
 dependencies = [
  "log",
  "tempfile",
@@ -1710,7 +1710,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b667b551a38076c483aa9aef432e9fc6a425ea4c"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b6372cb3e46e0c07da2f10fd87026436694e2ec4"
 dependencies = [
  "camino",
  "constcat",
@@ -1788,7 +1788,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "os-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b667b551a38076c483aa9aef432e9fc6a425ea4c"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git#b6372cb3e46e0c07da2f10fd87026436694e2ec4"
 dependencies = [
  "nix 0.30.1",
  "shared_child",
@@ -2293,8 +2293,9 @@ dependencies = [
 
 [[package]]
 name = "service-manager"
-version = "0.7.1"
-source = "git+https://github.com/greenhat616/service-manager-rs.git#13dae5e8160f91fdc9834d847165cc5ce0a72fb3"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2cae942acfe9cecd4450998408f52e1c1ee083145226b7b803bd0d82e1c86912"
 dependencies = [
  "cfg-if",
  "dirs 4.0.0",

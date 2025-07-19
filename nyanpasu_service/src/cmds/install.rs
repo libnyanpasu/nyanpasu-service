@@ -109,6 +109,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
         working_directory: Some(service_data_dir),
         environment: Some(envs),
         autostart: true,
+        disable_restart_on_failure: false,
     })?;
     // confirm the service is installed
     if matches!(

@@ -50,7 +50,7 @@ tracing-subscriber = { workspace = true, features = [
 tracing-attributes.workspace = true
 tracing-panic = "0.1"
 tracing-serde = "0.2"
-service-manager = { git = "https://github.com/greenhat616/service-manager-rs.git" }
+service-manager = "0.8"
 parking_lot = "0.12"
 constcat = "0.6.0"
 ctrlc = { version = "3", features = ["termination"] }
