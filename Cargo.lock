@@ -1071,7 +1071,7 @@ dependencies = [
  "futures-core",
  "futures-sink",
  "http",
- "indexmap 2.10.0",
+ "indexmap 2.11.0",
  "slab",
  "tokio",
  "tokio-util",
@@ -1319,9 +1319,9 @@ dependencies = [
 
 [[package]]
 name = "indexmap"
-version = "2.10.0"
+version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe4cd85333e22411419a0bcae1297d25e58c9443848b11dc6a86fefe8c78a661"
+checksum = "f2481980430f9f78649238835720ddccc57e52df14ffce1c6f37391d61b563e9"
 dependencies = [
  "equivalent",
  "hashbrown 0.15.4",
@@ -1643,7 +1643,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "indexmap 2.10.0",
+ "indexmap 2.11.0",
  "interprocess",
  "nyanpasu-utils",
  "pin-project-lite",
@@ -1680,7 +1680,7 @@ dependencies = [
  "dashmap",
  "dunce",
  "futures-util",
- "indexmap 2.10.0",
+ "indexmap 2.11.0",
  "nyanpasu-ipc",
  "nyanpasu-utils",
  "oneshot",
@@ -1853,7 +1853,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4c5cc86750666a3ed20bdaf5ca2a0344f9c67674cae0515bec2da16fbaa47db"
 dependencies = [
  "fixedbitset",
- "indexmap 2.10.0",
+ "indexmap 2.11.0",
 ]
 
 [[package]]
@@ -1913,7 +1913,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3af6b589e163c5a788fab00ce0c0366f6efbb9959c2f9874b224936af7fce7e1"
 dependencies = [
  "base64 0.22.1",
- "indexmap 2.10.0",
+ "indexmap 2.11.0",
  "quick-xml",
  "serde",
  "time",
