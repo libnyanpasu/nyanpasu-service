@@ -34,7 +34,7 @@ jobs:
           git config --global core.autocrlf false
           git config --global core.eol lf
       - name: Check out Git repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install Rust nightly toolchain
         run: |
           rustup toolchain install -c clippy -c rustfmt --profile minimal nightly
