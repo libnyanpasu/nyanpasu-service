@@ -1264,7 +1264,7 @@ dependencies = [
 [[package]]
 name = "interprocess"
 version = "2.3.0"
-source = "git+https://github.com/libnyanpasu/interprocess.git?rev=33b6a83#33b6a835833ca7fe5276c7dd8a13bfbdac7a80a2"
+source = "git+https://github.com/libnyanpasu/interprocess.git?rev=f91c5fde814a41bf481209bca20cb9605e0b3c1e#f91c5fde814a41bf481209bca20cb9605e0b3c1e"
 dependencies = [
  "doctest-file",
  "futures-core",

@@ -23,7 +23,7 @@ tokio-util = { workspace = true, features = ["io-util"] }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 serde = { workspace = true }
-interprocess = { git = "https://github.com/libnyanpasu/interprocess.git", rev = "33b6a83", features = [
+interprocess = { git = "https://github.com/libnyanpasu/interprocess.git", rev = "f91c5fde814a41bf481209bca20cb9605e0b3c1e", features = [
     "tokio",
 ] }
 axum = { version = "0.8", features = ["ws"], optional = true }
