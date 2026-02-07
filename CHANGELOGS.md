@@ -1,4 +1,20 @@
 
+## [1.4.2] - 2026-02-07
+
+
+### 🐛 Bug Fixes
+
+- **deps:** Linux 32bit build by @keiko233 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.1...v1.4.2
+
+
+
+
 ## [1.4.1] - 2025-07-19
 
 
