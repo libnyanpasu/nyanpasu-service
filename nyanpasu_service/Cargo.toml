@@ -59,7 +59,7 @@ bounded-vec-deque = "0.1.1"
 chrono = { workspace = true }
 supports-color = "3.0.2"
 colored = "3.0.0"
-timeago = "0.5"
+timeago = "0.6"
 ansi-str = "0.9"
 console-subscriber = { version = "0.5", optional = true, features = [
     "parking_lot",
