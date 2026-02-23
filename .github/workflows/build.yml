@@ -73,7 +73,7 @@ jobs:
       - name: Calc the archive signature
         run: sha256sum nyanpasu-service-${{ matrix.profile.target }}.tar.gz > nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nyanpasu-service-${{ matrix.profile.target }}
           path: |
@@ -112,7 +112,7 @@ jobs:
         shell: pwsh
         run: Get-FileHash nyanpasu-service-${{ matrix.profile.target }}.zip -Algorithm SHA256 | Format-List > nyanpasu-service-${{ matrix.profile.target }}.zip.sha256
       - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: nyanpasu-service-${{ matrix.profile.target }}
           path: |
