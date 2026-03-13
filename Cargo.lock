@@ -472,7 +472,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -735,7 +735,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.0",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.0",
 ]
 
 [[package]]
@@ -2195,14 +2195,15 @@ dependencies = [
 
 [[package]]
 name = "service-manager"
-version = "0.8.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cae942acfe9cecd4450998408f52e1c1ee083145226b7b803bd0d82e1c86912"
+checksum = "b9ff6975a4ea07dda326cf122fcc1b5cf6266daad42d1442a666a99fe50f0de9"
 dependencies = [
  "cfg-if",
  "dirs 4.0.0",
  "encoding-utils",
  "encoding_rs",
+ "log",
  "plist",
  "which",
  "xml-rs",
