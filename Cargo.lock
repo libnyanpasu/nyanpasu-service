@@ -742,7 +742,7 @@ dependencies = [
 [[package]]
 name = "dirs-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=2232574#2232574d367c96937e2e993d6f50a7e1d7b6e750"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=a98892949bdd5f2de688d2bf0f278659ded42c4f#a98892949bdd5f2de688d2bf0f278659ded42c4f"
 dependencies = [
  "dirs 6.0.0",
  "thiserror 2.0.18",
@@ -1505,7 +1505,7 @@ dependencies = [
 [[package]]
 name = "network-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=2232574#2232574d367c96937e2e993d6f50a7e1d7b6e750"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=a98892949bdd5f2de688d2bf0f278659ded42c4f#a98892949bdd5f2de688d2bf0f278659ded42c4f"
 dependencies = [
  "log",
  "tempfile",
@@ -1660,7 +1660,7 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=2232574#2232574d367c96937e2e993d6f50a7e1d7b6e750"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=a98892949bdd5f2de688d2bf0f278659ded42c4f#a98892949bdd5f2de688d2bf0f278659ded42c4f"
 dependencies = [
  "camino",
  "constcat",
@@ -1776,7 +1776,7 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 [[package]]
 name = "os-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=2232574#2232574d367c96937e2e993d6f50a7e1d7b6e750"
+source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=a98892949bdd5f2de688d2bf0f278659ded42c4f#a98892949bdd5f2de688d2bf0f278659ded42c4f"
 dependencies = [
  "nix 0.31.2",
  "shared_child",
