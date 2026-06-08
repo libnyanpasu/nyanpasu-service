@@ -82,4 +82,4 @@ windows-service = "0.8"
 windows = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
-whoami = "1"
+whoami = "2"
