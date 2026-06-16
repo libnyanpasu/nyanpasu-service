@@ -30,7 +30,7 @@ nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = 
 ] }
 axum = { workspace = true, features = ["macros"] }
 dashmap = "6"
-tower-http = { version = "0.6", features = ["trace"] }
+tower-http = { version = "0.7", features = ["trace"] }
 tokio = { workspace = true, features = ["full"] }
 tokio-util = { workspace = true }
 futures-util = { workspace = true }
