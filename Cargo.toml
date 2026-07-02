@@ -9,7 +9,7 @@ authors = ["zzzgydi", "LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
 
 [workspace.dependencies]
-nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false, rev = "2232574" }
+nyanpasu-utils = { git = "https://github.com/LibNyanpasu/nyanpasu-utils.git", default-features = false, rev = "8549b57ec03064fd9a73421f9106697a721fd9a1" }
 axum = "0.8"
 anyhow = "1"
 thiserror = "2"
