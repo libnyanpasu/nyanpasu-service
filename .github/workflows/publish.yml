@@ -89,7 +89,7 @@ jobs:
           commit_user_email: "41898282+github-actions[bot]@users.noreply.github.com"
           tagging_message: "v${{ steps.update-version.outputs.version }}"
       - name: Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           # draft: true
           body: ${{steps.build-changelog.outputs.content}}
@@ -130,7 +130,7 @@ jobs:
       - name: Calc the archive signature
         run: sha256sum nyanpasu-service-${{ matrix.profile.target }}.tar.gz > nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ needs.publish.outputs.version }}"
           files: |
@@ -201,7 +201,7 @@ jobs:
       - name: Calc the archive signature
         run: sha256sum nyanpasu-service-${{ matrix.profile.target }}.tar.gz > nyanpasu-service-${{ matrix.profile.target }}.tar.gz.sha256
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ needs.publish.outputs.version }}"
           files: |
@@ -241,7 +241,7 @@ jobs:
         shell: pwsh
         run: Get-FileHash nyanpasu-service-${{ matrix.profile.target }}.zip -Algorithm SHA256 | Format-List > nyanpasu-service-${{ matrix.profile.target }}.zip.sha256
       - name: Upload Release Asset
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: "v${{ needs.publish.outputs.version }}"
           files: |
