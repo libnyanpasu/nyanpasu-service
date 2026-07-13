@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "nyanpasu-ipc"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "anyhow",
  "axum",
@@ -1592,7 +1592,7 @@ dependencies = [
 
 [[package]]
 name = "nyanpasu-service"
-version = "1.4.2"
+version = "1.4.3"
 dependencies = [
  "ansi-str",
  "anyhow",

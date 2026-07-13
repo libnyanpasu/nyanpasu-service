@@ -1,4 +1,20 @@
 
+## [1.4.3] - 2026-07-13
+
+
+### 🐛 Bug Fixes
+
+- **ipc:** Avoid unsupported socket mode on macOS by @keiko233 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.2...v1.4.3
+
+
+
+
 ## [1.4.2] - 2026-02-07
 
 
