@@ -5,7 +5,7 @@ use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions,
     tokio::{Listener, Stream as InterProcessStream, prelude::*},
 };
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
 use interprocess::os::unix::local_socket::ListenerOptionsExt;
 #[cfg(windows)]
 use interprocess::os::windows::{
@@ -25,6 +25,18 @@ pub enum ServerError {
 }
 
 pub struct InterProcessListener(Listener, String);
+
+fn configure_listener_mode<'n>(options: ListenerOptions<'n>) -> ListenerOptions<'n> {
+    // Interprocess applies this mode with fchmod() before bind(). macOS does not support
+    // fchmod() on socket file descriptors, so permissions are applied to the socket path below.
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
+    {
+        return options.mode(0o664);
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd")))]
+    options
+}
 
 /// copy from axum::serve::listener.rs
 async fn handle_accept_error(e: std::io::Error) {
@@ -104,18 +116,9 @@ pub async fn create_server(
         let sw = SecurityDescriptor::deserialize(&sdsf)?;
         options.security_descriptor(sw)
     };
-    // allow owner and group to read and write
-    #[cfg(unix)]
-    let options = options.mode({
-        #[cfg(target_os = "linux")]
-        {
-            0o664 as u32
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            0o664 as u16
-        }
-    });
+    // Set the mode atomically on platforms that support fchmod() on socket descriptors.
+    // Other Unix platforms use change_socket_mode() after the socket path is created.
+    let options = configure_listener_mode(options);
 
     let listener = options.create_tokio()?;
     let listener = InterProcessListener(listener, name_str);
@@ -131,4 +134,31 @@ pub async fn create_server(
         None => server.await?,
     };
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn listener_mode_configuration_is_supported_on_macos() {
+        let socket_path = format!("/tmp/nyanpasu-ipc-test-{}.sock", std::process::id());
+        let _ = std::fs::remove_file(&socket_path);
+        let name = socket_path
+            .as_str()
+            .to_fs_name::<GenericFilePath>()
+            .expect("temporary socket path should be valid");
+
+        let listener = configure_listener_mode(
+            ListenerOptions::new()
+                .name(name)
+                .nonblocking(ListenerNonblockingMode::Both),
+        )
+        .create_tokio()
+        .expect("macOS should create the listener without an unsupported socket mode");
+
+        assert!(std::path::Path::new(&socket_path).exists());
+        drop(listener);
+        let _ = std::fs::remove_file(socket_path);
+    }
 }
