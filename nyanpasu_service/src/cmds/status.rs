@@ -3,7 +3,7 @@ use std::{borrow::Cow, time::Duration};
 use super::CommandError;
 use crate::consts::{APP_NAME, APP_VERSION, SERVICE_LABEL};
 use nyanpasu_ipc::{client::shortcuts::Client, types::StatusInfo};
-use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx};
+use service_manager::{ServiceLabel, ServiceStatus};
 use tokio::time::timeout;
 
 #[derive(Debug, clap::Args)]
@@ -25,9 +25,7 @@ pub async fn status(ctx: StatusCommand) -> Result<(), CommandError> {
     let status = if ctx.skip_service_check {
         ServiceStatus::Running
     } else {
-        manager.status(ServiceStatusCtx {
-            label: label.clone(),
-        })?
+        crate::utils::service::status(manager.as_ref(), &label)?
     };
     tracing::debug!("Note that the service original state is: {:?}", status);
     let client = Client::service_default();

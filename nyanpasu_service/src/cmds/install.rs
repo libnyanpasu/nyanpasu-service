@@ -1,6 +1,6 @@
 use std::{env::current_exe, ffi::OsString, path::PathBuf};
 
-use service_manager::{ServiceInstallCtx, ServiceLabel, ServiceStatus, ServiceStatusCtx};
+use service_manager::{ServiceInstallCtx, ServiceLabel, ServiceStatus};
 
 use crate::consts::{APP_NAME, SERVICE_LABEL};
 
@@ -29,9 +29,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     let manager = crate::utils::get_service_manager()?;
     // before we install the service, we need to check if the service is already installed
     if !matches!(
-        manager.status(ServiceStatusCtx {
-            label: label.clone(),
-        })?,
+        crate::utils::service::status(manager.as_ref(), &label)?,
         ServiceStatus::NotInstalled
     ) {
         return Err(CommandError::ServiceAlreadyInstalled);
@@ -116,7 +114,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
     })?;
     // Confirm the service is installed
     if matches!(
-        manager.status(ServiceStatusCtx { label })?,
+        crate::utils::service::status(manager.as_ref(), &label)?,
         ServiceStatus::NotInstalled
     ) {
         tracing::error!("Service install failed");

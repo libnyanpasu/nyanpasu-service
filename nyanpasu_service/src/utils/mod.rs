@@ -6,6 +6,7 @@ use tracing_panic::panic_hook;
 pub mod acl;
 pub mod dirs;
 pub mod os;
+pub mod service;
 
 pub fn must_check_elevation() -> bool {
     #[cfg(windows)]

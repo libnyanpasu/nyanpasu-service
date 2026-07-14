@@ -1,7 +1,7 @@
 use std::{thread, time::Duration};
 
 use anyhow::Context;
-use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceStopCtx};
+use service_manager::{ServiceLabel, ServiceStatus};
 
 use crate::consts::SERVICE_LABEL;
 
@@ -10,9 +10,7 @@ use super::CommandError;
 pub fn stop() -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
-    let status = manager.status(ServiceStatusCtx {
-        label: label.clone(),
-    })?;
+    let status = crate::utils::service::status(manager.as_ref(), &label)?;
     match status {
         ServiceStatus::NotInstalled => {
             tracing::info!("service not installed, nothing to do");
@@ -29,7 +27,7 @@ pub fn stop() -> Result<(), CommandError> {
                 let label_ = label.clone();
                 let handle = tokio::task::spawn_blocking(move || {
                     let manager = crate::utils::get_service_manager()?;
-                    manager.stop(ServiceStopCtx { label: label_ })?;
+                    crate::utils::service::stop(manager.as_ref(), &label_)?;
                     anyhow::Ok(())
                 });
 
@@ -61,14 +59,8 @@ pub fn stop() -> Result<(), CommandError> {
     thread::sleep(std::time::Duration::from_secs(3));
     // check if the service is stopped
     let manager = crate::utils::get_service_manager()?;
-    let status = manager.status(ServiceStatusCtx {
-        label: label.clone(),
-    })?;
-    // macOS possibly returns ServiceStatus::NotInstalled
-    if !matches!(
-        status,
-        ServiceStatus::Stopped(None) | ServiceStatus::NotInstalled
-    ) {
+    let status = crate::utils::service::status(manager.as_ref(), &label)?;
+    if !matches!(status, ServiceStatus::Stopped(_)) {
         return Err(CommandError::Other(anyhow::anyhow!(
             "service stop failed, status: {:?}",
             status

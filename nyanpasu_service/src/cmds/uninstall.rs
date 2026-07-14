@@ -1,6 +1,6 @@
 use std::{process::Stdio, thread};
 
-use service_manager::{ServiceLabel, ServiceStatus, ServiceStatusCtx, ServiceUninstallCtx};
+use service_manager::{ServiceLabel, ServiceStatus, ServiceUninstallCtx};
 
 use crate::consts::SERVICE_LABEL;
 
@@ -9,9 +9,7 @@ use super::CommandError;
 pub fn uninstall() -> Result<(), CommandError> {
     let label: ServiceLabel = SERVICE_LABEL.parse()?;
     let manager = crate::utils::get_service_manager()?;
-    let status = manager.status(ServiceStatusCtx {
-        label: label.clone(),
-    })?;
+    let status = crate::utils::service::status(manager.as_ref(), &label)?;
     match status {
         ServiceStatus::NotInstalled => {
             tracing::info!("service not installed, nothing to do");
@@ -42,7 +40,7 @@ pub fn uninstall() -> Result<(), CommandError> {
         }
     }
     tracing::info!("confirming service is uninstalled...");
-    let status = manager.status(ServiceStatusCtx { label })?;
+    let status = crate::utils::service::status(manager.as_ref(), &label)?;
     if status != ServiceStatus::NotInstalled {
         return Err(CommandError::Other(anyhow::anyhow!(
             "service uninstall failed, status: {:?}",
