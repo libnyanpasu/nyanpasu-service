@@ -14,7 +14,7 @@ axum = "0.8"
 anyhow = "1"
 thiserror = "2"
 parking_lot = "0.12"
-simd-json = "0.16"
+simd-json = "0.17"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 serde = { version = "1", features = ["derive"] }
