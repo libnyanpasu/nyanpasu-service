@@ -1,6 +1,6 @@
 [package]
 name = "nyanpasu-service"
-version = "1.4.3"
+version = "1.4.4"
 edition = "2024"
 authors = { workspace = true }
 license = { workspace = true }

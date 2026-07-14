@@ -1,4 +1,20 @@
 
+## [1.4.4] - 2026-07-14
+
+
+### 🐛 Bug Fixes
+
+- **service:** Restore macOS lifecycle operations by @keiko233 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.3...v1.4.4
+
+
+
+
 ## [1.4.3] - 2026-07-13
 
 
