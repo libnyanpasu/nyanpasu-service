@@ -1587,7 +1587,7 @@ dependencies = [
  "tracing",
  "tracing-attributes",
  "widestring",
- "windows 0.61.3",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1635,7 +1635,7 @@ dependencies = [
  "tracing-serde",
  "tracing-subscriber",
  "whoami",
- "windows 0.61.3",
+ "windows 0.62.2",
  "windows-service",
 ]
 
