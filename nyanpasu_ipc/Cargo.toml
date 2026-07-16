@@ -3,46 +3,50 @@ name = "nyanpasu-ipc"
 version = "1.4.4"
 edition = "2024"
 
-[features]
-server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
-client = ["dep:axum"]
-specta = ["dep:specta", "nyanpasu-utils/specta"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
-nyanpasu-utils = { path = "../crates/nyanpasu-utils", default-features = false, features = [
+nyanpasu-utils = {
+  path = "../crates/nyanpasu-utils",
+  default-features = false,
+  features = [
     "core_manager",
     "serde",
-] }
+  ]
+}
 
-tracing = { workspace = true }
-tracing-attributes = { workspace = true }
+anyhow = { workspace = true }
+axum = { version = "0.8", features = ["ws"], optional = true }
+axum-extra = { version = "0.12", features = ["typed-header"], optional = true }
+# tokio-tungstenite = "0.23" # Websocket impl
+derive_builder = "0.20"
+futures = { workspace = true }
+futures-util = { workspace = true }
+http-body-util = "0.1"
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+interprocess = { version = "2.3.1", features = ["tokio"] }
+pin-project-lite = "0.2"
+serde = { workspace = true }
+simd-json = { workspace = true }
+specta = { version = "^2.0.0-rc.22", features = ["derive"], optional = true }
+thiserror = { workspace = true }
 # tracing-futures = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true, features = ["io-util"] }
-thiserror = { workspace = true }
-anyhow = { workspace = true }
-serde = { workspace = true }
-interprocess = { version = "2.3.1", features = ["tokio"] }
-axum = { version = "0.8", features = ["ws"], optional = true }
-axum-extra = { version = "0.12", features = ["typed-header"], optional = true }
 tower = { version = "0.5", features = ["util"], optional = true }
+tracing = { workspace = true }
+tracing-attributes = { workspace = true }
 # tower-http = { version = "0.5", features = ["fs", "trace"], optional = true }
 widestring = { version = "1", optional = true }
-hyper = { version = "1", features = ["full"] }
-http-body-util = "0.1"
-hyper-util = { version = "0.1", features = ["full"] }
-simd-json = { workspace = true }
-futures = { workspace = true }
-futures-util = { workspace = true }
-pin-project-lite = "0.2"
-# tokio-tungstenite = "0.23" # Websocket impl
-derive_builder = "0.20"
-specta = { version = "^2.0.0-rc.22", features = ["derive"], optional = true }
 
 indexmap = { version = "2", features = ["serde"] }
-serde_json = "1"                                   # for serde_json::Value
+serde_json = "1"  # for serde_json::Value
 
-[target.'cfg(windows)'.dependencies]
+[target."cfg(windows)".dependencies]
 windows = { workspace = true }
+
+[features]
+client = ["dep:axum"]
+server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
+specta = ["dep:specta", "nyanpasu-utils/specta"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

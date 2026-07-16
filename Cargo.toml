@@ -1,41 +1,43 @@
 [workspace]
 resolver = "2"
-members = ["nyanpasu_service", "nyanpasu_ipc", "crates/nyanpasu-utils"]
+members = ["crates/nyanpasu-utils", "nyanpasu_ipc", "nyanpasu_service"]
 
 [workspace.package]
 edition = "2024"
-license = "GPL-3.0"
-authors = ["zzzgydi", "LibNyanpasu"]
 repository = "https://github.com/LibNyanpasu/clash-nyanpasu-service.git"
+license = "GPL-3.0"
 
 [workspace.dependencies]
-axum = "0.8"
 anyhow = "1"
-thiserror = "2"
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+futures = "0.3.30"
+futures-util = "0.3"
 parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
 simd-json = "0.17"
+thiserror = "2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }
-serde = { version = "1", features = ["derive"] }
-clap = { version = "4", features = ["derive"] }
 tracing = "0.1"
+tracing-appender = { version = "0.2", features = ["parking_lot"] }
 tracing-attributes = "0.1"
+tracing-error = "0.2"
 tracing-futures = "0.2"
-tracing-subscriber = { version = "0.3", features = [
+tracing-log = { version = "0.2" }
+tracing-subscriber = {
+  version = "0.3",
+  features = [
     "env-filter",
     "json",
     "parking_lot",
-] }
-tracing-error = "0.2"
-tracing-log = { version = "0.2" }
-tracing-appender = { version = "0.2", features = ["parking_lot"] }
-futures = "0.3.30"
-futures-util = "0.3"
-chrono = { version = "0.4", features = ["serde"] }
+  ]
+}
 windows = { version = "0.62", features = ["Win32_Security"] }
 
 [profile.release]
+opt-level = "s"
+lto = true
 panic = "unwind"
 codegen-units = 1
-lto = true
-opt-level = "s"
