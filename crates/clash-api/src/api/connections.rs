@@ -7,7 +7,7 @@ use uuid::Uuid;
 use crate::{Client, Error, Result, retry::RequestMetadata};
 
 /// Snapshot returned by `GET /connections` and each WebSocket frame.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionsSnapshot {
     pub download_total: i64,
@@ -17,7 +17,7 @@ pub struct ConnectionsSnapshot {
     pub memory: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Connection {
     pub id: Uuid,
@@ -31,7 +31,7 @@ pub struct Connection {
     pub rule_payload: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum ConnectionNetwork {
     Tcp,
@@ -40,7 +40,7 @@ pub enum ConnectionNetwork {
     Invalid,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum ConnectionType {
     #[serde(rename = "HTTP")]
     Http,
@@ -75,7 +75,7 @@ pub enum ConnectionType {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum DnsMode {
     #[serde(rename = "normal")]
     Normal,
@@ -89,7 +89,7 @@ pub enum DnsMode {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct ConnectionMetadata {
     pub network: ConnectionNetwork,
     #[serde(rename = "type")]
@@ -107,12 +107,15 @@ pub struct ConnectionMetadata {
     #[serde(rename = "destinationIPASN")]
     pub destination_ip_asn: String,
     #[serde(rename = "sourcePort", with = "string_u16")]
+    #[specta(type = String)]
     pub source_port: u16,
     #[serde(rename = "destinationPort", with = "string_u16")]
+    #[specta(type = String)]
     pub destination_port: u16,
     #[serde(rename = "inboundIP")]
     pub inbound_ip: String,
     #[serde(rename = "inboundPort", with = "string_u16")]
+    #[specta(type = String)]
     pub inbound_port: u16,
     #[serde(rename = "inboundName")]
     pub inbound_name: String,
@@ -139,7 +142,7 @@ pub struct ConnectionMetadata {
 }
 
 /// WebSocket sampling interval. Mihomo interprets it as decimal milliseconds.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, specta::Type)]
 pub struct ConnectionStreamQuery {
     interval: Duration,
 }

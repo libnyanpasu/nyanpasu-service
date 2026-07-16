@@ -4,7 +4,8 @@ use crate::{Client, Error, Result, retry::RequestMetadata};
 
 /// DNS RR type sent to Mihomo. Constants cover common queries while `new`
 /// remains forward-compatible with types added by miekg/dns.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, specta::Type)]
+#[specta(transparent)]
 pub struct DnsRecordType(String);
 
 impl DnsRecordType {
@@ -48,7 +49,7 @@ impl DnsRecordType {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, specta::Type)]
 pub struct DnsQuery {
     pub name: String,
     pub record_type: DnsRecordType,
@@ -67,7 +68,7 @@ impl DnsQuery {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct DnsQuestion {
     #[serde(rename = "Name")]
     pub name: String,
@@ -77,7 +78,7 @@ pub struct DnsQuestion {
     pub query_class: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct DnsRecord {
     pub name: String,
     #[serde(rename = "type")]
@@ -87,7 +88,7 @@ pub struct DnsRecord {
     pub data: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct DnsResponse {
     #[serde(rename = "Status")]
     pub status: i64,

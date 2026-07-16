@@ -1,11 +1,12 @@
-use std::{collections::HashMap, str::FromStr, time::Duration};
+use std::{str::FromStr, time::Duration};
 
 use chrono::{DateTime, FixedOffset};
+use indexmap::IndexMap;
 use reqwest::{Method, Url};
 
 use crate::{Client, Error, Result, retry::RequestMetadata};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(transparent)]
 pub struct ProxyName(String);
 
@@ -37,7 +38,7 @@ impl std::fmt::Display for ProxyName {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(transparent)]
 pub struct ProviderName(String);
 
@@ -69,27 +70,27 @@ impl std::fmt::Display for ProviderName {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct DelayHistory {
     pub time: DateTime<FixedOffset>,
     pub delay: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct ProxyExtra {
     pub alive: bool,
     pub history: Vec<DelayHistory>,
 }
 
 /// Common and group-specific fields emitted by Mihomo's proxy wrappers.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct Proxy {
     pub name: ProxyName,
     #[serde(rename = "type")]
     pub proxy_type: String,
     pub history: Vec<DelayHistory>,
-    pub extra: HashMap<String, ProxyExtra>,
+    pub extra: IndexMap<String, ProxyExtra>,
     pub alive: bool,
     pub udp: bool,
     pub uot: bool,
@@ -124,7 +125,7 @@ pub struct Proxy {
     pub empty_fallback: Option<ProxyName>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum ProviderType {
     Proxy,
     Rule,
@@ -132,7 +133,7 @@ pub enum ProviderType {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum VehicleType {
     File,
     #[serde(rename = "HTTP")]
@@ -143,7 +144,7 @@ pub enum VehicleType {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "PascalCase")]
 pub struct SubscriptionInfo {
     pub upload: i64,
@@ -152,7 +153,7 @@ pub struct SubscriptionInfo {
     pub expire: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProxyProvider {
     pub name: ProviderName,
@@ -169,7 +170,8 @@ pub struct ProxyProvider {
 }
 
 /// Allowed response status expression such as `200/204/401-429`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, specta::Type)]
+#[specta(transparent)]
 pub struct ExpectedStatus(String);
 
 impl ExpectedStatus {
@@ -193,7 +195,7 @@ impl FromStr for ExpectedStatus {
 }
 
 /// URL test parameters shared by group, proxy, and provider endpoints.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, specta::Type)]
 pub struct DelayQuery {
     pub url: Url,
     pub timeout: Duration,
@@ -248,14 +250,14 @@ impl DelayQuery {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct Delay {
     pub delay: u16,
 }
 
 #[derive(serde::Deserialize)]
 struct ProxyMap {
-    proxies: HashMap<ProxyName, Proxy>,
+    proxies: IndexMap<ProxyName, Proxy>,
 }
 
 #[derive(serde::Deserialize)]
@@ -265,7 +267,7 @@ struct ProxyList {
 
 #[derive(serde::Deserialize)]
 struct ProviderMap {
-    providers: HashMap<ProviderName, ProxyProvider>,
+    providers: IndexMap<ProviderName, ProxyProvider>,
 }
 
 #[derive(serde::Serialize)]
@@ -295,7 +297,7 @@ impl Client {
         &self,
         name: &ProxyName,
         query: &DelayQuery,
-    ) -> Result<HashMap<ProxyName, u16>> {
+    ) -> Result<IndexMap<ProxyName, u16>> {
         let url = self.endpoint_with_segments("/group", [name.as_str(), "delay"])?;
         let query = query.query_pairs();
         self.send_json(
@@ -305,7 +307,7 @@ impl Client {
         .await
     }
 
-    pub async fn proxies(&self) -> Result<HashMap<ProxyName, Proxy>> {
+    pub async fn proxies(&self) -> Result<IndexMap<ProxyName, Proxy>> {
         let result: ProxyMap = self
             .send_json(RequestMetadata::new("proxies", Method::GET, true), || {
                 self.get("/proxies/")
@@ -355,7 +357,7 @@ impl Client {
         .await
     }
 
-    pub async fn proxy_providers(&self) -> Result<HashMap<ProviderName, ProxyProvider>> {
+    pub async fn proxy_providers(&self) -> Result<IndexMap<ProviderName, ProxyProvider>> {
         let result: ProviderMap = self
             .send_json(
                 RequestMetadata::new("proxy_providers", Method::GET, true),

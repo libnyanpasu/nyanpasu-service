@@ -10,11 +10,13 @@ backon = "1"
 chrono.workspace = true
 futures-core = "0.3"
 futures-util.workspace = true
+indexmap = { version = "2", features = ["serde"] }
 ipnet = { version = "2", features = ["serde"] }
 reqwest = { version = "0.13", features = ["json", "query", "stream"] }
 reqwest-websocket = "0.6.0"
 serde.workspace = true
 serde_json = "1"
+specta = { version = "^2.0.0-rc.22", features = ["chrono", "derive", "indexmap", "url", "uuid"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util = { workspace = true, features = ["codec", "io"] }

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use axum::{
     Json, Router,
     extract::{Path, Query},
@@ -10,6 +8,7 @@ use clash_api::{
     Client, ConfigPatch, Host, ProviderName, ProxyName, StorageKey, UpdateConfigOptions,
     UpdateConfigRequest,
 };
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 
 async fn spawn_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
@@ -29,7 +28,7 @@ fn assert_auth(headers: &HeaderMap) {
 async fn typed_rest_methods_preserve_queries_bodies_and_empty_responses() {
     async fn update_config(
         headers: HeaderMap,
-        Query(query): Query<HashMap<String, String>>,
+        Query(query): Query<IndexMap<String, String>>,
         Json(body): Json<serde_json::Value>,
     ) -> StatusCode {
         assert_auth(&headers);

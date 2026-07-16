@@ -3,7 +3,9 @@ use reqwest::Method;
 use crate::{Client, HttpStream, Result, retry::RequestMetadata};
 
 /// One `/memory` sample.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 pub struct Memory {
     #[serde(rename = "inuse")]
     pub in_use: u64,

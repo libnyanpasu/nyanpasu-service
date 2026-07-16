@@ -3,7 +3,7 @@ use reqwest::Method;
 use crate::{Client, Result, retry::RequestMetadata};
 
 /// Mihomo core version information.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct Version {
     pub meta: bool,
     pub version: String,

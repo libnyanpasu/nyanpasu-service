@@ -4,7 +4,9 @@ use reqwest::Method;
 use crate::{Client, HttpStream, Result, retry::RequestMetadata};
 
 /// Minimum severity accepted by Mihomo's `/logs` subscription.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Debug,
@@ -16,7 +18,7 @@ pub enum LogLevel {
 }
 
 /// Query shared by regular and structured log subscriptions.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct LogQuery {
     pub level: LogLevel,
 }
@@ -28,7 +30,7 @@ impl LogQuery {
 }
 
 /// A standard Mihomo log event.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct LogEntry {
     #[serde(rename = "type")]
     pub level: LogLevel,
@@ -36,7 +38,7 @@ pub struct LogEntry {
 }
 
 /// Severity spelling used by `format=structured` (`warn`, not `warning`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum StructuredLogLevel {
     Debug,
@@ -45,14 +47,14 @@ pub enum StructuredLogLevel {
     Error,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct LogField {
     pub key: String,
     pub value: String,
 }
 
 /// A `format=structured` Mihomo log event.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct StructuredLogEntry {
     pub time: NaiveTime,
     pub level: StructuredLogLevel,

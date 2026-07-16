@@ -2,17 +2,17 @@ use reqwest::Method;
 
 use crate::{Client, Result, retry::RequestMetadata};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct Hello {
     pub hello: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct StatusResponse {
     pub status: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct UpgradeOptions {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub channel: Option<String>,

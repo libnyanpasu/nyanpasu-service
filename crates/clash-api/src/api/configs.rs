@@ -1,11 +1,12 @@
-use std::{collections::HashMap, net::IpAddr};
+use std::net::IpAddr;
 
+use indexmap::IndexMap;
 use ipnet::IpNet;
 use reqwest::Method;
 
 use crate::{Client, LogLevel, Result, retry::RequestMetadata};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum TunnelMode {
     Global,
@@ -13,7 +14,7 @@ pub enum TunnelMode {
     Direct,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "lowercase")]
 pub enum FindProcessMode {
     Strict,
@@ -21,7 +22,7 @@ pub enum FindProcessMode {
     Off,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum TunStack {
     #[serde(rename = "gVisor")]
     Gvisor,
@@ -31,7 +32,9 @@ pub enum TunStack {
     Unknown,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct GeoUrls {
     pub geo_ip: String,
@@ -40,7 +43,9 @@ pub struct GeoUrls {
     pub geo_site: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(default)]
 pub struct BrutalOptions {
     pub enabled: bool,
@@ -48,7 +53,9 @@ pub struct BrutalOptions {
     pub down: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(default)]
 pub struct MuxOptions {
     pub padding: bool,
@@ -56,7 +63,7 @@ pub struct MuxOptions {
 }
 
 /// Full TUN object returned by `GET /configs`.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct RuntimeTun {
     pub enable: bool,
@@ -68,7 +75,9 @@ pub struct RuntimeTun {
     pub mtu: u32,
     pub gso: bool,
     pub gso_max_size: u32,
+    #[specta(type = Vec<String>)]
     pub inet4_address: Vec<IpNet>,
+    #[specta(type = Vec<String>)]
     pub inet6_address: Vec<IpNet>,
     pub iproute2_table_index: i64,
     pub iproute2_rule_index: i64,
@@ -78,8 +87,10 @@ pub struct RuntimeTun {
     pub auto_redirect_iproute2_fallback_rule_index: i64,
     pub loopback_address: Vec<IpAddr>,
     pub strict_route: bool,
+    #[specta(type = Vec<String>)]
     pub route_address: Vec<IpNet>,
     pub route_address_set: Vec<String>,
+    #[specta(type = Vec<String>)]
     pub route_exclude_address: Vec<IpNet>,
     pub route_exclude_address_set: Vec<String>,
     pub include_interface: Vec<String>,
@@ -102,9 +113,13 @@ pub struct RuntimeTun {
     pub icmp_timeout: i64,
     pub disable_icmp_forwarding: bool,
     pub file_descriptor: i64,
+    #[specta(type = Vec<String>)]
     pub inet4_route_address: Vec<IpNet>,
+    #[specta(type = Vec<String>)]
     pub inet6_route_address: Vec<IpNet>,
+    #[specta(type = Vec<String>)]
     pub inet4_route_exclude_address: Vec<IpNet>,
+    #[specta(type = Vec<String>)]
     pub inet6_route_exclude_address: Vec<IpNet>,
     pub recvmsgx: bool,
     pub sendmsgx: bool,
@@ -166,13 +181,15 @@ impl Default for RuntimeTun {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct RuntimeTuicServer {
     pub enable: bool,
     pub listen: String,
     pub token: Vec<String>,
-    pub users: HashMap<String, String>,
+    pub users: IndexMap<String, String>,
     pub certificate: String,
     pub private_key: String,
     pub client_auth_type: String,
@@ -190,7 +207,7 @@ pub struct RuntimeTuicServer {
 }
 
 /// Runtime view returned by Mihomo's `GET /configs`.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub struct RuntimeConfig {
     pub port: i64,
@@ -203,8 +220,11 @@ pub struct RuntimeConfig {
     pub ss_config: String,
     pub vmess_config: String,
     pub authentication: Option<Vec<String>>,
+    #[specta(type = Option<Vec<String>>)]
     pub skip_auth_prefixes: Option<Vec<IpNet>>,
+    #[specta(type = Option<Vec<String>>)]
     pub lan_allowed_ips: Option<Vec<IpNet>>,
+    #[specta(type = Option<Vec<String>>)]
     pub lan_disallowed_ips: Option<Vec<IpNet>>,
     pub allow_lan: bool,
     pub bind_address: String,
@@ -233,7 +253,7 @@ pub struct RuntimeConfig {
 }
 
 /// Body accepted by `PUT /configs`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct UpdateConfigRequest {
     pub path: String,
     pub payload: String,
@@ -255,13 +275,13 @@ impl UpdateConfigRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 pub struct UpdateConfigOptions {
     pub force: bool,
 }
 
 /// Body accepted by `PATCH /configs`. Every outer field maps to a Go pointer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -289,10 +309,13 @@ pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allow_lan: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub skip_auth_prefixes: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub lan_allowed_ips: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub lan_disallowed_ips: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bind_address: Option<String>,
@@ -312,7 +335,7 @@ pub struct ConfigPatch {
     pub interface_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub struct TunPatch {
     pub enable: bool,
@@ -333,6 +356,7 @@ pub struct TunPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gso_max_size: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub inet6_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub iproute2_table_index: Option<i64>,
@@ -351,10 +375,12 @@ pub struct TunPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict_route: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub route_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_address_set: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub route_exclude_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub route_exclude_address_set: Option<Vec<String>>,
@@ -389,12 +415,16 @@ pub struct TunPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file_descriptor: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub inet4_route_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub inet6_route_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub inet4_route_exclude_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    #[specta(type = Option<Vec<String>>)]
     pub inet6_route_exclude_address: Option<Vec<IpNet>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recvmsgx: Option<bool>,
@@ -402,7 +432,7 @@ pub struct TunPatch {
     pub sendmsgx: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 #[serde(rename_all = "kebab-case")]
 pub struct TuicServerPatch {
     pub enable: bool,
@@ -411,7 +441,7 @@ pub struct TuicServerPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub users: Option<HashMap<String, String>>,
+    pub users: Option<IndexMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

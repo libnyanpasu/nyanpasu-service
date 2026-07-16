@@ -526,11 +526,13 @@ dependencies = [
  "futures-util",
  "hyper",
  "hyper-util",
+ "indexmap",
  "ipnet",
  "reqwest",
  "reqwest-websocket",
  "serde",
  "serde_json",
+ "specta",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",
@@ -3033,8 +3035,12 @@ version = "2.0.0-rc.25"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "38f9a30cbcbb7011f1da7d73483983bf838af123883e45f2b36ed76328df9c50"
 dependencies = [
+ "chrono",
+ "indexmap",
  "rustc_version",
  "specta-macros",
+ "url",
+ "uuid",
 ]
 
 [[package]]

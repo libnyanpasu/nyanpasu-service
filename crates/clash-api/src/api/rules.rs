@@ -1,11 +1,12 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, FixedOffset};
+use indexmap::IndexMap;
 use reqwest::Method;
 
 use crate::{Client, ProviderType, Result, VehicleType, retry::RequestMetadata};
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct Rule {
     pub index: i64,
     #[serde(rename = "type")]
@@ -17,7 +18,7 @@ pub struct Rule {
     pub extra: Option<RuleExtra>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleExtra {
     pub disabled: bool,
@@ -28,7 +29,7 @@ pub struct RuleExtra {
 }
 
 /// Batch of rule indices to enable (`false`) or disable (`true`).
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
 #[serde(transparent)]
 pub struct RulePatch(BTreeMap<usize, bool>);
 
@@ -47,7 +48,7 @@ impl RulePatch {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(transparent)]
 pub struct RuleProviderName(String);
 
@@ -73,7 +74,7 @@ impl From<String> for RuleProviderName {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum RuleProviderBehavior {
     Domain,
     #[serde(rename = "IPCIDR")]
@@ -83,7 +84,7 @@ pub enum RuleProviderBehavior {
     Unknown,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub enum RuleFormat {
     YamlRule,
     TextRule,
@@ -92,7 +93,7 @@ pub enum RuleFormat {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RuleProvider {
     pub behavior: RuleProviderBehavior,
@@ -114,7 +115,7 @@ struct RuleList {
 
 #[derive(serde::Deserialize)]
 struct RuleProviderMap {
-    providers: HashMap<RuleProviderName, RuleProvider>,
+    providers: IndexMap<RuleProviderName, RuleProvider>,
 }
 
 impl Client {
@@ -135,7 +136,7 @@ impl Client {
         .await
     }
 
-    pub async fn rule_providers(&self) -> Result<HashMap<RuleProviderName, RuleProvider>> {
+    pub async fn rule_providers(&self) -> Result<IndexMap<RuleProviderName, RuleProvider>> {
         let result: RuleProviderMap = self
             .send_json(
                 RequestMetadata::new("rule_providers", Method::GET, true),

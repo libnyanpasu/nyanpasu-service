@@ -3,7 +3,8 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{Client, Error, Result, retry::RequestMetadata};
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, specta::Type)]
+#[specta(transparent)]
 pub struct StorageKey(String);
 
 impl StorageKey {

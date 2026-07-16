@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::time::Duration;
 
 use axum::{
     Router,
@@ -10,6 +10,7 @@ use axum::{
 use chrono::NaiveTime;
 use clash_api::{Client, ConnectionStreamQuery, LogLevel, LogQuery, StructuredLogLevel};
 use futures_util::StreamExt;
+use indexmap::IndexMap;
 use reqwest_websocket::Message;
 
 async fn spawn_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
@@ -27,7 +28,7 @@ async fn memory_and_structured_logs_use_distinct_typed_streams() {
         Body::from("{\"inuse\":0,\"oslimit\":0}\n{\"inuse\":42,\"oslimit\":7}\n").into_response()
     }
 
-    async fn logs(Query(query): Query<HashMap<String, String>>) -> Response {
+    async fn logs(Query(query): Query<IndexMap<String, String>>) -> Response {
         assert_eq!(query.get("level").map(String::as_str), Some("warning"));
         assert_eq!(query.get("format").map(String::as_str), Some("structured"));
         Body::from(
@@ -72,7 +73,7 @@ async fn connections_http_is_a_snapshot_and_websocket_honors_interval() {
     server.abort();
 
     async fn websocket(
-        Query(query): Query<HashMap<String, String>>,
+        Query(query): Query<IndexMap<String, String>>,
         ws: WebSocketUpgrade,
     ) -> impl IntoResponse {
         assert_eq!(query.get("interval").map(String::as_str), Some("250"));

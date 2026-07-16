@@ -16,6 +16,7 @@ use crate::{Client, HttpStream, Result, retry::RequestMetadata};
     Ord,
     serde::Deserialize,
     serde::Serialize,
+    specta::Type,
 )]
 #[serde(transparent)]
 pub struct Bytes(i64);
@@ -60,6 +61,7 @@ impl fmt::Display for Bytes {
     Ord,
     serde::Deserialize,
     serde::Serialize,
+    specta::Type,
 )]
 #[serde(transparent)]
 pub struct BytesPerSecond(i64);
@@ -93,7 +95,9 @@ impl fmt::Display for BytesPerSecond {
 }
 
 /// One `/traffic` sample.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
 #[serde(rename_all = "camelCase")]
 pub struct Traffic {
     pub up: BytesPerSecond,
