@@ -1,0 +1,12 @@
+[package]
+name = "clash-api"
+version = "0.1.0"
+edition.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+reqwest = "0.13"
+thiserror.workspace = true
+url = "2"
+reqwest-websocket = "0.6.0"

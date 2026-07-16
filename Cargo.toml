@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/nyanpasu-utils", "nyanpasu_ipc", "nyanpasu_service"]
+members = ["crates/clash-api", "crates/nyanpasu-utils", "nyanpasu_ipc", "nyanpasu_service"]
 
 [workspace.package]
 edition = "2024"
