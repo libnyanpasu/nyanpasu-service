@@ -17,7 +17,7 @@ pub fn must_check_elevation() -> bool {
     #[cfg(not(windows))]
     {
         use whoami::username;
-        username() == "root"
+        username().is_ok_and(|username| username == "root")
     }
 }
 
