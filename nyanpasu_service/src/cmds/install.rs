@@ -1,6 +1,6 @@
 use std::{env::current_exe, ffi::OsString, path::PathBuf};
 
-use service_manager::{ServiceInstallCtx, ServiceLabel, ServiceStatus};
+use service_manager::{RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceStatus};
 
 use crate::consts::{APP_NAME, SERVICE_LABEL};
 
@@ -110,7 +110,7 @@ pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
         working_directory: Some(service_data_dir),
         environment: Some(envs),
         autostart: true,
-        disable_restart_on_failure: false,
+        restart_policy: RestartPolicy::default(),
     })?;
     // Confirm the service is installed
     if matches!(
