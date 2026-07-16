@@ -6,7 +6,22 @@ repository.workspace = true
 license.workspace = true
 
 [dependencies]
-reqwest = "0.13"
-thiserror.workspace = true
-url = "2"
+backon = "1"
+chrono.workspace = true
+futures-core = "0.3"
+futures-util.workspace = true
+ipnet = { version = "2", features = ["serde"] }
+reqwest = { version = "0.13", features = ["json", "query", "stream"] }
 reqwest-websocket = "0.6.0"
+serde.workspace = true
+serde_json = "1"
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util = { workspace = true, features = ["codec", "io"] }
+url = "2"
+uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+axum = { workspace = true, features = ["ws"] }
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["service", "tokio"] }
