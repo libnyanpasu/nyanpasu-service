@@ -346,9 +346,9 @@ flowchart TB
 
 | 阶段 | 内容 | 验收 |
 |------|------|------|
-| P0 | PoC:验证 O3(目标环境 `mechanism()` 断言;O1/O2 均已关闭,工作量约 2 小时) | PoC 结论回填本文档,决定 A 或降级 B |
-| P1 | `nyanpasu-utils` 落地 `process` 模块(Command/Handle/事件泵/graceful_kill/pid 文件) | 单元 + 集成测试通过;新旧模块并存,零消费方改动 |
-| P2 | `Supervisor` 落地 | 重启/退避/就绪探测集成测试 |
+| P0 | PoC:验证 O3(目标环境 `mechanism()` 断言;O1/O2 均已关闭,工作量约 2 小时) | PoC 结论回填本文档,决定 A 或降级 B。**✅ 2026-07-17 完成**:Windows 实测 `JobObject` + kill-on-drop 通过(`examples/containment_probe.rs`),方案 A 放行 |
+| P1 | `nyanpasu-utils` 落地 `process` 模块(Command/Handle/事件泵/graceful_kill/pid 文件) | 单元 + 集成测试通过;新旧模块并存,零消费方改动。**✅ 2026-07-17 完成**(子模块分支 `feat/utils-process-module`,34 测试全绿) |
+| P2 | `Supervisor` 落地 | 重启/退避/就绪探测集成测试。**✅ 2026-07-17 完成**(同分支) |
 | P3 | `nyanpasu-core-manager` 实装:迁入 `core/` 域逻辑(definition.rs 全部、instance.rs 重写于新底座、`parse_check_output` 等),`nyanpasu-utils::core` 标 `#[deprecated]` | core-manager 通过与现 `CoreInstance` 等价的行为测试 |
 | P4 | `nyanpasu_service` 切换至 core-manager;删除 `recover_core` 手写循环与 `os/child.rs`(经 deprecated 周期) | 服务端到端:启动/停止/崩溃自恢复/关停 |
 | P5(仓库外) | 上游 `clash-nyanpasu` 主程序跟进采用 | 不在本仓库范围,仅保证 API 兼容其场景 |
@@ -386,7 +386,7 @@ flowchart TB
 |---|------|------|------|
 | ~~O1~~(已关闭) | Windows 优雅终止:根因分析证实 CTRL_BREAK 在现实现中从未生效(跨控制台投递不可能 + 服务进程无控制台),且所有修复途径与收益不成比例,**正式弃用**(§5.6 决策记录);自行 spawn + `adopt()` 分支随之作废 | Windows 无优雅通知——与生产环境实际行为一致,非回退 | 已消化进设计;未来经 core-manager 域级钩子(HTTP)扩展 |
 | ~~O2~~(已关闭) | ~~行流是否提供字节级访问~~ 已核验:`stdout_encoding/stderr_encoding` 原生支持 encoding_rs(含 GBK) | — | §5.5 直接采用,无降级预案 |
-| O3 | processkit 在 Windows Server / 无 cgroup 委派的 Linux(容器内)上的 `mechanism()` 实际回退行为;旧内核硬杀回退存在 PID 复用竞态与同步 sleep(审计 A-03/A-07,已证实) | 整树保证弱化为进程组语义;窄条件下误杀/阻塞风险 | P0 在目标环境跑 `containment()` 断言;启动时记录 mechanism;文档化保证边界 |
+| O3(部分关闭) | processkit 在 Windows Server / 无 cgroup 委派的 Linux(容器内)上的 `mechanism()` 实际回退行为;旧内核硬杀回退存在 PID 复用竞态与同步 sleep(审计 A-03/A-07,已证实) | 整树保证弱化为进程组语义;窄条件下误杀/阻塞风险 | **2026-07-17:Windows 开发机实测 `JobObject` 通过**(探针 example 保留,可在任意目标环境复跑);Linux/macOS 留待 CI 矩阵;`ProcessHandle::containment()` 已暴露可观测性 |
 | R1 | processkit 年轻(2.2.5、~7k 下载、单人维护、AI 辅助开发自述) | 断维护 / 潜在缺陷 | 类型不泄漏封装 + 方案 B 为 fallback + 引擎层面积控制在单文件。第三方审计与我方源码核验(§3.4)确认代码质量与并发纪律高于同类,信心增强 |
 | R2 | 官网文档版本(写 `"1"`)与实际发布(2.2.5)不一致 | 按官网示例实施会踩 API 差异 | 实施以 docs.rs 对应版本为准 |
 | R3 | MSRV 1.88 | CI 构建失败 | 实施前确认 CI 工具链版本 |
