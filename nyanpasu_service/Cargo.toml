@@ -19,7 +19,7 @@ deadlock_detection = [
 hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
 
 [dependencies]
-nyanpasu-utils = { workspace = true, default-features = false, features = [
+nyanpasu-utils = { path = "../crates/nyanpasu-utils", default-features = false, features = [
     "dirs",
     "os",
     "network",
@@ -28,6 +28,8 @@ nyanpasu-ipc = { path = "../nyanpasu_ipc", default-features = false, features = 
     "server",
     "client",
 ] }
+
+
 axum = { workspace = true, features = ["macros"] }
 dashmap = "6"
 tower-http = { version = "0.7", features = ["trace"] }

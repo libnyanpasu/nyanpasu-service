@@ -737,17 +737,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dirs-utils"
-version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=607ad2a30388dc53f5f3eae9e75de8769ec7a162#607ad2a30388dc53f5f3eae9e75de8769ec7a162"
-dependencies = [
- "dirs 6.0.0",
- "thiserror 2.0.18",
- "tracing",
- "windows 0.62.2",
-]
-
-[[package]]
 name = "dispatch2"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -795,6 +784,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
+]
+
+[[package]]
+name = "env_filter"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "900d271a03799a1ee8d1ca9b19893b48ca674a9284fefcfb85f05e74ed314217"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "de671bd27a75a797dc9ae289ba1e77276e75e2026408aab65185384e2d5cd3f6"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "log",
 ]
 
 [[package]]
@@ -1482,15 +1493,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "network-utils"
-version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=607ad2a30388dc53f5f3eae9e75de8769ec7a162#607ad2a30388dc53f5f3eae9e75de8769ec7a162"
-dependencies = [
- "log",
- "tempfile",
-]
-
-[[package]]
 name = "nix"
 version = "0.27.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1639,27 +1641,29 @@ dependencies = [
 [[package]]
 name = "nyanpasu-utils"
 version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=607ad2a30388dc53f5f3eae9e75de8769ec7a162#607ad2a30388dc53f5f3eae9e75de8769ec7a162"
 dependencies = [
  "camino",
  "constcat",
  "derive_builder",
- "dirs-utils",
+ "dirs 6.0.0",
  "encoding_rs",
  "kill_tree",
+ "log",
  "memchr",
- "network-utils",
- "os-utils",
+ "nix 0.31.3",
  "os_pipe",
  "parking_lot",
  "serde",
  "shared_child",
  "specta",
  "sysinfo",
+ "tempfile",
+ "test-log",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "tracing-attributes",
+ "windows 0.62.2",
 ]
 
 [[package]]
@@ -1760,16 +1764,6 @@ name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
-
-[[package]]
-name = "os-utils"
-version = "0.1.0"
-source = "git+https://github.com/LibNyanpasu/nyanpasu-utils.git?rev=607ad2a30388dc53f5f3eae9e75de8769ec7a162#607ad2a30388dc53f5f3eae9e75de8769ec7a162"
-dependencies = [
- "nix 0.31.3",
- "shared_child",
- "windows 0.62.2",
-]
 
 [[package]]
 name = "os_pipe"
@@ -2478,6 +2472,38 @@ dependencies = [
  "once_cell",
  "rustix 1.1.4",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "test-log"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b9c218384242b5c89b68303ab6f6fc53a312d923f0c14dc6bb860c6aeee40f1"
+dependencies = [
+ "env_logger",
+ "test-log-macros",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "test-log-core"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c26ef8b00e4d382e59f6a8ddb3cd790b3a5bb29f21a358a9a69ea2f29f13f27b"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "test-log-macros"
+version = "0.2.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "944ad38adcbb71eaa682c56bceeb079e4ca82b4b3edc2a0fde5cb297b77dac8d"
+dependencies = [
+ "syn",
+ "test-log-core",
 ]
 
 [[package]]
