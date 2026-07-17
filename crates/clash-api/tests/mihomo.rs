@@ -950,8 +950,10 @@ fn unused_tcp_port() -> u16 {
 }
 
 fn unique_temp_dir() -> PathBuf {
+    // Keep the path short: on macOS the runner's $TMPDIR is already ~50 chars
+    // and `home/controller.sock` must fit the 104-byte unix socket sun_path.
     std::env::temp_dir().join(format!(
-        "clash-api-mihomo-{}-{}",
+        "mihomo-{}-{}",
         std::process::id(),
         unique_nonce()
     ))

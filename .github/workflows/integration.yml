@@ -1,0 +1,49 @@
+name: Integration Test
+
+on:
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
+  push:
+    branches:
+      - main
+      - dev
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  real-mihomo:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    name: Real mihomo tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Set git to use LF
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
+      - name: Check out Git repository
+        uses: actions/checkout@v7
+      - name: Install Rust nightly toolchain
+        run: |
+          rustup toolchain install --profile minimal nightly
+          rustup default nightly
+      - uses: Swatinem/rust-cache@v2
+        name: Setup Rust cache
+        with:
+          shared-key: ${{ matrix.os }}-integration
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: Download mihomo core
+        run: deno run -A scripts/prepare-mihomo.ts
+      - name: Run integration tests
+        run: cargo test -p clash-api --test mihomo -- --ignored --nocapture
