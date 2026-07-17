@@ -1,108 +1,130 @@
-use std::{borrow::Cow, sync::OnceLock};
+use std::{
+    pin::Pin,
+    task::{Context, Poll},
+};
 
-use axum::body::Body;
-use hyper::{Request, header::CONTENT_TYPE};
+use futures_util::{Stream, StreamExt};
+use reqwest_websocket::{Message, Upgrade};
 
-use crate::{SERVICE_PLACEHOLDER, api};
+use crate::api::{
+    self,
+    core::{restart::CORE_RESTART_ENDPOINT, start::CORE_START_ENDPOINT, stop::CORE_STOP_ENDPOINT},
+    log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT},
+    network::set_dns::NETWORK_SET_DNS_ENDPOINT,
+    status::STATUS_ENDPOINT,
+    ws::events::{EVENT_URI, Event},
+};
 
-use super::{ClientError, send_request};
+use super::{ClientError, Result};
 
-use std::result::Result as StdResult;
+pub use super::Client;
 
-pub struct Client<'a>(Cow<'a, str>);
-
-type Result<'a, T, E = ClientError<'a>> = StdResult<T, E>;
-
-impl<'a> Client<'a> {
-    pub fn new(placeholder: &'a str) -> Self {
-        Self(Cow::Borrowed(placeholder))
+impl Client {
+    pub async fn status(&self) -> Result<api::status::StatusResBody<'static>> {
+        self.send_data(STATUS_ENDPOINT, self.get(STATUS_ENDPOINT))
+            .await
     }
 
-    pub fn service_default() -> &'static Client<'static> {
-        static CLIENT: OnceLock<Client<'static>> = OnceLock::new();
-        CLIENT.get_or_init(|| Client::new(SERVICE_PLACEHOLDER))
+    pub async fn start_core(&self, payload: &api::core::start::CoreStartReq<'_>) -> Result<()> {
+        self.send_unit(
+            CORE_START_ENDPOINT,
+            self.post(CORE_START_ENDPOINT).json(payload),
+        )
+        .await
     }
 
-    pub async fn status(&self) -> Result<'_, api::status::StatusResBody<'_>> {
-        let request = Request::get(api::status::STATUS_ENDPOINT).body(Body::empty())?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::status::StatusRes<'_>>()
-            .await?
-            .ok()?;
-        let data = response.data.unwrap();
-        Ok(data)
+    pub async fn stop_core(&self) -> Result<()> {
+        self.send_unit(CORE_STOP_ENDPOINT, self.post(CORE_STOP_ENDPOINT))
+            .await
     }
 
-    pub async fn start_core(&self, payload: &api::core::start::CoreStartReq<'_>) -> Result<'_, ()> {
-        let payload = simd_json::serde::to_string(payload)?;
-        let request = Request::post(api::core::start::CORE_START_ENDPOINT)
-            .header(CONTENT_TYPE, "application/json")
-            .body(Body::from(payload))?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::core::start::CoreStartRes>()
-            .await?;
-        response.ok()?;
-        Ok(())
+    pub async fn restart_core(&self) -> Result<()> {
+        self.send_unit(CORE_RESTART_ENDPOINT, self.post(CORE_RESTART_ENDPOINT))
+            .await
     }
 
-    pub async fn stop_core(&self) -> Result<'_, ()> {
-        let request = Request::post(api::core::stop::CORE_STOP_ENDPOINT).body(Body::empty())?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::core::stop::CoreStopRes>()
-            .await?;
-        response.ok()?;
-        Ok(())
+    pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'static>> {
+        self.send_data(LOGS_INSPECT_ENDPOINT, self.get(LOGS_INSPECT_ENDPOINT))
+            .await
     }
 
-    pub async fn restart_core(&self) -> Result<'_, ()> {
-        let request =
-            Request::post(api::core::restart::CORE_RESTART_ENDPOINT).body(Body::empty())?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::core::restart::CoreRestartRes>()
-            .await?;
-        response.ok()?;
-        Ok(())
-    }
-
-    pub async fn inspect_logs(&self) -> Result<'_, api::log::LogsResBody<'_>> {
-        let request = Request::get(api::log::LOGS_INSPECT_ENDPOINT).body(Body::empty())?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::log::LogsRes<'_>>()
-            .await?
-            .ok()?;
-        let data = response.data.unwrap();
-        Ok(data)
-    }
-
-    pub async fn retrieve_logs(&self) -> Result<'_, api::log::LogsResBody<'_>> {
-        let request = Request::get(api::log::LOGS_RETRIEVE_ENDPOINT).body(Body::empty())?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::log::LogsRes<'_>>()
-            .await?
-            .ok()?;
-        let data = response.data.unwrap();
-        Ok(data)
+    pub async fn retrieve_logs(&self) -> Result<api::log::LogsResBody<'static>> {
+        self.send_data(LOGS_RETRIEVE_ENDPOINT, self.get(LOGS_RETRIEVE_ENDPOINT))
+            .await
     }
 
     pub async fn set_dns(
         &self,
         payload: &api::network::set_dns::NetworkSetDnsReq<'_>,
-    ) -> Result<'_, ()> {
-        let payload = simd_json::serde::to_string(payload)?;
-        let request = Request::post(api::network::set_dns::NETWORK_SET_DNS_ENDPOINT)
-            .header(CONTENT_TYPE, "application/json")
-            .body(Body::from(payload))?;
-        let response = send_request(&self.0, request)
-            .await?
-            .cast_body::<api::network::set_dns::NetworkSetDnsRes>()
-            .await?;
-        response.ok()?;
-        Ok(())
+    ) -> Result<()> {
+        self.send_unit(
+            NETWORK_SET_DNS_ENDPOINT,
+            self.post(NETWORK_SET_DNS_ENDPOINT).json(payload),
+        )
+        .await
+    }
+
+    /// Subscribe to the events pushed by the service over `/ws/events`.
+    pub async fn events(&self) -> Result<EventStream> {
+        let response = self
+            .get(EVENT_URI)
+            .upgrade()
+            .send()
+            .await
+            .map_err(|source| ClientError::WebSocket {
+                operation: EVENT_URI,
+                source,
+            })?;
+        let websocket =
+            response
+                .into_websocket()
+                .await
+                .map_err(|source| ClientError::WebSocket {
+                    operation: EVENT_URI,
+                    source,
+                })?;
+        let stream = websocket.filter_map(|message| async move {
+            let bytes = match message {
+                Ok(Message::Binary(bytes)) => bytes,
+                Ok(Message::Text(text)) => text.into(),
+                // pings are answered internally, everything else is not an event
+                Ok(_) => return None,
+                Err(source) => {
+                    return Some(Err(ClientError::WebSocket {
+                        operation: EVENT_URI,
+                        source,
+                    }));
+                }
+            };
+            Some(
+                serde_json::from_slice(&bytes).map_err(|source| ClientError::Decode {
+                    operation: EVENT_URI,
+                    source,
+                }),
+            )
+        });
+        Ok(EventStream {
+            inner: Box::pin(stream),
+        })
+    }
+}
+
+/// A stream of [`Event`]s pushed by the service.
+pub struct EventStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Event>> + Send>>,
+}
+
+impl Stream for EventStream {
+    type Item = Result<Event>;
+
+    #[inline]
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.poll_next_unpin(cx)
+    }
+}
+
+impl std::fmt::Debug for EventStream {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EventStream").finish_non_exhaustive()
     }
 }

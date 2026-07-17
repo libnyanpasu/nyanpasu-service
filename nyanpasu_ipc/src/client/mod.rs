@@ -1,111 +1,200 @@
-use http_body_util::BodyExt;
-use hyper::{
-    Response as HyperResponse,
-    body::{Body, Incoming},
-    http::Request,
-};
-use hyper_util::rt::TokioIo;
-use simd_json::Buffers;
-use std::error::Error as StdError;
-use tokio::io::AsyncReadExt;
+use std::{fmt::Debug, sync::OnceLock};
 
-use interprocess::local_socket::tokio::{Stream, prelude::*};
+use reqwest::{Method, RequestBuilder, StatusCode, Url};
+use serde::de::DeserializeOwned;
+
+use crate::{
+    SERVICE_PLACEHOLDER,
+    api::{R, ResponseCode},
+};
 
 pub mod shortcuts;
-mod wrapper;
-use wrapper::BodyDataStreamExt;
 
-use crate::api::R;
+pub type Result<T> = std::result::Result<T, ClientError>;
+
+/// Synthetic base URL for requests over the local IPC transport.
+///
+/// Requests travel over a named pipe or unix socket; the HTTP authority is
+/// only there to satisfy the protocol, nothing is routed by it.
+const LOCAL_TRANSPORT_BASE_URL: &str = "http://localhost/";
 
 #[derive(Debug, thiserror::Error)]
-pub enum ClientError<'a> {
-    #[error("An IO error occurred: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("A network error occurred: {0}")]
-    Hyper(#[from] hyper::Error),
-    #[error("An error occurred while perform HTTP: {0}")]
-    Http(#[from] hyper::http::Error),
-    #[error("An error occurred: {0}")]
-    ParseFailed(#[from] simd_json::Error),
-    #[error("An server error respond: {0:?}")]
-    ServerResponseFailed(R<'a, Option<()>>),
-    #[error("An error occurred: {0}")]
-    Other(#[from] anyhow::Error),
+#[non_exhaustive]
+pub enum ClientError {
+    #[error("failed to build the IPC client: {0}")]
+    BuildClient(#[source] reqwest::Error),
+    #[error("IPC request `{operation}` failed: {source}")]
+    Request {
+        operation: &'static str,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error("IPC request `{operation}` returned HTTP {status}")]
+    HttpStatus {
+        operation: &'static str,
+        status: StatusCode,
+        body: Option<String>,
+    },
+    #[error("failed to decode the IPC response for `{operation}`: {source}")]
+    Decode {
+        operation: &'static str,
+        #[source]
+        source: serde_json::Error,
+    },
+    #[error("IPC request `{operation}` failed with {code:?}: {msg}")]
+    Server {
+        operation: &'static str,
+        code: ResponseCode,
+        msg: String,
+    },
+    #[error("IPC request `{operation}` succeeded but carried no data")]
+    EmptyData { operation: &'static str },
+    #[error("IPC WebSocket `{operation}` failed: {source}")]
+    WebSocket {
+        operation: &'static str,
+        #[source]
+        source: reqwest_websocket::Error,
+    },
 }
 
-pub struct Response {
-    response: HyperResponse<Incoming>,
+/// An IPC client sharing one underlying HTTP client across all operations.
+#[derive(Clone, Debug)]
+pub struct Client {
+    client: reqwest::Client,
+    base_url: Url,
 }
 
-pub async fn send_request<R>(
-    placeholder: &str,
-    request: Request<R>,
-) -> Result<Response, ClientError<'_>>
-where
-    R: Body + 'static + Send,
-    R::Data: Send,
-    R::Error: Into<Box<dyn StdError + Send + Sync>>,
-{
-    let name = crate::utils::get_name(placeholder)?;
-    let conn = Stream::connect(name).await?;
-    let io = TokioIo::new(conn);
-    let (mut sender, conn) =
-        hyper::client::conn::http1::handshake::<TokioIo<Stream>, R>(io).await?;
-    tokio::task::spawn(async move {
-        if let Err(err) = conn.await {
-            tracing::error!("An error occurred: {:#?}", err);
-        }
-    });
-
-    let response = sender.send_request(request).await?;
-
-    if response.status().is_client_error() || response.status().is_server_error() {
-        // if server respond 500. It is also might be custom error respond, so that, let we have a try to parse to body
-        if response.status() == 500 {
-            let res = Response { response };
-            let r = res.cast_body::<crate::api::R<Option<()>>>().await?;
-            return Err(ClientError::ServerResponseFailed(r));
-        }
-        return Err(ClientError::Other(anyhow::anyhow!(
-            "Received an error response: {:#?}",
-            response
-        )));
+impl Client {
+    /// Create a client for the IPC endpoint named by `placeholder`.
+    ///
+    /// The placeholder maps to `\\.\pipe\{placeholder}` on Windows and
+    /// `/var/run/{placeholder}.sock` on Unix.
+    pub fn new(placeholder: &str) -> Result<Self> {
+        let path = crate::utils::get_name_string(placeholder);
+        let builder = reqwest::Client::builder().no_proxy().http1_only();
+        #[cfg(windows)]
+        let builder = builder.windows_named_pipe(std::path::Path::new(&path));
+        #[cfg(unix)]
+        let builder = builder.unix_socket(std::path::Path::new(&path));
+        let client = builder.build().map_err(ClientError::BuildClient)?;
+        Ok(Self {
+            client,
+            base_url: Url::parse(LOCAL_TRANSPORT_BASE_URL)
+                .expect("the local transport base URL must be valid"),
+        })
     }
-    Ok(Response { response })
-}
 
-impl Response {
-    pub fn get_ref(&self) -> &HyperResponse<Incoming> {
-        &self.response
+    /// The client for the nyanpasu service's default IPC endpoint.
+    pub fn service_default() -> &'static Self {
+        static CLIENT: OnceLock<Client> = OnceLock::new();
+        CLIENT.get_or_init(|| {
+            Self::new(SERVICE_PLACEHOLDER).expect("failed to build the default IPC client")
+        })
     }
-    /// use simd_json to cast the body of the response to a specific type
-    pub async fn cast_body<'a, T>(self) -> Result<T, ClientError<'a>>
+
+    /// Access the shared reqwest client for advanced integrations.
+    pub fn http_client(&self) -> &reqwest::Client {
+        &self.client
+    }
+
+    pub(crate) fn request(&self, method: Method, endpoint: &str) -> RequestBuilder {
+        let url = self
+            .base_url
+            .join(endpoint.trim_start_matches('/'))
+            .expect("IPC endpoint must be a valid relative URL");
+        self.client.request(method, url)
+    }
+
+    pub(crate) fn get(&self, endpoint: &str) -> RequestBuilder {
+        self.request(Method::GET, endpoint)
+    }
+
+    pub(crate) fn post(&self, endpoint: &str) -> RequestBuilder {
+        self.request(Method::POST, endpoint)
+    }
+
+    pub(crate) async fn send(
+        &self,
+        operation: &'static str,
+        request: RequestBuilder,
+    ) -> Result<reqwest::Response> {
+        let response = request
+            .send()
+            .await
+            .map_err(|source| ClientError::Request { operation, source })?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|source| ClientError::Request { operation, source })?;
+        // The service reports failures with the usual response envelope.
+        if let Ok(envelope) = serde_json::from_slice::<R<'_, Option<()>>>(&bytes)
+            && envelope.code != ResponseCode::Ok
+        {
+            return Err(ClientError::Server {
+                operation,
+                code: envelope.code,
+                msg: envelope.msg.into_owned(),
+            });
+        }
+        let body =
+            Some(String::from_utf8_lossy(&bytes).into_owned()).filter(|body| !body.is_empty());
+        Err(ClientError::HttpStatus {
+            operation,
+            status,
+            body,
+        })
+    }
+
+    /// Send a request and unwrap the data of the response envelope.
+    pub(crate) async fn send_data<T>(
+        &self,
+        operation: &'static str,
+        request: RequestBuilder,
+    ) -> Result<T>
     where
-        T: for<'de> serde::Deserialize<'de>,
+        T: serde::Serialize + DeserializeOwned + Debug,
     {
-        let content_length = self.response.headers().get(hyper::header::CONTENT_LENGTH);
-        let content_length = content_length
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(0);
-        if content_length == 0 {
-            return Err(ClientError::Other(anyhow::anyhow!(
-                "No content in response"
-            )));
+        let response = self.send(operation, request).await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|source| ClientError::Request { operation, source })?;
+        let envelope = serde_json::from_slice::<R<'static, T>>(&bytes)
+            .map_err(|source| ClientError::Decode { operation, source })?;
+        if envelope.code != ResponseCode::Ok {
+            return Err(ClientError::Server {
+                operation,
+                code: envelope.code,
+                msg: envelope.msg.into_owned(),
+            });
         }
-        let mut buf = Vec::with_capacity(content_length);
-        let stream = self.response.into_data_stream().into_stream_wrapper();
-        let mut reader = tokio_util::io::StreamReader::new(stream);
-        let n = reader.read_to_end(&mut buf).await?;
-        if n != content_length {
-            return Err(ClientError::Other(anyhow::anyhow!(
-                "Failed to read the entire response"
-            )));
+        envelope.data.ok_or(ClientError::EmptyData { operation })
+    }
+
+    /// Send a request and only check the code of the response envelope.
+    pub(crate) async fn send_unit(
+        &self,
+        operation: &'static str,
+        request: RequestBuilder,
+    ) -> Result<()> {
+        let response = self.send(operation, request).await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|source| ClientError::Request { operation, source })?;
+        let envelope = serde_json::from_slice::<R<'static, serde_json::Value>>(&bytes)
+            .map_err(|source| ClientError::Decode { operation, source })?;
+        if envelope.code != ResponseCode::Ok {
+            return Err(ClientError::Server {
+                operation,
+                code: envelope.code,
+                msg: envelope.msg.into_owned(),
+            });
         }
-        let mut buffers = Buffers::default();
-        Ok(simd_json::serde::from_slice_with_buffers(
-            &mut buf,
-            &mut buffers,
-        )?)
+        Ok(())
     }
 }
