@@ -38,7 +38,8 @@ fn inspect_mapping(doc: &Mapping) -> ConfigInfo {
     #[cfg(not(windows))]
     let local = str_value(doc, "external-controller-unix").map(RawController::Unix);
 
-    let controller = local.or_else(|| str_value(doc, "external-controller").map(RawController::Http));
+    let controller =
+        local.or_else(|| str_value(doc, "external-controller").map(RawController::Http));
 
     let has_dns_listen = doc
         .get(Value::String("dns".to_owned()))
@@ -87,7 +88,10 @@ mod tests {
     #[test]
     fn extracts_http_controller_and_secret() {
         let info = info_of("external-controller: 127.0.0.1:9090\nsecret: s3cret\n");
-        assert_eq!(info.controller, Some(RawController::Http("127.0.0.1:9090".into())));
+        assert_eq!(
+            info.controller,
+            Some(RawController::Http("127.0.0.1:9090".into()))
+        );
         assert_eq!(info.secret.as_deref(), Some("s3cret"));
         assert!(!info.has_dns_listen);
     }
@@ -99,14 +103,20 @@ mod tests {
             let info = info_of(
                 "external-controller: 127.0.0.1:9090\nexternal-controller-pipe: \\\\.\\pipe\\x\n",
             );
-            assert_eq!(info.controller, Some(RawController::Pipe(r"\\.\pipe\x".into())));
+            assert_eq!(
+                info.controller,
+                Some(RawController::Pipe(r"\\.\pipe\x".into()))
+            );
         }
         #[cfg(unix)]
         {
             let info = info_of(
                 "external-controller: 127.0.0.1:9090\nexternal-controller-unix: /run/x.sock\n",
             );
-            assert_eq!(info.controller, Some(RawController::Unix("/run/x.sock".into())));
+            assert_eq!(
+                info.controller,
+                Some(RawController::Unix("/run/x.sock".into()))
+            );
         }
     }
 
