@@ -6,7 +6,7 @@ use axum::{
 };
 use clash_api::{
     Client, ConfigPatch, Host, ProviderName, ProxyName, StorageKey, UpdateConfigOptions,
-    UpdateConfigRequest,
+    UpdateConfigRequest, UpgradeOptions,
 };
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -131,5 +131,57 @@ async fn storage_get_is_generic_and_storage_keys_are_path_segments() {
             label: "typed".to_owned(),
         })
     );
+    server.abort();
+}
+
+#[tokio::test]
+async fn externally_mutating_maintenance_calls_have_the_expected_routes_and_queries() {
+    async fn restart(headers: HeaderMap) -> Json<serde_json::Value> {
+        assert_auth(&headers);
+        Json(serde_json::json!({"status":"ok"}))
+    }
+
+    async fn upgrade(
+        headers: HeaderMap,
+        Query(query): Query<IndexMap<String, String>>,
+    ) -> Json<serde_json::Value> {
+        assert_auth(&headers);
+        assert_eq!(query.get("channel").map(String::as_str), Some("stable"));
+        assert_eq!(query.get("force").map(String::as_str), Some("true"));
+        Json(serde_json::json!({"status":"ok"}))
+    }
+
+    async fn no_content(headers: HeaderMap) -> StatusCode {
+        assert_auth(&headers);
+        StatusCode::NO_CONTENT
+    }
+
+    let app = Router::new()
+        .route("/restart", axum::routing::post(restart))
+        .route("/upgrade", axum::routing::post(upgrade))
+        .route("/upgrade/ui", axum::routing::post(restart))
+        .route("/upgrade/geo", axum::routing::post(no_content))
+        .route("/configs/geo", axum::routing::post(no_content));
+    let (address, server) = spawn_server(app).await;
+    let client = Client::builder(Host::http(address).unwrap())
+        .secret("controller-secret")
+        .build()
+        .unwrap();
+
+    assert_eq!(client.restart().await.unwrap().status, "ok");
+    assert_eq!(
+        client
+            .upgrade(&UpgradeOptions {
+                channel: Some("stable".to_owned()),
+                force: true,
+            })
+            .await
+            .unwrap()
+            .status,
+        "ok"
+    );
+    assert_eq!(client.upgrade_ui().await.unwrap().status, "ok");
+    client.upgrade_geo_databases().await.unwrap();
+    client.update_geo_databases().await.unwrap();
     server.abort();
 }
