@@ -1,14 +1,12 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Clash core lifecycle management: epoch-based instances, health-probed
+//! startup, crash recovery, and core switching.
+//!
+//! Design: docs/superpowers/specs/2026-07-18-nyanpasu-core-manager-design.md
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod error;
+pub mod instance;
+pub mod kind;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use clash_api::Host;
+pub use error::Error;
+pub use kind::CoreKind;
