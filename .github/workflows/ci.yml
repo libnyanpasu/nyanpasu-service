@@ -50,6 +50,9 @@ jobs:
       # Install your linters here
       - name: Clippy
         run: cargo clippy --all-targets --all-features
+      # TEMP: diagnose why the lint-action commit step fails
+      - name: Debug git status before lint
+        run: git status --porcelain -uall; git diff --stat; git log --oneline -1
       - name: Run linters
         uses: wearerequired/lint-action@master
         with:

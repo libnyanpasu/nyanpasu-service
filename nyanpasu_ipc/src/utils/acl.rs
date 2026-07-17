@@ -400,7 +400,39 @@ mod tests {
         assert!(!current_user_sid.is_empty() && current_user_sid.starts_with("S-1-5-"));
         let result = create_default_pipe_security_descriptor().unwrap();
         assert!(!result.is_empty());
-        assert!(result.contains(current_user_sid.as_str()));
+        // Well-known SIDs are rendered as aliases in the SDDL string (e.g.
+        // SYSTEM, which GitHub Actions runners execute as, becomes "SY"), so
+        // assert against the parsed security descriptor instead of the string.
+        unsafe {
+            let user_sid = OwnedPSID::try_from_sid_str(&current_user_sid).unwrap();
+            let sddl = HSTRING::from(result.as_str());
+            let mut sd = PSECURITY_DESCRIPTOR::default();
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl.as_ptr()),
+                SDDL_REVISION_1,
+                &mut sd,
+                None,
+            )
+            .expect("generated SDDL should parse back");
+            let mut has_dacl = BOOL::default();
+            let mut dacl: *mut ACL = std::ptr::null_mut();
+            let mut dacl_defaulted = BOOL::default();
+            GetSecurityDescriptorDacl(sd, &mut has_dacl, &mut dacl, &mut dacl_defaulted)
+                .expect("failed to query the DACL");
+            assert!(has_dacl.as_bool() && !dacl.is_null());
+            let user_in_dacl = (0..(*dacl).AceCount).any(|index| {
+                let mut ace: *mut c_void = std::ptr::null_mut();
+                GetAce(dacl, u32::from(index), &mut ace).expect("failed to get ACE");
+                let ace = &*(ace as *const ACCESS_ALLOWED_ACE);
+                let ace_sid = PSID(&raw const ace.SidStart as *mut c_void);
+                EqualSid(ace_sid, user_sid.0).is_ok()
+            });
+            let _ = Owned::new(HLOCAL(sd.0));
+            assert!(
+                user_in_dacl,
+                "the DACL should grant access to the current user"
+            );
+        }
         println!("Default pipe SDDL: {result}");
     }
 }
