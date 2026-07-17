@@ -12,3 +12,6 @@ use_try_shorthand = false
 use_field_init_shorthand = false
 force_explicit_abi = true
 imports_granularity = "Crate"
+# The nyanpasu-utils submodule is formatted by its own repo; formatting it
+# here would dirty the submodule without a way to commit from the superproject.
+ignore = ["crates/nyanpasu-utils"]
