@@ -1911,6 +1911,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nyanpasu-core-manager"
+version = "0.1.0"
+
+[[package]]
 name = "nyanpasu-ipc"
 version = "1.4.4"
 dependencies = [
@@ -2005,6 +2009,7 @@ dependencies = [
  "nix 0.31.3",
  "os_pipe",
  "parking_lot",
+ "processkit",
  "serde",
  "shared_child",
  "specta",
@@ -2013,6 +2018,7 @@ dependencies = [
  "test-log",
  "thiserror 2.0.18",
  "tokio",
+ "tokio-util",
  "tracing",
  "tracing-attributes",
  "windows 0.62.2",
@@ -2278,6 +2284,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "processkit"
+version = "2.2.5"
+source = "git+https://github.com/ZelAnton/ProcessKit-rs?rev=2adad322f1e3d7c471f3b9c8c625e44f356e416b#2adad322f1e3d7c471f3b9c8c625e44f356e416b"
+dependencies = [
+ "async-trait",
+ "encoding_rs",
+ "libc",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tracing",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
