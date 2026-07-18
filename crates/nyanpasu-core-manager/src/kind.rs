@@ -78,6 +78,34 @@ pub fn mihomo_safe_paths(working_dir: &Utf8Path, config_dir: &Utf8Path) -> Strin
     [working_dir.as_str(), config_dir.as_str()].join(SAFE_PATHS_SEPARATOR)
 }
 
+/// One-shot `-t` config validation, replacing the legacy `check_config_`.
+/// A non-zero exit becomes [`Error::ConfigCheckFailed`] with a condensed message.
+pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error> {
+    if matches!(spec.core.kind, CoreKind::Meow) {
+        return Err(Error::UnsupportedCore(spec.core.kind));
+    }
+    let config_dir = spec
+        .config_path
+        .parent()
+        .ok_or_else(|| Error::ConfigNotFound(spec.config_path.clone()))?;
+    let output = nyanpasu_utils::process::Command::new(spec.core.binary_path.as_str())
+        .args(CoreKind::check_args(&spec.working_dir, &spec.config_path))
+        .env(
+            MIHOMO_SAFE_PATHS_ENV_NAME,
+            mihomo_safe_paths(&spec.working_dir, config_dir),
+        )
+        .output()
+        .await?;
+    if output.success() {
+        return Ok(());
+    }
+    let message = match spec.core.kind {
+        CoreKind::ClashRs => format!("{}\n{}", output.stdout, output.stderr),
+        _ => parse_check_output(output.stdout.trim().to_owned()),
+    };
+    Err(Error::ConfigCheckFailed(message))
+}
+
 /// Extracts the human-readable message from a Mihomo error log line.
 /// Behavioral port of the legacy `core::utils::parse_check_output`.
 pub(crate) fn parse_check_output(log: String) -> String {
