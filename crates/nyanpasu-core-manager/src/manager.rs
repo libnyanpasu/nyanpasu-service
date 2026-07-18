@@ -295,7 +295,17 @@ impl CoreManager {
             from: Some(from),
             to,
         });
-        active.instance.stop().await?;
+        match active.instance.stop().await {
+            Ok(()) => {}
+            Err(error) => {
+                self.inner.publish_state(CoreState::Stopped {
+                    reason: Some(StopReason::Error(format!(
+                        "switch aborted: failed to stop the old core: {error}"
+                    ))),
+                });
+                return Err(error);
+            }
+        }
         cleanup_derived(active.derived_path).await;
         self.start_locked(ctrl, spec).await
     }
@@ -367,14 +377,37 @@ impl CoreManager {
         let old = ctrl.current.take().expect("running checked by caller");
         old.forwarder.abort();
         let old_derived = old.derived_path.clone();
-        old.instance.stop().await?;
+        match old.instance.stop().await {
+            Ok(()) => {}
+            Err(error) => {
+                instance.stop().await.ok();
+                cleanup_derived(Some(derived.path)).await;
+                self.inner.publish_state(CoreState::Stopped {
+                    reason: Some(StopReason::Error(format!(
+                        "switch aborted: failed to stop the old core: {error}"
+                    ))),
+                });
+                return Err(error);
+            }
+        }
         cleanup_derived(old_derived).await;
 
         // 3. Restore the original listeners on the new core (3 tries × 500ms).
         let patched = if derived.restore.is_empty() {
             true
         } else {
-            let client = crate::health::build_client(instance.controller())?;
+            let client = match crate::health::build_client(instance.controller()) {
+                Ok(client) => client,
+                Err(_error) => {
+                    instance.stop().await.ok();
+                    cleanup_derived(Some(derived.path)).await;
+                    self.start_locked_with_epoch(ctrl, spec, Some(epoch))
+                        .await?;
+                    return Ok(SwitchOutcome::Hard {
+                        reason: DegradeReason::PatchFailed,
+                    });
+                }
+            };
             let patch = derived.restore.to_patch();
             let mut ok = false;
             for attempt in 1..=3u32 {
@@ -429,7 +462,15 @@ impl CoreManager {
         }
         let epoch = active.instance.epoch();
         self.inner.publish_state(CoreState::Stopping { epoch });
-        active.instance.stop().await?;
+        match active.instance.stop().await {
+            Ok(()) => {}
+            Err(error) => {
+                self.inner.publish_state(CoreState::Stopped {
+                    reason: Some(StopReason::Error(format!("stop failed: {error}"))),
+                });
+                return Err(error);
+            }
+        }
         cleanup_derived(active.derived_path).await;
         self.inner.publish_state(CoreState::Stopped {
             reason: Some(StopReason::User),
@@ -450,9 +491,18 @@ impl CoreManager {
             if !active.instance.state().borrow().is_terminal() {
                 let epoch = active.instance.epoch();
                 self.inner.publish_state(CoreState::Stopping { epoch });
-                active.instance.stop().await?;
-                cleanup_derived(active.derived_path).await;
+                match active.instance.stop().await {
+                    Ok(()) => {}
+                    Err(error) => {
+                        self.inner.publish_state(CoreState::Stopped {
+                            reason: Some(StopReason::Error(format!("stop failed: {error}"))),
+                        });
+                        cleanup_derived(active.derived_path).await;
+                        return Err(error);
+                    }
+                }
             }
+            cleanup_derived(active.derived_path).await;
             self.inner.publish_state(CoreState::Stopped {
                 reason: Some(StopReason::User),
             });
