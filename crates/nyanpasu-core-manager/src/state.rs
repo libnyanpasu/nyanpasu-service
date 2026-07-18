@@ -8,9 +8,13 @@ use crate::kind::CoreKind;
 pub enum InstanceState {
     /// Spawned; the version health probe has not passed yet.
     Starting,
-    Running { pid: u32 },
+    Running {
+        pid: u32,
+    },
     /// Crashed; the supervisor is backing off, respawning, or re-probing.
-    Restarting { attempt: u32 },
+    Restarting {
+        attempt: u32,
+    },
     Stopping,
     Stopped(StopReason),
 }
@@ -32,13 +36,28 @@ pub enum StopReason {
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreState {
-    Stopped { reason: Option<StopReason> },
-    Starting { epoch: u64 },
-    Running { epoch: u64, pid: u32 },
-    Restarting { epoch: u64, attempt: u32 },
+    Stopped {
+        reason: Option<StopReason>,
+    },
+    Starting {
+        epoch: u64,
+    },
+    Running {
+        epoch: u64,
+        pid: u32,
+    },
+    Restarting {
+        epoch: u64,
+        attempt: u32,
+    },
     /// A hard or graceful switch is in flight.
-    Switching { from: Option<u64>, to: u64 },
-    Stopping { epoch: u64 },
+    Switching {
+        from: Option<u64>,
+        to: u64,
+    },
+    Stopping {
+        epoch: u64,
+    },
 }
 
 #[derive(Debug, Clone)]

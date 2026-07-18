@@ -110,7 +110,10 @@ pub(crate) fn parse_check_output(log: String) -> String {
 /// so the last `level=error` line carries the actual cause.
 pub(crate) fn error_summary(kind: CoreKind, stderr_tail: &str) -> String {
     if matches!(kind, CoreKind::Mihomo)
-        && let Some(line) = stderr_tail.lines().rev().find(|l| l.contains("level=error"))
+        && let Some(line) = stderr_tail
+            .lines()
+            .rev()
+            .find(|l| l.contains("level=error"))
     {
         return parse_check_output(line.to_string());
     }
@@ -127,11 +130,20 @@ mod tests {
         let dir = Utf8PathBuf::from("C:/data");
         let cfg = Utf8PathBuf::from("C:/data/config.yaml");
         let args = CoreKind::Mihomo.run_args(&dir, &cfg).unwrap();
-        assert_eq!(args, ["-m", "-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from));
+        assert_eq!(
+            args,
+            ["-m", "-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from)
+        );
         let args = CoreKind::ClashRs.run_args(&dir, &cfg).unwrap();
-        assert_eq!(args, ["-d", "C:/data", "-c", "C:/data/config.yaml"].map(OsString::from));
+        assert_eq!(
+            args,
+            ["-d", "C:/data", "-c", "C:/data/config.yaml"].map(OsString::from)
+        );
         let args = CoreKind::ClashPremium.run_args(&dir, &cfg).unwrap();
-        assert_eq!(args, ["-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from));
+        assert_eq!(
+            args,
+            ["-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from)
+        );
     }
 
     #[test]
@@ -168,7 +180,10 @@ mod tests {
 
     #[test]
     fn parse_check_output_falls_back_to_input() {
-        assert_eq!(parse_check_output("plain failure".to_string()), "plain failure");
+        assert_eq!(
+            parse_check_output("plain failure".to_string()),
+            "plain failure"
+        );
     }
 
     #[test]

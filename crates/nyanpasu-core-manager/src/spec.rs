@@ -80,6 +80,9 @@ mod tests {
         let o = InstanceOptions::default();
         assert_eq!(o.startup_timeout, Duration::from_secs(30));
         assert_eq!(o.probe_interval, Duration::from_millis(250));
-        assert_eq!(o.restart_policy, RestartPolicy::OnFailure { max_restarts: 5 });
+        assert_eq!(
+            o.restart_policy,
+            RestartPolicy::OnFailure { max_restarts: 5 }
+        );
     }
 }
