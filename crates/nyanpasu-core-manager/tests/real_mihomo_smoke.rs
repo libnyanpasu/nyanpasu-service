@@ -67,7 +67,9 @@ async fn real_core_starts_probes_and_stops() {
     );
     let spec = real_spec(&dir, config);
 
-    check_config(&spec).await.expect("real core accepts the config");
+    check_config(&spec)
+        .await
+        .expect("real core accepts the config");
 
     let controller = ResolvedController {
         host: clash_api::Host::http(format!("127.0.0.1:{ctrl_port}")).unwrap(),
