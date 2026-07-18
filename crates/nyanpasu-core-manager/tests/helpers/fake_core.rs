@@ -194,9 +194,49 @@ fn hold_listener(listener: TcpListener) {
     });
 }
 
-/// Named-pipe / unix-socket transports land in a later task (M4).
-fn serve_local_transports(_ctx: &Arc<Ctx>) -> bool {
-    false
+fn serve_local_transports(ctx: &Arc<Ctx>) -> bool {
+    let mut served = false;
+    #[cfg(windows)]
+    if let Some(path) = ctx.behavior.external_controller_pipe.clone() {
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            use tokio::net::windows::named_pipe::ServerOptions;
+            let mut server = ServerOptions::new()
+                .first_pipe_instance(true)
+                .create(&path)
+                .expect("create pipe");
+            loop {
+                if server.connect().await.is_err() {
+                    continue;
+                }
+                let conn = server;
+                server = ServerOptions::new().create(&path).expect("recreate pipe");
+                let ctx = ctx.clone();
+                tokio::spawn(async move { serve_conn(conn, ctx, false).await });
+            }
+        });
+        served = true;
+    }
+    #[cfg(unix)]
+    if let Some(path) = ctx.behavior.external_controller_unix.clone() {
+        let _ = std::fs::remove_file(&path);
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind unix socket");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let ctx = ctx.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, _)) = listener.accept().await else {
+                    continue;
+                };
+                let ctx = ctx.clone();
+                tokio::spawn(async move { serve_conn(stream, ctx, false).await });
+            }
+        });
+        served = true;
+    }
+    let _ = ctx;
+    served
 }
 
 async fn serve_conn<S>(mut stream: S, ctx: Arc<Ctx>, http_transport: bool)
