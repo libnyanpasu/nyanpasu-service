@@ -3,6 +3,13 @@ name = "nyanpasu-ipc"
 version = "1.4.4"
 edition = "2024"
 
+[[test]]
+name = "roundtrip"
+path = "tests/roundtrip.rs"
+required-features = ["client", "server"]
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [dependencies]
 nyanpasu-utils = {
   path = "../crates/nyanpasu-utils",
@@ -40,10 +47,3 @@ windows = { workspace = true }
 client = ["dep:futures-util", "dep:reqwest", "dep:reqwest-websocket"]
 server = ["dep:axum", "dep:axum-extra", "dep:tower", "dep:widestring"]
 specta = ["dep:specta", "nyanpasu-utils/specta"]
-
-[[test]]
-name = "roundtrip"
-path = "tests/roundtrip.rs"
-required-features = ["client", "server"]
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
