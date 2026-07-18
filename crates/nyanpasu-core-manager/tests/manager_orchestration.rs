@@ -233,7 +233,21 @@ async fn lifecycle_sequence_matches_legacy_contract() {
     // Crash at ~400ms, recovery, then user stop.
     tokio::time::sleep(Duration::from_secs(3)).await;
     manager.stop().await.expect("stop");
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Let the recorder drain the final Stopped notification before teardown — on the current-thread runtime the woken recorder task only runs once we yield.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !seen.lock().iter().any(|s| {
+            matches!(
+                s,
+                CoreState::Stopped {
+                    reason: Some(StopReason::User)
+                }
+            )
+        }) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal user stop never reached the recorder");
     recorder.abort();
 
     let states = seen.lock().clone();
