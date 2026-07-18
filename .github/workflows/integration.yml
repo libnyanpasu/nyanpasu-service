@@ -50,6 +50,8 @@ jobs:
         run: deno run -A scripts/prepare-mihomo.ts
       - name: Run integration tests
         run: cargo test -p clash-api --test mihomo -- --ignored --nocapture
+      - name: Run core-manager smoke tests
+        run: cargo test -p nyanpasu-core-manager --test real_mihomo_smoke -- --ignored --nocapture
 
   nyanpasu-ipc:
     strategy:
