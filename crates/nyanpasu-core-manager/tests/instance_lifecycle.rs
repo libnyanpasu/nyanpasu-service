@@ -62,3 +62,26 @@ async fn dropping_an_instance_kills_the_core() {
     drop(instance);
     common::wait_port_refused(port).await;
 }
+
+#[tokio::test]
+async fn startup_timeout_kills_the_core() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(
+        &dir,
+        &format!("external-controller: 127.0.0.1:{port}\nx-fake-core:\n  never-ready: true\n"),
+    );
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.startup_timeout = std::time::Duration::from_secs(1);
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn");
+    let err = instance.wait_ready().await.expect_err("must time out");
+    assert!(
+        matches!(err, nyanpasu_core_manager::Error::StartupTimeout { .. }),
+        "got {err}"
+    );
+    // The tree is killed: the fake core's controller port must be released.
+    common::wait_port_refused(port).await;
+}
