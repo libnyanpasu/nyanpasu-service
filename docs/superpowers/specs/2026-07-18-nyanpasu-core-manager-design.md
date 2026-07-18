@@ -1,7 +1,7 @@
 # nyanpasu-core-manager 设计文档
 
 - 日期:2026-07-18
-- 状态:待评审(Draft)
+- 状态:已实施(branch feat/core-manager,M1-M4 全部落地;P4 service 接线待启动)
 - 范围:`crates/nyanpasu-core-manager` 实装(前设计 P3),附 `nyanpasu_service` 消费契约;service 实际接线(P4)与 `nyanpasu-utils::core` 弃用另行实施
 - 前置:docs/superpowers/specs/2026-07-16-nyanpasu-utils-process-module-design.md(P1/P2 已完成,本设计构建于 `nyanpasu-utils::process` 之上)
 
