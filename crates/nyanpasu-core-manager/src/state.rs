@@ -33,6 +33,16 @@ pub enum StopReason {
     Error(String),
 }
 
+impl std::fmt::Display for StopReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StopReason::Finished => f.write_str("core exited"),
+            StopReason::User => f.write_str("stopped by user"),
+            StopReason::Error(message) => f.write_str(message),
+        }
+    }
+}
+
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoreState {

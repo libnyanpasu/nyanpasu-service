@@ -120,7 +120,8 @@ impl CoreManager {
 
     /// Mode-dependent launch preparation: the effective spec (Managed mode may
     /// swap the config path for a derived one), the probe controller, and the
-    /// publicly advertised controller endpoint (Managed only).
+    /// publicly advertised controller endpoint (Managed only), and the derived
+    /// config path retained for cleanup tracking (`None` in Passthrough mode).
     async fn prepare(
         &self,
         spec: &InstanceSpec,
@@ -176,6 +177,7 @@ impl CoreManager {
         }
         if let Some(stale) = ctrl.current.take() {
             stale.forwarder.abort();
+            cleanup_derived(stale.derived_path).await;
         }
         self.start_locked(&mut ctrl, spec).await
     }
@@ -265,6 +267,7 @@ impl CoreManager {
         if !running {
             if let Some(stale) = ctrl.current.take() {
                 stale.forwarder.abort();
+                cleanup_derived(stale.derived_path).await;
             }
             self.start_locked(ctrl, spec).await?;
             return Ok(SwitchOutcome::Hard {
