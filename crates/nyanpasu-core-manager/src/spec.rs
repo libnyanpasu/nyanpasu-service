@@ -63,6 +63,14 @@ pub enum ControllerMode {
     /// Start the config as-is; extract the probe endpoint from it.
     #[default]
     Passthrough,
+    /// Rewrite the config to a manager-owned, epoch-parameterized local
+    /// transport endpoint. Prerequisite for graceful switching.
+    Managed {
+        /// Where derived configs (and default unix sockets) live.
+        derived_dir: camino::Utf8PathBuf,
+        /// Endpoint template containing `{epoch}`; platform default when `None`.
+        controller_template: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]

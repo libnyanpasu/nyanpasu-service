@@ -35,6 +35,7 @@ struct Ctrl {
 struct Active {
     instance: Instance,
     forwarder: tokio::task::JoinHandle<()>,
+    derived_path: Option<camino::Utf8PathBuf>,
 }
 
 impl Inner {
@@ -55,6 +56,9 @@ impl Inner {
 
 impl CoreManager {
     pub fn new(options: ManagerOptions) -> Self {
+        if let ControllerMode::Managed { derived_dir, .. } = &options.controller_mode {
+            sweep_derived_dir(derived_dir);
+        }
         let (status_tx, _) = watch::channel(CoreStatus::initial());
         Self {
             inner: Arc::new(Inner {
@@ -84,16 +88,44 @@ impl CoreManager {
     async fn prepare(
         &self,
         spec: &InstanceSpec,
-        _epoch: u64,
-    ) -> Result<(InstanceSpec, ResolvedController, Option<clash_api::Host>), Error> {
+        epoch: u64,
+    ) -> Result<
+        (
+            InstanceSpec,
+            ResolvedController,
+            Option<clash_api::Host>,
+            Option<camino::Utf8PathBuf>,
+        ),
+        Error,
+    > {
         match &self.inner.options.controller_mode {
             ControllerMode::Passthrough => {
                 let info = config::inspect(&spec.config_path).await?;
                 let controller = config::resolve_controller(&info)?;
-                Ok((spec.clone(), controller, None))
+                Ok((spec.clone(), controller, None, None))
             }
-            #[allow(unreachable_patterns)] // `Managed` arrives in M4
-            _ => Err(Error::ControllerMissing),
+            ControllerMode::Managed {
+                derived_dir,
+                controller_template,
+            } => {
+                let derived = config::derive(
+                    &spec.config_path,
+                    derived_dir,
+                    controller_template.as_deref(),
+                    epoch,
+                    config::DeriveMode::ControllerOnly,
+                )
+                .await?;
+                let mut effective = spec.clone();
+                effective.config_path = derived.path.clone();
+                let advertised = Some(derived.controller.host.clone());
+                Ok((
+                    effective,
+                    derived.controller,
+                    advertised,
+                    Some(derived.path),
+                ))
+            }
         }
     }
 
@@ -114,7 +146,8 @@ impl CoreManager {
 
     async fn start_locked(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
         let epoch = self.next_epoch();
-        let (effective_spec, controller, advertised) = self.prepare(&spec, epoch).await?;
+        let (effective_spec, controller, advertised, derived_path) =
+            self.prepare(&spec, epoch).await?;
         self.inner.publish_context(
             Some(SpecSummary {
                 kind: spec.core.kind,
@@ -149,6 +182,7 @@ impl CoreManager {
                 ctrl.current = Some(Active {
                     instance,
                     forwarder,
+                    derived_path,
                 });
                 ctrl.last_spec = Some(spec);
                 Ok(())
@@ -157,6 +191,7 @@ impl CoreManager {
                 self.inner.publish_state(CoreState::Stopped {
                     reason: Some(StopReason::Error(error.to_string())),
                 });
+                cleanup_derived(derived_path).await;
                 Err(error)
             }
         }
@@ -198,6 +233,7 @@ impl CoreManager {
             to,
         });
         active.instance.stop().await?;
+        cleanup_derived(active.derived_path).await;
         self.start_locked(ctrl, spec).await
     }
 
@@ -213,6 +249,7 @@ impl CoreManager {
         let epoch = active.instance.epoch();
         self.inner.publish_state(CoreState::Stopping { epoch });
         active.instance.stop().await?;
+        cleanup_derived(active.derived_path).await;
         self.inner.publish_state(CoreState::Stopped {
             reason: Some(StopReason::User),
         });
@@ -233,12 +270,35 @@ impl CoreManager {
                 let epoch = active.instance.epoch();
                 self.inner.publish_state(CoreState::Stopping { epoch });
                 active.instance.stop().await?;
+                cleanup_derived(active.derived_path).await;
             }
             self.inner.publish_state(CoreState::Stopped {
                 reason: Some(StopReason::User),
             });
         }
         Ok(())
+    }
+}
+
+/// Removes runtime artifacts left behind by a previous manager process.
+fn sweep_derived_dir(derived_dir: &camino::Utf8Path) {
+    let Ok(entries) = std::fs::read_dir(derived_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        let stale = (name.starts_with("epoch-") && name.ends_with(".yaml"))
+            || (name.starts_with("core-") && name.ends_with(".sock"));
+        if stale && let Err(error) = std::fs::remove_file(entry.path()) {
+            tracing::warn!("failed to sweep stale derived artifact {name}: {error}");
+        }
+    }
+}
+
+async fn cleanup_derived(path: Option<camino::Utf8PathBuf>) {
+    if let Some(path) = path {
+        let _ = tokio::fs::remove_file(&path).await;
     }
 }
 
