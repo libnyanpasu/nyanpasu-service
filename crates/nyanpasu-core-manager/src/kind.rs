@@ -125,10 +125,13 @@ pub(crate) fn parse_check_output(log: String) -> String {
     }
 
     let l = log.find("error=");
-    let r = log.find("path=").or(Some(log.len()));
+    let r = log.find("path=").unwrap_or(log.len());
 
-    if let (Some(l), Some(r)) = (l, r) {
-        return log[(l + 6)..(r - 1)].to_owned();
+    if let Some(l) = l {
+        let start = l + 6;
+        if r >= start {
+            return log[start..r].trim_end().to_owned();
+        }
     }
 
     log
@@ -204,6 +207,15 @@ mod tests {
     #[test]
     fn parse_check_output_extracts_error_field() {
         assert_eq!(parse_check_output("error=bad path=/etc".to_string()), "bad");
+    }
+
+    #[test]
+    fn parse_check_output_handles_fallback_error_boundaries() {
+        assert_eq!(parse_check_output("error=bad".to_string()), "bad");
+        assert_eq!(
+            parse_check_output("path=/etc error=bad".to_string()),
+            "path=/etc error=bad"
+        );
     }
 
     #[test]

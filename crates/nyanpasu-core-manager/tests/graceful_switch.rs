@@ -2,7 +2,10 @@ mod common;
 
 use std::time::Duration;
 
-use nyanpasu_core_manager::{ControllerMode, CoreState, ManagerOptions, manager::CoreManager};
+use nyanpasu_core_manager::{
+    ControllerMode, CoreKind, CoreState, DegradeReason, Error, ManagerOptions, StopReason,
+    manager::CoreManager,
+};
 
 fn unique_template() -> Option<String> {
     #[cfg(windows)]
@@ -69,6 +72,79 @@ async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
     let _ = Duration::ZERO;
 }
 
+#[tokio::test]
+async fn managed_spawn_error_removes_secret_derived_config() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let config = common::write_config(&dir, "mixed-port: 0\nsecret: test-secret\n");
+    let manager = managed_manager(derived_dir.clone());
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.core.kind = CoreKind::Meow;
+
+    let error = manager.start(spec).await.expect_err("spawn must fail");
+    assert!(
+        matches!(error, Error::UnsupportedCore(CoreKind::Meow)),
+        "got {error}"
+    );
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Stopped {
+            reason: Some(StopReason::Error(_))
+        }
+    ));
+    assert!(
+        !derived_dir.join("epoch-1.yaml").exists(),
+        "secret-bearing derived config must be removed"
+    );
+}
+
+#[tokio::test]
+async fn stop_cleans_derived_config_for_terminal_instance() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let state_file = dir.join("crash-state");
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 100\n  crash-times: 99\n  state-file: {state_file}\n"
+        ),
+    );
+    let manager = managed_manager(derived_dir.clone());
+    let mut rx = manager.subscribe();
+
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start");
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = rx.borrow_and_update().state.clone();
+            if matches!(
+                state,
+                CoreState::Stopped {
+                    reason: Some(StopReason::Error(ref message))
+                } if message.contains("restart budget exhausted")
+            ) {
+                break;
+            }
+            rx.changed().await.expect("status channel open");
+        }
+    })
+    .await
+    .expect("core never exhausted its restart budget");
+
+    assert!(
+        derived_dir.join("epoch-1.yaml").exists(),
+        "derived config must exist before terminal stop cleanup"
+    );
+    assert!(matches!(manager.stop().await, Err(Error::NotStarted)));
+    assert!(
+        !derived_dir.join("epoch-1.yaml").exists(),
+        "derived config must be removed after terminal stop"
+    );
+    manager.shutdown().await.expect("shutdown");
+}
+
 use nyanpasu_core_manager::SwitchOutcome;
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -88,11 +164,12 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
     )
     .unwrap();
 
-    let manager = managed_manager(derived_dir);
+    let manager = managed_manager(derived_dir.clone());
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
         .expect("start A");
+    assert!(derived_dir.join("epoch-1.yaml").exists());
     tokio::net::TcpStream::connect(("127.0.0.1", mixed))
         .await
         .expect("A holds the mixed port");
@@ -145,6 +222,172 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
         panic!("not running after switch")
     };
     assert_eq!(epoch, 2);
+    assert!(
+        !derived_dir.join("epoch-1.yaml").exists(),
+        "old derived config must be removed after switch"
+    );
+    assert!(
+        derived_dir.join("epoch-2.yaml").exists(),
+        "new derived config must remain active"
+    );
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn managed_hard_switch_removes_old_derived_config() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let config_a = common::write_config(&dir, "mixed-port: 0\n");
+    let config_b_path = dir.join("config-b.yaml");
+    std::fs::write(&config_b_path, "dns:\n  listen: 127.0.0.1:0\n").unwrap();
+    let manager = managed_manager(derived_dir.clone());
+
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start A");
+    assert!(derived_dir.join("epoch-1.yaml").exists());
+
+    let outcome = manager
+        .switch(common::mihomo_spec(&dir, config_b_path))
+        .await
+        .expect("hard switch");
+    assert_eq!(
+        outcome,
+        SwitchOutcome::Hard {
+            reason: DegradeReason::DnsListen
+        }
+    );
+    assert!(
+        !derived_dir.join("epoch-1.yaml").exists(),
+        "old derived config must be removed after hard switch"
+    );
+    assert!(derived_dir.join("epoch-2.yaml").exists());
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Running { epoch: 2, .. }
+    ));
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn derive_failure_republishes_old_running_state() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b_path = dir.join("config-b.yaml");
+    std::fs::write(&config_b_path, format!("mixed-port: {mixed}\n")).unwrap();
+    let manager = managed_manager(derived_dir.clone());
+
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start A");
+    let CoreState::Running {
+        epoch: old_epoch,
+        pid: old_pid,
+    } = manager.status().state
+    else {
+        panic!("not running")
+    };
+
+    for entry in std::fs::read_dir(&derived_dir).unwrap() {
+        std::fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    std::fs::remove_dir(&derived_dir).unwrap();
+    std::fs::write(&derived_dir, "not a directory").unwrap();
+
+    let error = manager
+        .switch(common::mihomo_spec(&dir, config_b_path))
+        .await
+        .expect_err("derive must fail");
+    assert!(matches!(error, Error::Io(_)), "got {error}");
+    assert_eq!(
+        manager.status().state,
+        CoreState::Running {
+            epoch: old_epoch,
+            pid: old_pid
+        }
+    );
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("old core still holds its port");
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn failed_new_core_while_old_restarting_republishes_actual_state() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let state_file = dir.join("crash-state");
+    let config_a = common::write_config(
+        &dir,
+        &format!(
+            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 100\n  crash-times: 1\n  state-file: {state_file}\n"
+        ),
+    );
+    let config_b_path = dir.join("config-b.yaml");
+    std::fs::write(&config_b_path, "mixed-port: 0\n").unwrap();
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let manager = CoreManager::new(ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir,
+            controller_template: unique_template(),
+        },
+        cancel_token: cancel_token.clone(),
+    });
+    let mut spec_a = common::mihomo_spec(&dir, config_a);
+    spec_a.options.backoff = nyanpasu_utils::process::Backoff::exponential(
+        Duration::from_secs(60),
+        Duration::from_secs(60),
+    );
+    let mut rx = manager.subscribe();
+
+    manager.start(spec_a).await.expect("start A");
+    let (old_epoch, old_attempt) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = rx.borrow_and_update().state.clone();
+            if let CoreState::Restarting { epoch, attempt } = state {
+                break (epoch, attempt);
+            }
+            rx.changed().await.expect("status channel open");
+        }
+    })
+    .await
+    .expect("old core never entered restarting");
+
+    let missing_binary = dir.join("missing-core");
+    let mut spec_b = common::mihomo_spec(&dir, config_b_path);
+    spec_b.core.binary_path = missing_binary.clone();
+    let error = manager
+        .switch(spec_b)
+        .await
+        .expect_err("new core spawn must fail");
+    assert!(
+        matches!(&error, Error::BinaryNotFound(path) if path == &missing_binary),
+        "got {error}"
+    );
+    assert_eq!(
+        manager.status().state,
+        CoreState::Restarting {
+            epoch: old_epoch,
+            attempt: old_attempt
+        }
+    );
+
+    cancel_token.cancel();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = rx.borrow_and_update().state.clone();
+            if matches!(state, CoreState::Stopped { .. }) {
+                break;
+            }
+            rx.changed().await.expect("status channel open");
+        }
+    })
+    .await
+    .expect("replacement forwarder did not publish terminal state");
     manager.shutdown().await.expect("shutdown");
 }
 

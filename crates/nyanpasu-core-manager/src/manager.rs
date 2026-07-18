@@ -217,6 +217,7 @@ impl CoreManager {
                 self.inner.publish_state(CoreState::Stopped {
                     reason: Some(StopReason::Error(error.to_string())),
                 });
+                cleanup_derived(derived_path).await;
                 return Err(error);
             }
         };
@@ -306,11 +307,55 @@ impl CoreManager {
                         "switch aborted: failed to stop the old core: {error}"
                     ))),
                 });
+                cleanup_derived(active.derived_path).await;
                 return Err(error);
             }
         }
         cleanup_derived(active.derived_path).await;
         self.start_locked(ctrl, spec).await
+    }
+
+    async fn rollback_republish_retained(&self, ctrl: &mut Ctrl) {
+        {
+            let active = ctrl
+                .current
+                .as_mut()
+                .expect("old core retained during rollback");
+            active.forwarder.abort();
+            let _ = (&mut active.forwarder).await;
+        }
+
+        let (epoch, mut state_rx) = {
+            let active = ctrl
+                .current
+                .as_ref()
+                .expect("old core retained during rollback");
+            (active.instance.epoch(), active.instance.state())
+        };
+        let state = state_rx.borrow_and_update();
+        let terminal = state.is_terminal();
+        let core_state = match &*state {
+            InstanceState::Starting => CoreState::Starting { epoch },
+            InstanceState::Running { pid } => CoreState::Running { epoch, pid: *pid },
+            InstanceState::Restarting { attempt } => CoreState::Restarting {
+                epoch,
+                attempt: *attempt,
+            },
+            InstanceState::Stopping => CoreState::Stopping { epoch },
+            InstanceState::Stopped(reason) => CoreState::Stopped {
+                reason: Some(reason.clone()),
+            },
+        };
+        drop(state);
+
+        self.inner.publish_state(core_state);
+        if !terminal {
+            let active = ctrl
+                .current
+                .as_mut()
+                .expect("old core retained during rollback");
+            active.forwarder = spawn_forwarder(self.inner.clone(), state_rx, epoch);
+        }
     }
 
     async fn graceful_switch(
@@ -326,11 +371,6 @@ impl CoreManager {
             unreachable!("decide() only selects graceful in Managed mode");
         };
         let old_epoch = ctrl.current.as_ref().map(|a| a.instance.epoch());
-        let old_pid = ctrl
-            .current
-            .as_ref()
-            .and_then(|a| a.instance.pid())
-            .unwrap_or_default();
         let epoch = self.next_epoch();
         self.inner.publish_state(CoreState::Switching {
             from: old_epoch,
@@ -339,14 +379,21 @@ impl CoreManager {
 
         // 1. Derive B' (listeners zeroed, epoch endpoint injected) and start it
         //    while the old core keeps serving.
-        let derived = config::derive(
+        let derived = match config::derive(
             &spec.config_path,
             &derived_dir,
             controller_template.as_deref(),
             epoch,
             config::DeriveMode::ZeroListeners,
         )
-        .await?;
+        .await
+        {
+            Ok(derived) => derived,
+            Err(error) => {
+                self.rollback_republish_retained(ctrl).await;
+                return Err(error);
+            }
+        };
         let mut effective = spec.clone();
         effective.config_path = derived.path.clone();
         let started = async {
@@ -366,12 +413,7 @@ impl CoreManager {
             Err(error) => {
                 // Safe rollback: the old core was never touched.
                 cleanup_derived(Some(derived.path)).await;
-                if let Some(from) = old_epoch {
-                    self.inner.publish_state(CoreState::Running {
-                        epoch: from,
-                        pid: old_pid,
-                    });
-                }
+                self.rollback_republish_retained(ctrl).await;
                 return Err(error);
             }
         };
@@ -385,6 +427,7 @@ impl CoreManager {
             Err(error) => {
                 instance.stop().await.ok();
                 cleanup_derived(Some(derived.path)).await;
+                cleanup_derived(old_derived).await;
                 self.inner.publish_state(CoreState::Stopped {
                     reason: Some(StopReason::Error(format!(
                         "switch aborted: failed to stop the old core: {error}"
@@ -464,6 +507,7 @@ impl CoreManager {
         };
         active.forwarder.abort();
         if active.instance.state().borrow().is_terminal() {
+            cleanup_derived(active.derived_path).await;
             return Err(Error::NotStarted);
         }
         let epoch = active.instance.epoch();
