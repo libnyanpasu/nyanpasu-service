@@ -85,3 +85,33 @@ async fn startup_timeout_kills_the_core() {
     // The tree is killed: the fake core's controller port must be released.
     common::wait_port_refused(port).await;
 }
+
+#[tokio::test]
+async fn immediate_exit_reports_stderr_tail() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  exit-code: 1\n  stderr-lines:\n    - \"boot marker failure\"\n"
+        ),
+    );
+    let mut spec = common::mihomo_spec(&dir, config);
+    // One retry, tiny backoff: GaveUp arrives well inside the startup deadline.
+    spec.options.restart_policy =
+        nyanpasu_utils::process::RestartPolicy::OnFailure { max_restarts: 1 };
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn succeeds; the failure is the exit");
+    let err = instance.wait_ready().await.expect_err("must fail");
+    match err {
+        nyanpasu_core_manager::Error::StartupFailed { stderr_tail } => {
+            assert!(
+                stderr_tail.contains("boot marker failure"),
+                "tail: {stderr_tail}"
+            )
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
