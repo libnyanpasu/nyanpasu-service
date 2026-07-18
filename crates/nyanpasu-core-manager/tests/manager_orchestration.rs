@@ -101,3 +101,102 @@ async fn missing_controller_is_rejected_strictly() {
         Err(Error::ControllerMissing)
     ));
 }
+
+#[tokio::test]
+async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port_a = common::free_port();
+    let port_b = common::free_port();
+    let config_a =
+        common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port_a}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!("external-controller: 127.0.0.1:{port_b}\n"),
+    )
+    .unwrap();
+
+    let manager = manager();
+    let mut rx = manager.subscribe();
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start");
+    let CoreState::Running { epoch: first, .. } = manager.status().state else {
+        panic!("not running")
+    };
+
+    let mut spec_b = common::mihomo_spec(&dir, config_b);
+    spec_b.config_path = dir.join("config-b.yaml");
+    manager.switch(spec_b).await.expect("switch");
+
+    let state = wait_core_state(
+        &mut rx,
+        |s| matches!(s, CoreState::Running { .. }),
+        Duration::from_secs(10),
+    )
+    .await;
+    let CoreState::Running { epoch: second, .. } = state else {
+        unreachable!()
+    };
+    assert!(second > first, "epoch must increase: {first} -> {second}");
+    common::wait_port_refused(port_a).await; // old core is dead
+
+    // The Switching window was published.
+    // (record from a fresh subscription is racy; assert via history captured below)
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn restart_uses_the_last_spec_and_survives_stop() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+
+    let manager = manager();
+    assert!(matches!(manager.restart().await, Err(Error::NotStarted)));
+
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start");
+    manager.stop().await.expect("stop");
+    // Legacy parity: restart after stop starts the remembered spec again.
+    manager.restart().await.expect("restart after stop");
+    assert!(matches!(manager.status().state, CoreState::Running { .. }));
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn switch_publishes_a_switching_window() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let spec = common::mihomo_spec(&dir, config);
+
+    let manager = manager();
+    manager.start(spec.clone()).await.expect("start");
+
+    let mut rx = manager.subscribe();
+    let seen = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let seen_ = seen.clone();
+    let recorder = tokio::spawn(async move {
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            seen_.lock().push(rx.borrow_and_update().state.clone());
+        }
+    });
+
+    manager.restart().await.expect("restart");
+    recorder.abort();
+    let states = seen.lock().clone();
+    assert!(
+        states
+            .iter()
+            .any(|s| matches!(s, CoreState::Switching { .. })),
+        "sequence was {states:?}"
+    );
+    manager.shutdown().await.expect("shutdown");
+}

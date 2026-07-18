@@ -162,6 +162,45 @@ impl CoreManager {
         }
     }
 
+    pub async fn restart(&self) -> Result<(), Error> {
+        let mut ctrl = self.inner.ctrl.lock().await;
+        let spec = ctrl.last_spec.clone().ok_or(Error::NotStarted)?;
+        self.switch_locked(&mut ctrl, spec).await
+    }
+
+    pub async fn switch(&self, spec: InstanceSpec) -> Result<(), Error> {
+        let mut ctrl = self.inner.ctrl.lock().await;
+        self.switch_locked(&mut ctrl, spec).await
+    }
+
+    async fn switch_locked(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
+        let running = ctrl
+            .current
+            .as_ref()
+            .is_some_and(|active| !active.instance.state().borrow().is_terminal());
+        if !running {
+            if let Some(stale) = ctrl.current.take() {
+                stale.forwarder.abort();
+            }
+            return self.start_locked(ctrl, spec).await;
+        }
+        self.hard_switch(ctrl, spec).await
+    }
+
+    async fn hard_switch(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
+        let active = ctrl.current.take().expect("running checked by caller");
+        active.forwarder.abort();
+        let from = active.instance.epoch();
+        // Safe peek: `epoch` only advances under the ctrl lock we hold.
+        let to = self.inner.epoch.load(Ordering::Relaxed) + 1;
+        self.inner.publish_state(CoreState::Switching {
+            from: Some(from),
+            to,
+        });
+        active.instance.stop().await?;
+        self.start_locked(ctrl, spec).await
+    }
+
     pub async fn stop(&self) -> Result<(), Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
         let Some(active) = ctrl.current.take() else {
