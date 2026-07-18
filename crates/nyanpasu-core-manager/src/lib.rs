@@ -16,7 +16,7 @@ pub use clash_api::Host;
 pub use error::Error;
 pub use instance::Instance;
 pub use kind::CoreKind;
-pub use manager::CoreManager;
+pub use manager::{CoreManager, DegradeReason, SwitchOutcome};
 pub use spec::{
     ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, ManagerOptions, ResolvedController,
 };

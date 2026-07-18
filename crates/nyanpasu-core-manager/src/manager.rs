@@ -1,8 +1,11 @@
 //! Cross-epoch orchestration: start/stop/switch and status publication.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use tokio::sync::watch;
@@ -11,9 +14,42 @@ use crate::{
     config,
     error::Error,
     instance::Instance,
+    kind::CoreKind,
     spec::{ControllerMode, InstanceSpec, ManagerOptions, ResolvedController},
     state::{CoreState, CoreStatus, InstanceState, SpecSummary, StopReason, now_ms},
 };
+
+/// Why a switch was executed as a hard stop→start instead of gracefully.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DegradeReason {
+    NotRunning,
+    PassthroughMode,
+    UnsupportedKind,
+    DnsListen,
+    /// Graceful overlap succeeded but the listener-restore PATCH kept failing;
+    /// converged via a hard restart on the full config.
+    PatchFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchOutcome {
+    Graceful,
+    Hard { reason: DegradeReason },
+}
+
+/// Spec §6.3 degradation matrix. `None` means graceful-eligible.
+fn decide(managed: bool, kind: CoreKind, has_dns_listen: bool) -> Option<DegradeReason> {
+    if !managed {
+        return Some(DegradeReason::PassthroughMode);
+    }
+    if !matches!(kind, CoreKind::Mihomo) {
+        return Some(DegradeReason::UnsupportedKind);
+    }
+    if has_dns_listen {
+        return Some(DegradeReason::DnsListen);
+    }
+    None
+}
 
 pub struct CoreManager {
     inner: Arc<Inner>,
@@ -145,7 +181,16 @@ impl CoreManager {
     }
 
     async fn start_locked(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
-        let epoch = self.next_epoch();
+        self.start_locked_with_epoch(ctrl, spec, None).await
+    }
+
+    async fn start_locked_with_epoch(
+        &self,
+        ctrl: &mut Ctrl,
+        spec: InstanceSpec,
+        epoch_override: Option<u64>,
+    ) -> Result<(), Error> {
+        let epoch = epoch_override.unwrap_or_else(|| self.next_epoch());
         let (effective_spec, controller, advertised, derived_path) =
             self.prepare(&spec, epoch).await?;
         self.inner.publish_context(
@@ -197,18 +242,22 @@ impl CoreManager {
         }
     }
 
-    pub async fn restart(&self) -> Result<(), Error> {
+    pub async fn restart(&self) -> Result<SwitchOutcome, Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
         let spec = ctrl.last_spec.clone().ok_or(Error::NotStarted)?;
         self.switch_locked(&mut ctrl, spec).await
     }
 
-    pub async fn switch(&self, spec: InstanceSpec) -> Result<(), Error> {
+    pub async fn switch(&self, spec: InstanceSpec) -> Result<SwitchOutcome, Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
         self.switch_locked(&mut ctrl, spec).await
     }
 
-    async fn switch_locked(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
+    async fn switch_locked(
+        &self,
+        ctrl: &mut Ctrl,
+        spec: InstanceSpec,
+    ) -> Result<SwitchOutcome, Error> {
         let running = ctrl
             .current
             .as_ref()
@@ -217,9 +266,23 @@ impl CoreManager {
             if let Some(stale) = ctrl.current.take() {
                 stale.forwarder.abort();
             }
-            return self.start_locked(ctrl, spec).await;
+            self.start_locked(ctrl, spec).await?;
+            return Ok(SwitchOutcome::Hard {
+                reason: DegradeReason::NotRunning,
+            });
         }
-        self.hard_switch(ctrl, spec).await
+        let managed = matches!(
+            self.inner.options.controller_mode,
+            ControllerMode::Managed { .. }
+        );
+        let info = config::inspect(&spec.config_path).await?;
+        match decide(managed, spec.core.kind, info.has_dns_listen) {
+            Some(reason) => {
+                self.hard_switch(ctrl, spec).await?;
+                Ok(SwitchOutcome::Hard { reason })
+            }
+            None => self.graceful_switch(ctrl, spec).await,
+        }
     }
 
     async fn hard_switch(&self, ctrl: &mut Ctrl, spec: InstanceSpec) -> Result<(), Error> {
@@ -235,6 +298,124 @@ impl CoreManager {
         active.instance.stop().await?;
         cleanup_derived(active.derived_path).await;
         self.start_locked(ctrl, spec).await
+    }
+
+    async fn graceful_switch(
+        &self,
+        ctrl: &mut Ctrl,
+        spec: InstanceSpec,
+    ) -> Result<SwitchOutcome, Error> {
+        let ControllerMode::Managed {
+            derived_dir,
+            controller_template,
+        } = self.inner.options.controller_mode.clone()
+        else {
+            unreachable!("decide() only selects graceful in Managed mode");
+        };
+        let old_epoch = ctrl.current.as_ref().map(|a| a.instance.epoch());
+        let old_pid = ctrl
+            .current
+            .as_ref()
+            .and_then(|a| a.instance.pid())
+            .unwrap_or_default();
+        let epoch = self.next_epoch();
+        self.inner.publish_state(CoreState::Switching {
+            from: old_epoch,
+            to: epoch,
+        });
+
+        // 1. Derive B' (listeners zeroed, epoch endpoint injected) and start it
+        //    while the old core keeps serving.
+        let derived = config::derive(
+            &spec.config_path,
+            &derived_dir,
+            controller_template.as_deref(),
+            epoch,
+            config::DeriveMode::ZeroListeners,
+        )
+        .await?;
+        let mut effective = spec.clone();
+        effective.config_path = derived.path.clone();
+        let started = async {
+            let instance = Instance::spawn(
+                effective,
+                epoch,
+                derived.controller.clone(),
+                self.inner.options.cancel_token.clone(),
+            )
+            .await?;
+            instance.wait_ready().await?;
+            Ok::<Instance, Error>(instance)
+        }
+        .await;
+        let instance = match started {
+            Ok(instance) => instance,
+            Err(error) => {
+                // Safe rollback: the old core was never touched.
+                cleanup_derived(Some(derived.path)).await;
+                if let Some(from) = old_epoch {
+                    self.inner.publish_state(CoreState::Running {
+                        epoch: from,
+                        pid: old_pid,
+                    });
+                }
+                return Err(error);
+            }
+        };
+
+        // 2. Point of no return: stop the old core, releasing its listeners.
+        let old = ctrl.current.take().expect("running checked by caller");
+        old.forwarder.abort();
+        let old_derived = old.derived_path.clone();
+        old.instance.stop().await?;
+        cleanup_derived(old_derived).await;
+
+        // 3. Restore the original listeners on the new core (3 tries × 500ms).
+        let patched = if derived.restore.is_empty() {
+            true
+        } else {
+            let client = crate::health::build_client(instance.controller())?;
+            let patch = derived.restore.to_patch();
+            let mut ok = false;
+            for attempt in 1..=3u32 {
+                match client.patch_config(&patch).await {
+                    Ok(()) => {
+                        ok = true;
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!("listener-restore patch attempt {attempt} failed: {error}");
+                        if attempt < 3 {
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                    }
+                }
+            }
+            ok
+        };
+        if !patched {
+            // 4. Fallback: the old core is dead and its ports are free — hard
+            //    restart the new instance on the full config, same epoch.
+            instance.stop().await.ok();
+            cleanup_derived(Some(derived.path)).await;
+            self.start_locked_with_epoch(ctrl, spec, Some(epoch))
+                .await?;
+            return Ok(SwitchOutcome::Hard {
+                reason: DegradeReason::PatchFailed,
+            });
+        }
+
+        // 5. Install the new core.
+        let pid = instance.pid().unwrap_or_default();
+        self.inner.publish_state(CoreState::Running { epoch, pid });
+        let forwarder = spawn_forwarder(self.inner.clone(), instance.state(), epoch);
+        ctrl.current = Some(Active {
+            instance,
+            forwarder,
+            derived_path: Some(derived.path),
+        });
+        ctrl.last_spec = Some(spec);
+        Ok(SwitchOutcome::Graceful)
     }
 
     pub async fn stop(&self) -> Result<(), Error> {
@@ -330,4 +511,31 @@ fn spawn_forwarder(
             inner.publish_state(core_state);
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kind::CoreKind;
+
+    #[test]
+    fn switch_matrix_matches_the_spec() {
+        assert_eq!(
+            decide(false, CoreKind::Mihomo, false),
+            Some(DegradeReason::PassthroughMode)
+        );
+        assert_eq!(
+            decide(true, CoreKind::ClashRs, false),
+            Some(DegradeReason::UnsupportedKind)
+        );
+        assert_eq!(
+            decide(true, CoreKind::ClashPremium, false),
+            Some(DegradeReason::UnsupportedKind)
+        );
+        assert_eq!(
+            decide(true, CoreKind::Mihomo, true),
+            Some(DegradeReason::DnsListen)
+        );
+        assert_eq!(decide(true, CoreKind::Mihomo, false), None);
+    }
 }
