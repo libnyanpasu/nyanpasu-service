@@ -118,16 +118,16 @@ async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
 
     let manager = manager();
     let mut rx = manager.subscribe();
-    manager
-        .start(common::mihomo_spec(&dir, config_a))
-        .await
-        .expect("start");
+    let mut spec_a = common::mihomo_spec(&dir, config_a);
+    spec_a.options.startup_timeout = Duration::from_secs(15);
+    manager.start(spec_a).await.expect("start");
     let CoreState::Running { epoch: first, .. } = manager.status().state else {
         panic!("not running")
     };
 
     let mut spec_b = common::mihomo_spec(&dir, config_b);
     spec_b.config_path = dir.join("config-b.yaml");
+    spec_b.options.startup_timeout = Duration::from_secs(15);
     manager.switch(spec_b).await.expect("switch");
 
     let state = wait_core_state(
@@ -156,10 +156,9 @@ async fn restart_uses_the_last_spec_and_survives_stop() {
     let manager = manager();
     assert!(matches!(manager.restart().await, Err(Error::NotStarted)));
 
-    manager
-        .start(common::mihomo_spec(&dir, config))
-        .await
-        .expect("start");
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.startup_timeout = Duration::from_secs(15);
+    manager.start(spec).await.expect("start");
     manager.stop().await.expect("stop");
     // Legacy parity: restart after stop starts the remembered spec again.
     manager.restart().await.expect("restart after stop");
@@ -172,7 +171,8 @@ async fn switch_publishes_a_switching_window() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
-    let spec = common::mihomo_spec(&dir, config);
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.startup_timeout = Duration::from_secs(15);
 
     let manager = manager();
     manager.start(spec.clone()).await.expect("start");
