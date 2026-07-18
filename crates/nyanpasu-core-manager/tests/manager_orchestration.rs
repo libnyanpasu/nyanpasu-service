@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use nyanpasu_core_manager::{CoreState, Error, ManagerOptions, manager::CoreManager};
+use nyanpasu_core_manager::{CoreState, Error, ManagerOptions, StopReason, manager::CoreManager};
 
 fn manager() -> CoreManager {
     CoreManager::new(ManagerOptions::default())
@@ -199,4 +199,68 @@ async fn switch_publishes_a_switching_window() {
         "sequence was {states:?}"
     );
     manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn lifecycle_sequence_matches_legacy_contract() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let state_file = dir.join("crash-state");
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 400\n  crash-times: 1\n  state-file: {state_file}\n"
+        ),
+    );
+
+    let manager = manager();
+    let mut rx = manager.subscribe();
+    let seen = std::sync::Arc::new(parking_lot::Mutex::new(vec![rx.borrow().state.clone()]));
+    let seen_ = seen.clone();
+    let recorder = tokio::spawn(async move {
+        loop {
+            if rx.changed().await.is_err() {
+                break;
+            }
+            seen_.lock().push(rx.borrow_and_update().state.clone());
+        }
+    });
+
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start");
+    // Crash at ~400ms, recovery, then user stop.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    manager.stop().await.expect("stop");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    recorder.abort();
+
+    let states = seen.lock().clone();
+    let position = |pred: &dyn Fn(&CoreState) -> bool| states.iter().position(|s| pred(s));
+    let starting = position(&|s| matches!(s, CoreState::Starting { .. })).expect("Starting");
+    let running = position(&|s| matches!(s, CoreState::Running { .. })).expect("Running");
+    let restarting = position(&|s| matches!(s, CoreState::Restarting { .. })).expect("Restarting");
+    let stopped = states
+        .iter()
+        .rposition(|s| {
+            matches!(
+                s,
+                CoreState::Stopped {
+                    reason: Some(StopReason::User)
+                }
+            )
+        })
+        .expect("terminal user stop");
+    assert!(
+        starting < running && running < restarting && restarting < stopped,
+        "sequence was {states:?}"
+    );
+    let running_after_restart = states[restarting..]
+        .iter()
+        .any(|s| matches!(s, CoreState::Running { .. }));
+    assert!(
+        running_after_restart,
+        "recovery must re-confirm Running: {states:?}"
+    );
 }
