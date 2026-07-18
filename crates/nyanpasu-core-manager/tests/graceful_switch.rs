@@ -7,8 +7,11 @@ use nyanpasu_core_manager::{ControllerMode, CoreState, ManagerOptions, manager::
 fn unique_template() -> Option<String> {
     #[cfg(windows)]
     {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static COUNTER: AtomicU32 = AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         Some(format!(
-            r"\\.\pipe\nyanpasu-test-{}-{{epoch}}",
+            r"\\.\pipe\nyanpasu-test-{}-{n}-{{epoch}}",
             std::process::id()
         ))
     }
