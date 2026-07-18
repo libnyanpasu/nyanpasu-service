@@ -144,3 +144,77 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
     assert_eq!(epoch, 2);
     manager.shutdown().await.expect("shutdown");
 }
+
+#[tokio::test]
+async fn failed_new_core_rolls_back_without_touching_the_old_one() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b_path = dir.join("config-b.yaml");
+    std::fs::write(&config_b_path, "x-fake-core:\n  never-ready: true\n").unwrap();
+
+    let manager = managed_manager(dir.join("derived"));
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start A");
+    let CoreState::Running {
+        epoch: old_epoch, ..
+    } = manager.status().state
+    else {
+        panic!("not running")
+    };
+
+    let mut spec_b = common::mihomo_spec(&dir, config_b_path.clone());
+    spec_b.config_path = config_b_path;
+    spec_b.options.startup_timeout = Duration::from_secs(1);
+    manager.switch(spec_b).await.expect_err("switch must fail");
+
+    // The old core is untouched and republished as Running.
+    let CoreState::Running { epoch, .. } = manager.status().state else {
+        panic!(
+            "old core must still be running, got {:?}",
+            manager.status().state
+        )
+    };
+    assert_eq!(epoch, old_epoch);
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("old core still holds its port");
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn rejected_patch_falls_back_to_a_hard_restart() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b_path = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b_path,
+        format!("mixed-port: {mixed}\nx-fake-core:\n  reject-patch: true\n"),
+    )
+    .unwrap();
+
+    let manager = managed_manager(dir.join("derived"));
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start A");
+
+    let mut spec_b = common::mihomo_spec(&dir, config_b_path.clone());
+    spec_b.config_path = config_b_path;
+    let outcome = manager.switch(spec_b).await.expect("switch converges");
+    assert_eq!(
+        outcome,
+        SwitchOutcome::Hard {
+            reason: nyanpasu_core_manager::DegradeReason::PatchFailed
+        }
+    );
+    // The fallback instance boots on the FULL config, so it binds the port itself.
+    assert!(matches!(manager.status().state, CoreState::Running { .. }));
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("fallback core serves the mixed port");
+    manager.shutdown().await.expect("shutdown");
+}
