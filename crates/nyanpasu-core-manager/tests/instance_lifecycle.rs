@@ -47,3 +47,18 @@ async fn start_confirms_via_version_probe() {
         "sequence was {states:?}"
     );
 }
+
+#[tokio::test]
+async fn dropping_an_instance_kills_the_core() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let spec = common::mihomo_spec(&dir, config);
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn");
+    instance.wait_ready().await.expect("healthy");
+    drop(instance);
+    common::wait_port_refused(port).await;
+}

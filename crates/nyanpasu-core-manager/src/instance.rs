@@ -214,6 +214,15 @@ impl Instance {
     }
 }
 
+/// Dropping an `Instance` without `stop()` cancels supervision so the core
+/// process tree is killed instead of orphaned (the monitor and supervisor
+/// tasks hold `Arc<Shared>`, so drop alone would never reach them).
+impl Drop for Instance {
+    fn drop(&mut self) {
+        self.shared.cancel.cancel();
+    }
+}
+
 fn build_command(spec: &InstanceSpec) -> Command {
     let args = spec
         .core
