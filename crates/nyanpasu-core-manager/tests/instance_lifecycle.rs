@@ -200,3 +200,33 @@ async fn crash_loop_exhausts_the_budget() {
         "terminal was {terminal:?}"
     );
 }
+
+#[tokio::test]
+async fn user_stop_is_terminal_and_releases_the_port() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let spec = common::mihomo_spec(&dir, config);
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn");
+    instance.wait_ready().await.expect("healthy");
+    let mut rx = instance.state();
+    instance.stop().await.expect("stop");
+
+    let terminal = common::wait_for_state(
+        &mut rx,
+        |s| s.is_terminal(),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        matches!(
+            terminal,
+            InstanceState::Stopped(nyanpasu_core_manager::StopReason::User)
+        ),
+        "terminal was {terminal:?}"
+    );
+    common::wait_port_refused(port).await;
+}
