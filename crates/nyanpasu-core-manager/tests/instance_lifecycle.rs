@@ -115,3 +115,88 @@ async fn immediate_exit_reports_stderr_tail() {
         other => panic!("unexpected error: {other}"),
     }
 }
+
+#[tokio::test]
+async fn crash_recovers_through_restart_and_reprobe() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let state_file = dir.join("crash-state");
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 400\n  crash-times: 1\n  state-file: {state_file}\n"
+        ),
+    );
+    let spec = common::mihomo_spec(&dir, config);
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn");
+    let (recorder, log) = common::record_states(instance.state());
+    instance.wait_ready().await.expect("initially healthy");
+
+    // First run crashes at ~400ms; the supervisor restarts; the re-probe
+    // confirms the second (healthy) run.
+    let mut rx = instance.state();
+    common::wait_for_state(
+        &mut rx,
+        |s| matches!(s, InstanceState::Restarting { .. }),
+        std::time::Duration::from_secs(5),
+    )
+    .await;
+    common::wait_for_state(
+        &mut rx,
+        |s| matches!(s, InstanceState::Running { .. }),
+        std::time::Duration::from_secs(10),
+    )
+    .await;
+
+    instance.stop().await.expect("stop");
+    recorder.abort();
+    let states = log.lock().clone();
+    let running_count = states
+        .iter()
+        .filter(|s| matches!(s, InstanceState::Running { .. }))
+        .count();
+    assert!(running_count >= 2, "sequence was {states:?}");
+}
+
+#[tokio::test]
+async fn crash_loop_exhausts_the_budget() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let state_file = dir.join("crash-state");
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 300\n  crash-times: 99\n  state-file: {state_file}\n"
+        ),
+    );
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.restart_policy =
+        nyanpasu_utils::process::RestartPolicy::OnFailure { max_restarts: 1 };
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn");
+    instance
+        .wait_ready()
+        .await
+        .expect("first run is briefly healthy");
+
+    let mut rx = instance.state();
+    let terminal = common::wait_for_state(
+        &mut rx,
+        |s| s.is_terminal(),
+        std::time::Duration::from_secs(15),
+    )
+    .await;
+    assert!(
+        matches!(
+            &terminal,
+            InstanceState::Stopped(nyanpasu_core_manager::StopReason::Error(msg))
+                if msg.contains("restart budget exhausted")
+        ),
+        "terminal was {terminal:?}"
+    );
+}
