@@ -398,7 +398,10 @@ impl CoreManager {
         } else {
             let client = match crate::health::build_client(instance.controller()) {
                 Ok(client) => client,
-                Err(_error) => {
+                Err(error) => {
+                    tracing::warn!(
+                        "failed to build the listener-restore client: {error}; falling back to a hard restart"
+                    );
                     instance.stop().await.ok();
                     cleanup_derived(Some(derived.path)).await;
                     self.start_locked_with_epoch(ctrl, spec, Some(epoch))
@@ -468,6 +471,7 @@ impl CoreManager {
                 self.inner.publish_state(CoreState::Stopped {
                     reason: Some(StopReason::Error(format!("stop failed: {error}"))),
                 });
+                cleanup_derived(active.derived_path).await;
                 return Err(error);
             }
         }

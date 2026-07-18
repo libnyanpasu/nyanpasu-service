@@ -15,6 +15,7 @@ pub(crate) struct ConfigInfo {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RawController {
     Pipe(String),
+    #[cfg_attr(windows, allow(dead_code))]
     Unix(String),
     Http(String),
 }

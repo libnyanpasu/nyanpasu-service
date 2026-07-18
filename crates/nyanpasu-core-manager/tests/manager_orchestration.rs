@@ -142,8 +142,6 @@ async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
     assert!(second > first, "epoch must increase: {first} -> {second}");
     common::wait_port_refused(port_a).await; // old core is dead
 
-    // The Switching window was published.
-    // (record from a fresh subscription is racy; assert via history captured below)
     manager.shutdown().await.expect("shutdown");
 }
 
@@ -251,7 +249,7 @@ async fn lifecycle_sequence_matches_legacy_contract() {
     recorder.abort();
 
     let states = seen.lock().clone();
-    let position = |pred: &dyn Fn(&CoreState) -> bool| states.iter().position(|s| pred(s));
+    let position = |pred: &dyn Fn(&CoreState) -> bool| states.iter().position(pred);
     let starting = position(&|s| matches!(s, CoreState::Starting { .. })).expect("Starting");
     let running = position(&|s| matches!(s, CoreState::Running { .. })).expect("Running");
     let restarting = position(&|s| matches!(s, CoreState::Restarting { .. })).expect("Restarting");
