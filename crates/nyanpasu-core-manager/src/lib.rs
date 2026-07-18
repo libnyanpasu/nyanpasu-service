@@ -8,6 +8,7 @@ mod error;
 mod health;
 pub mod instance;
 pub mod kind;
+pub mod manager;
 pub mod spec;
 pub mod state;
 
@@ -15,6 +16,7 @@ pub use clash_api::Host;
 pub use error::Error;
 pub use instance::Instance;
 pub use kind::CoreKind;
+pub use manager::CoreManager;
 pub use spec::{
     ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, ManagerOptions, ResolvedController,
 };
