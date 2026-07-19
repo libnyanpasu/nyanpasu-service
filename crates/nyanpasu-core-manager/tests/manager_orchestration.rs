@@ -512,6 +512,13 @@ async fn initial_start_stop_uncertainty_quarantines_until_recovery() {
 
     std::fs::write(&pid_path, record).unwrap();
     common::wait_port_refused(port).await;
+    let blocked_cleanup = runtime_dir.join("config-1.yaml.backup-blocked");
+    std::fs::create_dir(&blocked_cleanup).unwrap();
+    manager
+        .recover_quarantine()
+        .await
+        .expect_err("unsafe artifact must fail the first cleanup attempt");
+    std::fs::remove_dir(&blocked_cleanup).unwrap();
     manager.recover_quarantine().await.unwrap();
     let healthy = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
     manager

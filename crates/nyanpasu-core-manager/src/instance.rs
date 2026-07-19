@@ -237,7 +237,11 @@ impl Instance {
         }
         let terminal = self.state_rx.borrow().is_terminal();
         if stop_result.is_ok() && (monitor_confirmed || terminal) {
-            self.reap_epoch_record_if_present().await?;
+            self.reap_epoch_record_if_present().await.map_err(|error| {
+                Error::StopUnconfirmed(format!(
+                    "stopped instance identity verification failed: {error}"
+                ))
+            })?;
             return Ok(());
         }
         let stop_error = stop_result

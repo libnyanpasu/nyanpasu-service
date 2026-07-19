@@ -34,10 +34,16 @@ pub enum DegradeReason {
     PatchFailed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchOutcome {
     Graceful,
-    Hard { reason: DegradeReason },
+    Hard {
+        reason: DegradeReason,
+    },
+    DurabilityUncertain {
+        outcome: Box<SwitchOutcome>,
+        warning: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -110,6 +116,7 @@ struct Ctrl {
 struct QuarantinedEpoch {
     epoch: u64,
     reason: String,
+    death_proven: bool,
 }
 
 struct Active {
@@ -248,6 +255,12 @@ impl CoreManager {
 
     pub fn status(&self) -> CoreStatus {
         self.inner.status_tx.borrow().clone()
+    }
+
+    /// Test-only fault hook for the installed-but-parent-sync-failed branch.
+    #[doc(hidden)]
+    pub fn inject_runtime_parent_sync_failure_once_for_test(&self) {
+        self.inner.store.inject_replace_parent_sync_failure_once();
     }
 
     pub async fn apply_config(
@@ -1083,32 +1096,64 @@ impl CoreManager {
             return Ok(());
         }
         let quarantined = ctrl.quarantine.clone();
+        let mut failures = Vec::new();
         for entry in quarantined {
-            let pid_path = self.inner.store.pid_path(entry.epoch);
-            match reap_epoch_pid_file(pid_path.as_std_path(), self.inner.store.dir().as_std_path())
+            if !entry.death_proven {
+                let pid_path = self.inner.store.pid_path(entry.epoch);
+                match reap_epoch_pid_file(
+                    pid_path.as_std_path(),
+                    self.inner.store.dir().as_std_path(),
+                )
                 .await
-            {
-                Ok(OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::Killed) => {
-                    self.inner.store.cleanup_epoch(entry.epoch).await?;
-                    ctrl.quarantine
-                        .retain(|quarantine| quarantine.epoch != entry.epoch);
-                }
-                Ok(OrphanReapOutcome::NotFound) => {
-                    return Err(Error::ManagerQuarantined {
-                        epoch: entry.epoch,
-                        reason: format!(
-                            "{}; authoritative epoch pid record is unavailable",
-                            entry.reason
-                        ),
-                    });
-                }
-                Err(error) => {
-                    return Err(Error::ManagerQuarantined {
-                        epoch: entry.epoch,
-                        reason: format!("{}; recovery failed: {error}", entry.reason),
-                    });
+                {
+                    Ok(OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::Killed) => {
+                        if let Some(quarantine) = ctrl
+                            .quarantine
+                            .iter_mut()
+                            .find(|quarantine| quarantine.epoch == entry.epoch)
+                        {
+                            quarantine.death_proven = true;
+                        }
+                    }
+                    Ok(OrphanReapOutcome::NotFound) => {
+                        failures.push(format!(
+                            "epoch {}: {}; authoritative epoch pid record is unavailable",
+                            entry.epoch, entry.reason
+                        ));
+                        continue;
+                    }
+                    Err(error) => {
+                        failures.push(format!(
+                            "epoch {}: {}; recovery failed: {error}",
+                            entry.epoch, entry.reason
+                        ));
+                        continue;
+                    }
                 }
             }
+
+            match self.inner.store.cleanup_epoch(entry.epoch).await {
+                Ok(()) => ctrl
+                    .quarantine
+                    .retain(|quarantine| quarantine.epoch != entry.epoch),
+                Err(error) => failures.push(format!(
+                    "epoch {}: {}; artifact cleanup failed: {error}",
+                    entry.epoch, entry.reason
+                )),
+            }
+        }
+        if !failures.is_empty() {
+            let first_epoch = ctrl
+                .quarantine
+                .first()
+                .map(|entry| entry.epoch)
+                .unwrap_or_default();
+            let error = Error::ManagerQuarantined {
+                epoch: first_epoch,
+                reason: failures.join(" | "),
+            };
+            self.publish_terminal_error(&error);
+            return Err(error);
         }
         self.inner
             .publish(CoreState::Stopped { reason: None }, None, None, None);
@@ -1378,7 +1423,8 @@ impl CoreManager {
                 return Err(error);
             }
         };
-        if let Some(warning) = commit.durability_warning() {
+        let durability_warning = commit.durability_warning().map(str::to_owned);
+        if let Some(warning) = durability_warning.as_deref() {
             tracing::warn!("graceful runtime replacement durability is uncertain: {warning}");
         }
 
@@ -1395,8 +1441,13 @@ impl CoreManager {
         .unwrap_or(false);
         if reconciled {
             self.install_switched(ctrl, instance, launch);
-            self.inner.store.cleanup_epoch(old_epoch).await?;
-            return Ok(SwitchOutcome::Graceful);
+            let result = self
+                .inner
+                .store
+                .cleanup_epoch(old_epoch)
+                .await
+                .map(|()| SwitchOutcome::Graceful);
+            return with_switch_durability_result(result, durability_warning);
         }
 
         let effective_spec = launch.effective_spec.clone();
@@ -1405,11 +1456,13 @@ impl CoreManager {
             .stop_and_confirm_dead(self.inner.options.stop_timeout)
             .await
         {
-            if matches!(error, Error::StopUnconfirmed(_)) {
-                return Err(self.latch_quarantine(ctrl, epoch, error));
-            }
-            self.publish_terminal_error(&error);
-            return Err(error);
+            let error = if matches!(error, Error::StopUnconfirmed(_)) {
+                self.latch_quarantine(ctrl, epoch, error)
+            } else {
+                self.publish_terminal_error(&error);
+                error
+            };
+            return with_switch_durability_result(Err(error), durability_warning);
         }
         let replacement = match self
             .spawn_replacement(effective_spec, epoch, controller)
@@ -1417,21 +1470,31 @@ impl CoreManager {
         {
             Ok(replacement) => replacement,
             Err(error @ Error::StopUnconfirmed(_)) => {
-                return Err(self.latch_quarantine(ctrl, epoch, error));
+                let error = self.latch_quarantine(ctrl, epoch, error);
+                return with_switch_durability_result(Err(error), durability_warning);
             }
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
                 self.publish_terminal_error(&error);
-                return Err(error);
+                return with_switch_durability_result(Err(error), durability_warning);
             }
         };
         self.install_switched(ctrl, replacement, launch);
-        self.inner.store.cleanup_epoch(old_epoch).await?;
-        Ok(SwitchOutcome::Hard {
-            reason: DegradeReason::PatchFailed,
-        })
+        let result =
+            self.inner
+                .store
+                .cleanup_epoch(old_epoch)
+                .await
+                .map(|()| SwitchOutcome::Hard {
+                    reason: DegradeReason::PatchFailed,
+                });
+        with_switch_durability_result(result, durability_warning)
     }
 
+    /// Stops the active instance even while another epoch is quarantined.
+    ///
+    /// This intentionally bypasses the quarantine gate so callers can reduce
+    /// the number of possibly live processes; it does not clear quarantine.
     pub async fn stop(&self) -> Result<(), Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
         let Some(active) = ctrl.current.take() else {
@@ -1505,6 +1568,10 @@ impl CoreManager {
         crate::kind::check_config(spec).await
     }
 
+    /// Stops the active instance even while another epoch is quarantined.
+    ///
+    /// Like [`Self::stop`], shutdown intentionally bypasses the quarantine
+    /// gate and never treats an unrelated uncertain epoch as recovered.
     pub async fn shutdown(&self) -> Result<(), Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
         if let Some(active) = ctrl.current.take() {
@@ -1577,7 +1644,11 @@ fn record_quarantine(ctrl: &mut Ctrl, epoch: u64, reason: String) {
     {
         existing.reason = reason;
     } else {
-        ctrl.quarantine.push(QuarantinedEpoch { epoch, reason });
+        ctrl.quarantine.push(QuarantinedEpoch {
+            epoch,
+            reason,
+            death_proven: false,
+        });
     }
 }
 
@@ -1661,9 +1732,40 @@ fn with_durability_result(
         (Err(Error::StopUnconfirmed(message)), Some(warning)) => Err(Error::StopUnconfirmed(
             format!("{message}; runtime durability warning: {warning}"),
         )),
-        (Err(error), Some(warning)) => Err(Error::ApplyFailed(format!(
-            "{error}; runtime durability warning: {warning}"
-        ))),
+        (Err(error), Some(warning)) => Err(Error::DurabilityUncertain {
+            source: Box::new(error),
+            warning,
+        }),
+        (Err(error), None) => Err(error),
+    }
+}
+
+fn with_switch_durability_warning(
+    outcome: SwitchOutcome,
+    warning: Option<String>,
+) -> SwitchOutcome {
+    match warning {
+        Some(warning) => SwitchOutcome::DurabilityUncertain {
+            outcome: Box::new(outcome),
+            warning,
+        },
+        None => outcome,
+    }
+}
+
+fn with_switch_durability_result(
+    result: Result<SwitchOutcome, Error>,
+    warning: Option<String>,
+) -> Result<SwitchOutcome, Error> {
+    match (result, warning) {
+        (Ok(outcome), warning) => Ok(with_switch_durability_warning(outcome, warning)),
+        (Err(Error::StopUnconfirmed(message)), Some(warning)) => Err(Error::StopUnconfirmed(
+            format!("{message}; runtime durability warning: {warning}"),
+        )),
+        (Err(error), Some(warning)) => Err(Error::DurabilityUncertain {
+            source: Box::new(error),
+            warning,
+        }),
         (Err(error), None) => Err(error),
     }
 }
@@ -1716,5 +1818,21 @@ mod tests {
                 CoreState::Running { epoch: 9, pid: 90 }
             ));
         }
+    }
+
+    #[test]
+    fn durability_warning_preserves_structured_apply_error() {
+        let result = with_durability_result(
+            Err(Error::ApplyRollbackFailed {
+                apply: "desired failed".into(),
+                rollback: "rollback failed".into(),
+            }),
+            Some("directory sync failed".into()),
+        );
+        let Err(Error::DurabilityUncertain { source, warning }) = result else {
+            panic!("structured error was flattened")
+        };
+        assert!(matches!(*source, Error::ApplyRollbackFailed { .. }));
+        assert_eq!(warning, "directory sync failed");
     }
 }

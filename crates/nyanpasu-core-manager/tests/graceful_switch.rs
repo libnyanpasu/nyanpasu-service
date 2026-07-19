@@ -249,6 +249,34 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
 }
 
 #[tokio::test]
+async fn graceful_switch_surfaces_installed_but_uncertain_durability() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(&config_b, format!("mixed-port: {mixed}\n")).unwrap();
+    let manager = managed_manager(derived_dir).await;
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+    manager.inject_runtime_parent_sync_failure_once_for_test();
+
+    let outcome = manager
+        .switch(common::mihomo_spec(&dir, config_b))
+        .await
+        .expect("graceful switch");
+
+    let SwitchOutcome::DurabilityUncertain { outcome, warning } = outcome else {
+        panic!("expected durability wrapper")
+    };
+    assert_eq!(*outcome, SwitchOutcome::Graceful);
+    assert!(warning.contains("injected"), "{warning}");
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn graceful_respawn_loads_the_full_committed_runtime_config() {
     let (_guard, dir) = common::utf8_tempdir();
     let derived_dir = dir.join("derived");
@@ -498,6 +526,74 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
 
     assert_eq!(switching.await.unwrap().unwrap(), SwitchOutcome::Graceful);
     manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let config_a = common::write_config(&dir, "mixed-port: 0\n");
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        "mixed-port: 0\nx-fake-core:\n  ready-delay-ms: 700\n",
+    )
+    .unwrap();
+    let manager = Arc::new(
+        CoreManager::new(ManagerOptions {
+            controller_mode: ControllerMode::Managed {
+                derived_dir: derived_dir.clone(),
+                controller_template: unique_template(),
+            },
+            stop_timeout: Duration::from_secs(1),
+            ..Default::default()
+        })
+        .await
+        .unwrap(),
+    );
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .unwrap();
+
+    let spec_b = common::mihomo_spec(&dir, config_b);
+    let switching = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.switch(spec_b).await })
+    };
+    let first_pid = derived_dir.join("core-1.pid");
+    let second_pid = derived_dir.join("core-2.pid");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !second_pid.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("new epoch record never appeared");
+    let first_record = std::fs::read_to_string(&first_pid).unwrap();
+    let second_record = std::fs::read_to_string(&second_pid).unwrap();
+    std::fs::write(&first_pid, "unverifiable first epoch\n").unwrap();
+    std::fs::write(&second_pid, "unverifiable second epoch\n").unwrap();
+    assert!(matches!(
+        switching.await.unwrap(),
+        Err(Error::StopUnconfirmed(_))
+    ));
+
+    std::fs::write(&second_pid, second_record).unwrap();
+    manager
+        .recover_quarantine()
+        .await
+        .expect_err("first epoch must remain uncertain");
+    assert!(
+        !derived_dir.join("config-2.yaml").exists(),
+        "a later independent quarantine was not recovered"
+    );
+    assert!(!second_pid.exists());
+    assert!(derived_dir.join("config-1.yaml").exists());
+
+    std::fs::write(&first_pid, first_record).unwrap();
+    manager.recover_quarantine().await.unwrap();
+    assert!(!derived_dir.join("config-1.yaml").exists());
 }
 
 #[tokio::test]

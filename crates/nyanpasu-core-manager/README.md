@@ -158,6 +158,11 @@ cleanly: the old core is untouched and `Running` is re-published.
 | Listener-restore PATCH cannot be verified | same-epoch restart, `Hard { PatchFailed }` |
 | Otherwise | `Graceful` |
 
+If the runtime replacement was installed but parent-directory durability could
+not be confirmed, either successful switch result is wrapped in
+`SwitchOutcome::DurabilityUncertain`; callers should persist or report its
+warning while treating the nested outcome as the reconciled result.
+
 ## Usage
 
 ### Start and stop (Passthrough)
@@ -211,6 +216,9 @@ manager.start(spec_a).await?;
 match manager.switch(spec_b).await? {
     SwitchOutcome::Graceful => { /* zero-downtime switch */ }
     SwitchOutcome::Hard { reason } => { /* fell back to stop→start; see `reason` */ }
+    SwitchOutcome::DurabilityUncertain { outcome, warning } => {
+        /* `outcome` succeeded; persist/report `warning` */
+    }
 }
 ```
 
@@ -281,8 +289,11 @@ prevents a second manager from sweeping or allocating epochs in an owned
 directory.
 
 If atomic replacement succeeds but parent-directory synchronization fails,
-reconciliation continues from the installed desired file and `apply_config`
-returns `ApplyOutcome::DurabilityUncertain` around the actual apply outcome.
+reconciliation continues from the installed desired file. `apply_config`
+returns `ApplyOutcome::DurabilityUncertain` and graceful `switch()` returns
+`SwitchOutcome::DurabilityUncertain`, each around the actual reconciled
+outcome. Errors retain their original structured variant as the source of
+`Error::DurabilityUncertain`.
 
 Each pid record includes its epoch, executable identity, process start token,
 and runtime path. `CoreManager::new` sweeps before accepting work: it validates
@@ -294,13 +305,22 @@ manager fails construction instead of killing an uncertain process.
 If an in-process stop cannot prove death, the epoch is quarantined. Start,
 switch, restart, and config application return `Error::ManagerQuarantined`
 until `recover_quarantine()` validates the epoch record, confirms death, and
-cleans the retained artifacts. A missing or unverifiable record never clears
-the quarantine.
+cleans the retained artifacts. Recovery attempts every quarantined epoch and
+retains an in-memory death proof if artifact cleanup must be retried. A missing
+or unverifiable record never clears the quarantine. `stop()` and `shutdown()`
+intentionally bypass this gate so they can reduce the number of live processes;
+they do not clear quarantine.
 
 Orphan termination is identity-bound to one open process handle on Windows and
 to a pidfd on supported Linux kernels. Older Linux kernels and other Unix
 targets revalidate the boot/start token and executable immediately before
 signaling; a minimal PID-reuse window remains on those fallback paths.
+Before killing a verified root, recovery captures its live descendant tree and
+records each descendant's executable and start token. It then confirms every
+captured identity is dead, skipping a PID that disappeared or changed identity.
+A descendant that exits or reparents before the two capture snapshots cannot be
+attributed safely and is not killed; persistent group/job identity would be
+needed to eliminate that residual gap.
 
 ### One-shot config validation
 

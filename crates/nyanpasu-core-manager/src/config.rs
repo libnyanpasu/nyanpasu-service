@@ -415,4 +415,22 @@ mod tests {
         let error = managed_endpoint_path(&runtime, Some(outside), 4).unwrap_err();
         assert!(error.to_string().contains("escapes runtime directory"));
     }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_unix_template_rejects_escaping_parent_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let runtime = root.path().join("runtime");
+        let outside = root.path().join("outside");
+        std::fs::create_dir(&runtime).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        symlink(&outside, runtime.join("link")).unwrap();
+        let runtime = Utf8PathBuf::from_path_buf(runtime.canonicalize().unwrap()).unwrap();
+        let template = runtime.join("link/core-{epoch}.sock");
+
+        let error = managed_endpoint_path(&runtime, Some(template.as_str()), 5).unwrap_err();
+        assert!(error.to_string().contains("escapes runtime directory"));
+    }
 }

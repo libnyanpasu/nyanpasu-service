@@ -93,6 +93,35 @@ async fn apply_patch_updates_the_revision_without_restarting() {
 }
 
 #[tokio::test]
+async fn installed_apply_with_parent_sync_failure_reports_real_outcome() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, ""));
+    let desired = write_named(
+        &dir,
+        "desired.yaml",
+        &passthrough_yaml(port, "allow-lan: true\n"),
+    );
+    let manager = manager(&dir, Duration::from_secs(1)).await;
+    manager.start(spec(&dir, first)).await.expect("start");
+    let before = running(&manager);
+    manager.inject_runtime_parent_sync_failure_once_for_test();
+
+    let outcome = manager
+        .apply_config(spec(&dir, desired), None)
+        .await
+        .expect("installed apply must reconcile despite sync uncertainty");
+
+    let ApplyOutcome::DurabilityUncertain { outcome, warning } = outcome else {
+        panic!("expected durability wrapper")
+    };
+    assert!(matches!(*outcome, ApplyOutcome::Patched { .. }));
+    assert!(warning.contains("injected"), "{warning}");
+    assert_eq!(running(&manager), before);
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn apply_reload_uses_put_without_restarting() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
