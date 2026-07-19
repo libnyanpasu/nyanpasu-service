@@ -10,6 +10,11 @@ doc = false
 name = "nyanpasu-fake-core"
 path = "tests/helpers/fake_core.rs"
 
+[[bin]]
+doc = false
+name = "nyanpasu-manager-host"
+path = "tests/helpers/manager_host.rs"
+
 [dependencies]
 camino = { version = "1.1", features = ["serde1"] }
 clash-api = { path = "../clash-api" }

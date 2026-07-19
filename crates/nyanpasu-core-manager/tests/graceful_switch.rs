@@ -108,7 +108,7 @@ async fn stop_cleans_derived_config_for_terminal_instance() {
     let config = common::write_config(
         &dir,
         &format!(
-            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 100\n  crash-times: 99\n  state-file: {state_file}\n"
+            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 500\n  crash-times: 99\n  state-file: {state_file}\n"
         ),
     );
     let manager = managed_manager(derived_dir.clone()).await;
@@ -245,6 +245,258 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
         derived_dir.join("config-2.yaml").exists(),
         "new derived config must remain active"
     );
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn graceful_respawn_loads_the_full_committed_runtime_config() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let ports = std::array::from_fn::<_, 5, _>(|_| common::free_port());
+    let [port, socks, redir, tproxy, mixed] = ports;
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!(
+            "port: {port}\nsocks-port: {socks}\nredir-port: {redir}\ntproxy-port: {tproxy}\nmixed-port: {mixed}\ntun:\n  enable: true\n"
+        ),
+    )
+    .unwrap();
+
+    let manager = managed_manager(derived_dir.clone()).await;
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+    manager
+        .switch(common::mihomo_spec(&dir, config_b))
+        .await
+        .expect("graceful switch");
+
+    let mut status_rx = manager.subscribe();
+    let status = manager.status();
+    let CoreState::Running {
+        epoch,
+        pid: first_pid,
+    } = status.state
+    else {
+        panic!("new core is not running")
+    };
+    assert_eq!(epoch, 2);
+    nyanpasu_utils::os::kill_pid::<String>(first_pid, None)
+        .await
+        .expect("kill new core process");
+
+    let second_pid = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let state = status_rx.borrow_and_update().state.clone();
+            if let CoreState::Running { epoch: 2, pid } = state
+                && pid != first_pid
+            {
+                break pid;
+            }
+            status_rx.changed().await.expect("status channel open");
+        }
+    })
+    .await
+    .expect("new core did not respawn");
+    assert_ne!(second_pid, first_pid);
+
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("respawn restored mixed-port");
+    let client = clash_api::Client::builder(manager.status().controller.unwrap())
+        .build()
+        .unwrap();
+    let runtime = client.configs().await.expect("GET respawned config");
+    assert_eq!(runtime.port, i64::from(port));
+    assert_eq!(runtime.socks_port, i64::from(socks));
+    assert_eq!(runtime.redir_port, i64::from(redir));
+    assert_eq!(runtime.tproxy_port, i64::from(tproxy));
+    assert_eq!(runtime.mixed_port, i64::from(mixed));
+    assert!(runtime.tun.enable, "respawn must restore TUN enablement");
+
+    let runtime_file = std::fs::read_to_string(derived_dir.join("config-2.yaml")).unwrap();
+    assert!(runtime_file.contains(&format!("port: {port}")));
+    assert!(runtime_file.contains(&format!("socks-port: {socks}")));
+    assert!(runtime_file.contains(&format!("redir-port: {redir}")));
+    assert!(runtime_file.contains(&format!("tproxy-port: {tproxy}")));
+    assert!(runtime_file.contains(&format!("mixed-port: {mixed}")));
+    assert!(runtime_file.contains("enable: true"));
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn graceful_success_publishes_only_the_new_epoch_context() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(&config_b, format!("mixed-port: {mixed}\n")).unwrap();
+    let manager = managed_manager(derived_dir).await;
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+    let old_controller = manager.status().controller.expect("old controller");
+    let mut status_rx = manager.subscribe();
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let observed_ = observed.clone();
+    let recorder = tokio::spawn(async move {
+        while status_rx.changed().await.is_ok() {
+            observed_.lock().push(status_rx.borrow_and_update().clone());
+        }
+    });
+
+    let spec_b = common::mihomo_spec(&dir, config_b.clone());
+    manager
+        .switch(spec_b.clone())
+        .await
+        .expect("graceful switch");
+    recorder.abort();
+    let _ = recorder.await;
+
+    let status = manager.status();
+    let new_controller = status.controller.clone().expect("new controller");
+    assert_ne!(format!("{new_controller:?}"), format!("{old_controller:?}"));
+    assert_eq!(
+        status.spec.as_ref().map(|spec| spec.config_path.clone()),
+        Some(spec_b.config_path)
+    );
+    assert_eq!(
+        status.revision.as_ref().map(|revision| revision.epoch),
+        Some(2)
+    );
+    assert!(matches!(status.state, CoreState::Running { epoch: 2, .. }));
+    for status in observed.lock().iter() {
+        let published_epoch = match status.state {
+            CoreState::Running { epoch, .. }
+            | CoreState::Starting { epoch }
+            | CoreState::Restarting { epoch, .. }
+            | CoreState::Stopping { epoch } => Some(epoch),
+            CoreState::Switching { to, .. } => Some(to),
+            CoreState::Stopped { .. } => None,
+            _ => None,
+        };
+        if published_epoch == Some(2) {
+            assert_eq!(status.controller.as_ref(), Some(&new_controller));
+            assert_eq!(
+                status.revision.as_ref().map(|revision| revision.epoch),
+                Some(2)
+            );
+        }
+    }
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn graceful_patch_timeout_with_matching_get_is_success() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!("mixed-port: {mixed}\nx-fake-core:\n  patch-delay-ms: 250\n"),
+    )
+    .unwrap();
+    let manager = CoreManager::new(ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir,
+            controller_template: unique_template(),
+        },
+        control_timeout: Duration::from_millis(50),
+        reconcile_timeout: Duration::from_secs(3),
+        ..Default::default()
+    })
+    .await
+    .expect("construct manager");
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+
+    let CoreState::Running {
+        pid: before_pid, ..
+    } = manager.status().state
+    else {
+        panic!("old core is not running")
+    };
+    let outcome = manager
+        .switch(common::mihomo_spec(&dir, config_b))
+        .await
+        .expect("switch converges");
+
+    assert_eq!(outcome, SwitchOutcome::Graceful);
+    let CoreState::Running { epoch, pid } = manager.status().state else {
+        panic!("new core is not running")
+    };
+    assert_eq!(epoch, 2);
+    assert_ne!(pid, before_pid);
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("verified timed-out patch restored listener");
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!("mixed-port: {mixed}\nx-fake-core:\n  ready-delay-ms: 750\n"),
+    )
+    .unwrap();
+    let manager = Arc::new(managed_manager(derived_dir.clone()).await);
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+    let CoreState::Running { pid: old_pid, .. } = manager.status().state else {
+        panic!("old core is not running")
+    };
+
+    let switching = {
+        let manager = manager.clone();
+        let spec_b = common::mihomo_spec(&dir, config_b);
+        tokio::spawn(async move { manager.switch(spec_b).await })
+    };
+    let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let old = nyanpasu_utils::process::read_epoch_pid_file(
+                derived_dir.join("core-1.pid").as_std_path(),
+            )
+            .await
+            .ok()
+            .flatten();
+            let new = nyanpasu_utils::process::read_epoch_pid_file(
+                derived_dir.join("core-2.pid").as_std_path(),
+            )
+            .await
+            .ok()
+            .flatten();
+            if let (Some(old), Some(new)) = (old, new) {
+                break (old, new);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("epoch pid files never overlapped");
+    assert_eq!(old_record.pid, old_pid);
+    assert_ne!(old_record.pid, new_record.pid);
+    tokio::net::TcpStream::connect(("127.0.0.1", mixed))
+        .await
+        .expect("old core still serves during overlap");
+
+    assert_eq!(switching.await.unwrap().unwrap(), SwitchOutcome::Graceful);
     manager.shutdown().await.expect("shutdown");
 }
 

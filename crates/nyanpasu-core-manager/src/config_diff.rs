@@ -137,6 +137,19 @@ impl RuntimeProjection {
     }
 }
 
+pub(crate) fn restoration_patch(
+    bootstrap: &Mapping,
+    desired: &Mapping,
+) -> Result<Option<(Box<clash_api::ConfigPatch>, RuntimeProjection)>, Error> {
+    match classify_documents(bootstrap, desired)? {
+        ConfigChange::Noop => Ok(None),
+        ConfigChange::Patch { patch, projection } => Ok(Some((patch, projection))),
+        ConfigChange::Reload | ConfigChange::Switch => Err(Error::InvalidConfig(
+            "graceful bootstrap cannot be restored losslessly with ConfigPatch".into(),
+        )),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum OverlapBlock {
     DnsListen,

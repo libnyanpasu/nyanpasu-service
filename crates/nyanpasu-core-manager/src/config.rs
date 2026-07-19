@@ -20,7 +20,6 @@ pub(crate) struct PreparedConfig {
     pub bytes: Vec<u8>,
     pub document: Mapping,
     pub controller: ResolvedController,
-    pub restore: RestorePlan,
     pub source_hash: String,
     pub effective_hash: String,
 }
@@ -37,43 +36,6 @@ pub(crate) enum RawController {
     #[cfg_attr(windows, allow(dead_code))]
     Unix(String),
     Http(String),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DeriveMode {
-    ControllerOnly,
-    ZeroListeners,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct RestorePlan {
-    pub port: Option<i64>,
-    pub socks_port: Option<i64>,
-    pub redir_port: Option<i64>,
-    pub tproxy_port: Option<i64>,
-    pub mixed_port: Option<i64>,
-    pub tun_enabled: bool,
-}
-
-impl RestorePlan {
-    pub(crate) fn to_patch(&self) -> clash_api::ConfigPatch {
-        clash_api::ConfigPatch {
-            port: self.port,
-            socks_port: self.socks_port,
-            redir_port: self.redir_port,
-            tproxy_port: self.tproxy_port,
-            mixed_port: self.mixed_port,
-            tun: self.tun_enabled.then(|| clash_api::TunPatch {
-                enable: true,
-                ..Default::default()
-            }),
-            ..Default::default()
-        }
-    }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
 }
 
 impl ConfigSnapshot {
@@ -111,29 +73,49 @@ impl ConfigSnapshot {
         inspect_mapping(&self.document)
     }
 
-    pub(crate) fn prepare(
+    pub(crate) fn prepare_full(
         &self,
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
-        derive_mode: DeriveMode,
+    ) -> Result<PreparedConfig, Error> {
+        self.prepare(mode, runtime_dir, epoch, false)
+    }
+
+    pub(crate) fn prepare_bootstrap(
+        &self,
+        mode: &ControllerMode,
+        runtime_dir: &Utf8Path,
+        epoch: u64,
+    ) -> Result<PreparedConfig, Error> {
+        self.prepare(mode, runtime_dir, epoch, true)
+    }
+
+    fn prepare(
+        &self,
+        mode: &ControllerMode,
+        runtime_dir: &Utf8Path,
+        epoch: u64,
+        zero_inbounds: bool,
     ) -> Result<PreparedConfig, Error> {
         let mut document = self.document.clone();
-        let mut restore = RestorePlan::default();
 
-        if derive_mode == DeriveMode::ZeroListeners {
-            zero_listener(&mut document, "port", &mut restore.port);
-            zero_listener(&mut document, "socks-port", &mut restore.socks_port);
-            zero_listener(&mut document, "redir-port", &mut restore.redir_port);
-            zero_listener(&mut document, "tproxy-port", &mut restore.tproxy_port);
-            zero_listener(&mut document, "mixed-port", &mut restore.mixed_port);
+        if zero_inbounds {
+            for key in [
+                "port",
+                "socks-port",
+                "redir-port",
+                "tproxy-port",
+                "mixed-port",
+            ] {
+                zero_listener(&mut document, key);
+            }
             if let Some(tun) = document
                 .get_mut(Value::String("tun".to_owned()))
                 .and_then(Value::as_mapping_mut)
             {
                 let enable = Value::String("enable".to_owned());
                 if tun.get(&enable).and_then(Value::as_bool) == Some(true) {
-                    restore.tun_enabled = true;
                     tun.insert(enable, Value::from(false));
                 }
             }
@@ -173,7 +155,6 @@ impl ConfigSnapshot {
             bytes,
             document,
             controller,
-            restore,
         })
     }
 }
@@ -294,14 +275,14 @@ pub(crate) fn managed_endpoint_path(
     }
 }
 
-fn zero_listener(document: &mut Mapping, key: &str, slot: &mut Option<i64>) {
+fn zero_listener(document: &mut Mapping, key: &str) {
     let key = Value::String(key.to_owned());
-    if let Some(value) = document
+    if document
         .get(&key)
         .and_then(Value::as_i64)
         .filter(|value| *value != 0)
+        .is_some()
     {
-        *slot = Some(value);
         document.insert(key, Value::from(0));
     }
 }
@@ -342,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_prepare_zeroes_listeners_and_keeps_the_source_snapshot() {
+    fn managed_bootstrap_zeroes_listeners_and_keeps_the_source_snapshot() {
         let source = snapshot(
             "mixed-port: 7890\nexternal-controller: 127.0.0.1:9090\nsecret: sc\ntun:\n  enable: true\n",
         );
@@ -351,15 +332,24 @@ mod tests {
             controller_template: Some(r"\\.\pipe\ny-{epoch}".into()),
         };
         let prepared = source
-            .prepare(
-                &mode,
-                Utf8Path::new("runtime"),
-                7,
-                DeriveMode::ZeroListeners,
-            )
+            .prepare_bootstrap(&mode, Utf8Path::new("runtime"), 7)
             .unwrap();
-        assert_eq!(prepared.restore.mixed_port, Some(7890));
-        assert!(prepared.restore.tun_enabled);
+        assert_eq!(
+            prepared
+                .document
+                .get(Value::String("mixed-port".into()))
+                .and_then(Value::as_i64),
+            Some(0)
+        );
+        assert_eq!(
+            prepared
+                .document
+                .get(Value::String("tun".into()))
+                .and_then(Value::as_mapping)
+                .and_then(|tun| tun.get(Value::String("enable".into())))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
         assert_eq!(prepared.controller.secret.as_deref(), Some("sc"));
         assert_eq!(
             source.info().controller,
@@ -376,17 +366,5 @@ mod tests {
             r"\\.\pipe\ny-42"
         );
         assert!(managed_endpoint_path(dir, None, 42).unwrap().contains("42"));
-    }
-
-    #[test]
-    fn restore_plan_maps_to_config_patch() {
-        let plan = RestorePlan {
-            mixed_port: Some(7890),
-            tun_enabled: true,
-            ..Default::default()
-        };
-        let patch = plan.to_patch();
-        assert_eq!(patch.mixed_port, Some(7890));
-        assert_eq!(patch.tun.as_ref().map(|tun| tun.enable), Some(true));
     }
 }

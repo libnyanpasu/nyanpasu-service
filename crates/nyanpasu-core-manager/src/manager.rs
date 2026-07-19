@@ -1,12 +1,9 @@
 //! Cross-epoch orchestration: manager-owned artifacts, start/stop/switch, and
 //! atomic status publication.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
 };
 
 use nyanpasu_utils::process::reap_epoch_pid_file;
@@ -14,7 +11,7 @@ use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::{
-    config::{self, ConfigSnapshot, DeriveMode},
+    config::{self, ConfigSnapshot},
     config_diff::{self, ConfigChange, OverlapBlock},
     error::Error,
     instance::Instance,
@@ -63,7 +60,7 @@ pub enum ApplyOutcome {
     },
 }
 
-fn decide(
+fn graceful_degrade_reason(
     managed: bool,
     kind: CoreKind,
     overlap_block: Option<OverlapBlock>,
@@ -115,9 +112,14 @@ struct PreparedLaunch {
     effective_spec: InstanceSpec,
     controller: ResolvedController,
     revision: ConfigRevision,
-    restore: config::RestorePlan,
     source_document: Mapping,
     effective_document: Mapping,
+}
+
+struct PreparedGraceful {
+    launch: PreparedLaunch,
+    full_staged: StagedRuntimeConfig,
+    restoration: Option<(Box<clash_api::ConfigPatch>, config_diff::RuntimeProjection)>,
 }
 
 struct PreparedApply {
@@ -304,7 +306,6 @@ impl CoreManager {
             effective_spec,
             controller,
             revision,
-            restore: config::RestorePlan::default(),
             source_document,
             effective_document,
         };
@@ -366,11 +367,10 @@ impl CoreManager {
             .kind
             .run_args(&input.working_dir, &input.config_path)?;
         let epoch = current.revision.epoch;
-        let prepared = snapshot.prepare(
+        let prepared = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
-            DeriveMode::ControllerOnly,
         )?;
         let staged = self.inner.store.stage(epoch, &prepared.bytes).await?;
         let mut check_spec = input.clone();
@@ -404,6 +404,17 @@ impl CoreManager {
         change: &ConfigChange,
         desired: &PreparedLaunch,
     ) -> bool {
+        if let ConfigChange::Patch { patch, projection } = change {
+            return self
+                .patch_and_verify(current.instance.controller(), patch, projection)
+                .await;
+        }
+        if matches!(change, ConfigChange::Switch) {
+            return false;
+        }
+        if matches!(change, ConfigChange::Noop) {
+            return true;
+        }
         let client = match crate::health::build_control_client(
             current.instance.controller(),
             self.inner.options.control_timeout,
@@ -415,25 +426,6 @@ impl CoreManager {
             }
         };
         match change {
-            ConfigChange::Patch { patch, projection } => {
-                if let Err(error) = client.patch_config(patch).await {
-                    tracing::warn!("config PATCH returned an uncertain result: {error}");
-                }
-                match client.configs().await {
-                    Ok(runtime) => match projection.verify(&runtime) {
-                        Ok(true) => {}
-                        Ok(false) => return false,
-                        Err(error) => {
-                            tracing::warn!("failed to verify config projection: {error}");
-                            return false;
-                        }
-                    },
-                    Err(error) => {
-                        tracing::warn!("GET /configs verification failed: {error}");
-                        return false;
-                    }
-                }
-            }
             ConfigChange::Reload => {
                 let request = clash_api::UpdateConfigRequest::from_path(
                     desired.revision.runtime_path.to_string(),
@@ -446,10 +438,51 @@ impl CoreManager {
                     return false;
                 }
             }
-            ConfigChange::Switch => return false,
-            ConfigChange::Noop => return true,
+            ConfigChange::Patch { .. } | ConfigChange::Switch | ConfigChange::Noop => {
+                unreachable!()
+            }
         }
-        match crate::health::HealthCheck::new(current.instance.controller()) {
+        self.probe_health(current.instance.controller()).await
+    }
+
+    async fn patch_and_verify(
+        &self,
+        controller: &ResolvedController,
+        patch: &clash_api::ConfigPatch,
+        projection: &config_diff::RuntimeProjection,
+    ) -> bool {
+        let client = match crate::health::build_control_client(
+            controller,
+            self.inner.options.control_timeout,
+        ) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!("failed to build config control client: {error}");
+                return false;
+            }
+        };
+        if let Err(error) = client.patch_config(patch).await {
+            tracing::warn!("config PATCH returned an uncertain result: {error}");
+        }
+        match client.configs().await {
+            Ok(runtime) => match projection.verify(&runtime) {
+                Ok(true) => {}
+                Ok(false) => return false,
+                Err(error) => {
+                    tracing::warn!("failed to verify config projection: {error}");
+                    return false;
+                }
+            },
+            Err(error) => {
+                tracing::warn!("GET /configs verification failed: {error}");
+                return false;
+            }
+        }
+        self.probe_health(controller).await
+    }
+
+    async fn probe_health(&self, controller: &ResolvedController) -> bool {
+        match crate::health::HealthCheck::new(controller) {
             Ok(health) => health.probe_once().await,
             Err(error) => {
                 tracing::warn!("failed to build post-apply health probe: {error}");
@@ -583,9 +616,7 @@ impl CoreManager {
         snapshot: ConfigSnapshot,
     ) -> Result<ApplyOutcome, Error> {
         let epoch = self.next_epoch();
-        let desired = self
-            .prepare_launch(&input, epoch, &snapshot, DeriveMode::ControllerOnly)
-            .await?;
+        let desired = self.prepare_launch(&input, epoch, &snapshot).await?;
         let old = ctrl.current.take().expect("current held by control lock");
         let old_epoch = old.revision.epoch;
         let old_effective_spec = old.instance.spec().clone();
@@ -728,7 +759,6 @@ impl CoreManager {
         spec: &InstanceSpec,
         epoch: u64,
         snapshot: &ConfigSnapshot,
-        derive_mode: DeriveMode,
     ) -> Result<PreparedLaunch, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
         if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
@@ -737,11 +767,10 @@ impl CoreManager {
         spec.core
             .kind
             .run_args(&spec.working_dir, &spec.config_path)?;
-        let prepared = snapshot.prepare(
+        let prepared = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
-            derive_mode,
         )?;
         let staged = self.inner.store.stage(epoch, &prepared.bytes).await?;
 
@@ -764,9 +793,73 @@ impl CoreManager {
                 effective_hash: prepared.effective_hash,
                 runtime_path,
             },
-            restore: prepared.restore,
             source_document: snapshot.document().clone(),
             effective_document: prepared.document,
+        })
+    }
+
+    async fn prepare_graceful(
+        &self,
+        spec: &InstanceSpec,
+        epoch: u64,
+        snapshot: &ConfigSnapshot,
+    ) -> Result<PreparedGraceful, Error> {
+        debug_assert_eq!(snapshot.source_path(), spec.config_path);
+        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
+            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
+        }
+        spec.core
+            .kind
+            .run_args(&spec.working_dir, &spec.config_path)?;
+        let full = snapshot.prepare_full(
+            &self.inner.options.controller_mode,
+            self.inner.store.dir(),
+            epoch,
+        )?;
+        let bootstrap = snapshot.prepare_bootstrap(
+            &self.inner.options.controller_mode,
+            self.inner.store.dir(),
+            epoch,
+        )?;
+        if full.controller.host != bootstrap.controller.host
+            || full.controller.secret != bootstrap.controller.secret
+        {
+            return Err(Error::InvalidConfig(
+                "full and bootstrap configs resolved different controllers".into(),
+            ));
+        }
+        let restoration = config_diff::restoration_patch(&bootstrap.document, &full.document)?;
+
+        let full_staged = self.inner.store.stage(epoch, &full.bytes).await?;
+        let mut check_spec = spec.clone();
+        check_spec.config_path = full_staged.path().to_owned();
+        crate::kind::check_config(&check_spec).await?;
+
+        let bootstrap_staged = self.inner.store.stage(epoch, &bootstrap.bytes).await?;
+        check_spec.config_path = bootstrap_staged.path().to_owned();
+        crate::kind::check_config(&check_spec).await?;
+        let runtime_path = self.inner.store.commit_new(bootstrap_staged, epoch).await?;
+
+        let mut effective_spec = spec.clone();
+        effective_spec.config_path = runtime_path.clone();
+        effective_spec.pid_file = Some(self.inner.store.pid_path(epoch));
+        Ok(PreparedGraceful {
+            launch: PreparedLaunch {
+                source_spec: spec.clone(),
+                effective_spec,
+                controller: full.controller,
+                revision: ConfigRevision {
+                    epoch,
+                    generation: 1,
+                    source_hash: full.source_hash,
+                    effective_hash: full.effective_hash,
+                    runtime_path,
+                },
+                source_document: snapshot.document().clone(),
+                effective_document: full.document,
+            },
+            full_staged,
+            restoration,
         })
     }
 
@@ -800,10 +893,7 @@ impl CoreManager {
                 return Err(error);
             }
         };
-        let prepared = match self
-            .prepare_launch(&spec, epoch, &snapshot, DeriveMode::ControllerOnly)
-            .await
-        {
+        let prepared = match self.prepare_launch(&spec, epoch, &snapshot).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -921,7 +1011,7 @@ impl CoreManager {
             self.inner.options.controller_mode,
             ControllerMode::Managed { .. }
         );
-        match decide(
+        match graceful_degrade_reason(
             managed,
             spec.core.kind,
             config_diff::overlap_block(snapshot.document()),
@@ -941,10 +1031,7 @@ impl CoreManager {
         snapshot: ConfigSnapshot,
     ) -> Result<(), Error> {
         let epoch = self.next_epoch();
-        let prepared = match self
-            .prepare_launch(&spec, epoch, &snapshot, DeriveMode::ControllerOnly)
-            .await
-        {
+        let prepared = match self.prepare_launch(&spec, epoch, &snapshot).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -990,6 +1077,27 @@ impl CoreManager {
         self.inner.publish_active(active, state);
     }
 
+    fn install_switched(&self, ctrl: &mut Ctrl, instance: Instance, prepared: PreparedLaunch) {
+        let epoch = prepared.revision.epoch;
+        let pid = instance.pid().unwrap_or_default();
+        self.inner.publish(
+            CoreState::Running { epoch, pid },
+            Some(spec_summary(&prepared.source_spec)),
+            Some(instance.controller().host.clone()),
+            Some(prepared.revision.clone()),
+        );
+        let forwarder = spawn_forwarder(self.inner.clone(), instance.state(), epoch);
+        ctrl.last_spec = Some(prepared.source_spec.clone());
+        ctrl.current = Some(Active {
+            instance,
+            forwarder,
+            source_spec: prepared.source_spec,
+            revision: prepared.revision,
+            source_document: prepared.source_document,
+            effective_document: prepared.effective_document,
+        });
+    }
+
     async fn graceful_switch(
         &self,
         ctrl: &mut Ctrl,
@@ -998,10 +1106,7 @@ impl CoreManager {
     ) -> Result<SwitchOutcome, Error> {
         let old_epoch = ctrl.current.as_ref().map(|active| active.instance.epoch());
         let epoch = self.next_epoch();
-        let prepared = match self
-            .prepare_launch(&spec, epoch, &snapshot, DeriveMode::ZeroListeners)
-            .await
-        {
+        let prepared = match self.prepare_graceful(&spec, epoch, &snapshot).await {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -1009,32 +1114,39 @@ impl CoreManager {
                 return Err(error);
             }
         };
+        let PreparedGraceful {
+            launch,
+            full_staged,
+            restoration,
+        } = prepared;
         self.inner.publish(
             CoreState::Switching {
                 from: old_epoch,
                 to: epoch,
             },
-            Some(spec_summary(&prepared.source_spec)),
-            Some(prepared.controller.host.clone()),
-            Some(prepared.revision.clone()),
+            Some(spec_summary(&launch.source_spec)),
+            Some(launch.controller.host.clone()),
+            Some(launch.revision.clone()),
         );
 
         let instance = match Instance::spawn(
-            prepared.effective_spec.clone(),
+            launch.effective_spec.clone(),
             epoch,
-            prepared.controller.clone(),
+            launch.controller.clone(),
             self.inner.options.cancel_token.clone(),
         )
         .await
         {
             Ok(instance) => instance,
             Err(error) => {
+                drop(full_staged);
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
                 self.republish_retained(ctrl);
                 return Err(error);
             }
         };
         if let Err(error) = instance.wait_ready().await {
+            drop(full_staged);
             if instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
                 .await
@@ -1054,109 +1166,82 @@ impl CoreManager {
             .stop_and_confirm_dead(self.inner.options.stop_timeout)
             .await
         {
-            if instance
+            drop(full_staged);
+            let new_stop = instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await
-                .is_ok()
-            {
+                .await;
+            if new_stop.is_ok() {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
             }
-            self.publish_terminal_error(&error);
-            return Err(error);
-        }
-        if let Err(error) = self.inner.store.cleanup_epoch(old_epoch).await {
-            if instance
-                .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await
-                .is_ok()
-            {
-                let _ = self.inner.store.cleanup_epoch(epoch).await;
-            }
+            let error = match new_stop {
+                Ok(()) => error,
+                Err(new_error) => Error::ApplyFailed(format!(
+                    "old epoch stop failed: {error}; new bootstrap stop also failed: {new_error}"
+                )),
+            };
             self.publish_terminal_error(&error);
             return Err(error);
         }
 
-        let patched = if prepared.restore.is_empty() {
-            true
-        } else {
-            let client = crate::health::build_control_client(
-                instance.controller(),
-                self.inner.options.control_timeout,
-            );
-            match client {
-                Ok(client) => {
-                    let patch = prepared.restore.to_patch();
-                    let mut patched = false;
-                    for attempt in 1..=3_u32 {
-                        match client.patch_config(&patch).await {
-                            Ok(()) => {
-                                patched = true;
-                                break;
-                            }
-                            Err(error) => {
-                                tracing::warn!(
-                                    "listener-restore patch attempt {attempt} failed: {error}"
-                                );
-                                if attempt < 3 {
-                                    tokio::time::sleep(Duration::from_millis(500)).await;
-                                }
-                            }
-                        }
-                    }
-                    patched
+        if let Err(error) = self.inner.store.commit_replace(full_staged, epoch).await {
+            let new_stop = instance
+                .stop_and_confirm_dead(self.inner.options.stop_timeout)
+                .await;
+            if new_stop.is_ok() {
+                let _ = self.inner.store.cleanup_epoch(epoch).await;
+            }
+            let error = match new_stop {
+                Ok(()) => error,
+                Err(new_error) => Error::ApplyFailed(format!(
+                    "full runtime commit failed: {error}; bootstrap stop also failed: {new_error}"
+                )),
+            };
+            self.publish_terminal_error(&error);
+            return Err(error);
+        }
+
+        let reconciled = tokio::time::timeout(self.inner.options.reconcile_timeout, async {
+            match restoration.as_ref() {
+                Some((patch, projection)) => {
+                    self.patch_and_verify(instance.controller(), patch, projection)
+                        .await
                 }
-                Err(error) => {
-                    tracing::warn!("failed to build listener-restore client: {error}");
-                    false
-                }
+                None => self.probe_health(instance.controller()).await,
+            }
+        })
+        .await
+        .unwrap_or(false);
+        if reconciled {
+            self.install_switched(ctrl, instance, launch);
+            self.inner.store.cleanup_epoch(old_epoch).await?;
+            return Ok(SwitchOutcome::Graceful);
+        }
+
+        let effective_spec = launch.effective_spec.clone();
+        let controller = launch.controller.clone();
+        if let Err(error) = instance
+            .stop_and_confirm_dead(self.inner.options.stop_timeout)
+            .await
+        {
+            self.publish_terminal_error(&error);
+            return Err(error);
+        }
+        let replacement = match self
+            .spawn_replacement(effective_spec, epoch, controller)
+            .await
+        {
+            Ok(replacement) => replacement,
+            Err(error) => {
+                let _ = self.inner.store.cleanup_epoch(epoch).await;
+                self.publish_terminal_error(&error);
+                return Err(error);
             }
         };
-        if !patched {
-            if let Err(error) = instance
-                .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await
-            {
-                self.publish_terminal_error(&error);
-                return Err(error);
-            }
-            if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
-                self.publish_terminal_error(&error);
-                return Err(error);
-            }
-            let full = match self
-                .prepare_launch(&spec, epoch, &snapshot, DeriveMode::ControllerOnly)
-                .await
-            {
-                Ok(full) => full,
-                Err(error) => {
-                    self.publish_terminal_error(&error);
-                    return Err(error);
-                }
-            };
-            self.start_prepared(ctrl, full).await?;
-            return Ok(SwitchOutcome::Hard {
-                reason: DegradeReason::PatchFailed,
-            });
-        }
-
-        let pid = instance.pid().unwrap_or_default();
-        self.inner.publish(
-            CoreState::Running { epoch, pid },
-            Some(spec_summary(&prepared.source_spec)),
-            Some(instance.controller().host.clone()),
-            Some(prepared.revision.clone()),
-        );
-        let forwarder = spawn_forwarder(self.inner.clone(), instance.state(), epoch);
-        ctrl.last_spec = Some(prepared.source_spec.clone());
-        ctrl.current = Some(Active {
-            instance,
-            forwarder,
-            source_spec: prepared.source_spec,
-            revision: prepared.revision,
-            source_document: prepared.source_document,
-            effective_document: prepared.effective_document,
-        });
-        Ok(SwitchOutcome::Graceful)
+        self.install_switched(ctrl, replacement, launch);
+        self.inner.store.cleanup_epoch(old_epoch).await?;
+        Ok(SwitchOutcome::Hard {
+            reason: DegradeReason::PatchFailed,
+        })
     }
 
     pub async fn stop(&self) -> Result<(), Error> {
@@ -1315,18 +1400,18 @@ mod tests {
     #[test]
     fn switch_matrix_matches_the_spec() {
         assert_eq!(
-            decide(false, CoreKind::Mihomo, None),
+            graceful_degrade_reason(false, CoreKind::Mihomo, None),
             Some(DegradeReason::PassthroughMode)
         );
         assert_eq!(
-            decide(true, CoreKind::ClashRs, None),
+            graceful_degrade_reason(true, CoreKind::ClashRs, None),
             Some(DegradeReason::UnsupportedKind)
         );
         assert_eq!(
-            decide(true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
+            graceful_degrade_reason(true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
             Some(DegradeReason::DnsListen)
         );
-        assert_eq!(decide(true, CoreKind::Mihomo, None), None);
+        assert_eq!(graceful_degrade_reason(true, CoreKind::Mihomo, None), None);
     }
 
     #[test]

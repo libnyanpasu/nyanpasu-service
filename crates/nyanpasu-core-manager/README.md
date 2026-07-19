@@ -10,19 +10,22 @@ over a `watch` channel.
 
 Key concepts:
 
-- **Epochs** — an `Instance` is immutable. Changing the config never mutates a
-  running core; the manager spawns a new instance with a new epoch and retires
-  the old one.
+- **Epochs and revisions** — an epoch is one process/controller lineage. A
+  `ConfigRevision` identifies desired config within that epoch by generation
+  and semantic hashes. Fully expressible changes can PATCH or reload the
+  current epoch; switch-class changes allocate a new epoch.
+- **Manager-owned snapshots** — both controller modes run from a private,
+  stable `config-{epoch}.yaml`, never directly from the caller's mutable file.
+  Supervisor respawns therefore reload the committed desired revision.
 - **Health-probed startup** — a start is only confirmed once
   `GET /version` on the core's external controller answers. `startup_timeout`
   is a *total* budget covering spawn, crash retries, and probing.
 - **Supervision** — crash → backoff → respawn → re-probe, bounded by
   `RestartPolicy`/`Backoff` from `nyanpasu-utils`. Dropping an `Instance`
   without `stop()` kills the whole process tree.
-- **Controller modes** — `Passthrough` probes the endpoint written in the
-  user's config; `Managed` rewrites the config to a manager-owned, per-epoch
-  local transport (named pipe on Windows, unix socket elsewhere), which is the
-  prerequisite for graceful switching.
+- **Controller modes** — `Passthrough` preserves the endpoint written in the
+  snapshot; `Managed` rewrites it to a per-epoch local transport (named pipe on
+  Windows, unix socket elsewhere), which is required for graceful switching.
 
 ## Requirements on the config
 
@@ -110,9 +113,10 @@ sequenceDiagram
 
 ### Graceful switch
 
-Selected only in `Managed` mode, for mihomo, without `dns.listen`. The old
-core keeps serving while the new one starts on zeroed listeners; traffic is
-moved by restoring the listeners via API after the old core releases them.
+Selected only in `Managed` mode when every inbound is provably zeroable and
+restorable. The old core keeps serving while the new one starts from a
+zero-inbound bootstrap. Both the bootstrap and full desired config pass the
+core's config check before overlap begins.
 
 ```mermaid
 sequenceDiagram
@@ -122,15 +126,17 @@ sequenceDiagram
     participant B as Core B (epoch N+1)
 
     App->>M: switch(spec B)
-    M->>M: derive B′ (listeners zeroed, epoch-N+1 endpoint)
-    M->>B: spawn + wait_ready
+    M->>M: derive + validate full B and zero-inbound bootstrap B′
+    M->>M: commit config-N+1.yaml = B′
+    M->>B: spawn from config-N+1.yaml + wait_ready
     Note over A: A keeps serving traffic
-    M->>A: stop() — ports released (point of no return)
-    M->>B: PATCH /configs — restore listeners (3 tries × 500 ms)
-    alt patch succeeded
+    M->>A: stop_and_confirm_dead() — ports released
+    M->>M: atomic replace config-N+1.yaml = full B
+    M->>B: PATCH /configs, GET projection, health probe
+    alt patch verified
         M-->>App: SwitchOutcome::Graceful
-    else patch failed
-        M->>B: stop(); hard restart B on the full config (same epoch)
+    else patch failed or uncertain
+        M->>B: stop_and_confirm_dead(); restart from committed full B (same epoch)
         M-->>App: SwitchOutcome::Hard { PatchFailed }
     end
 ```
@@ -148,7 +154,8 @@ cleanly: the old core is untouched and `Running` is re-published.
 | `ControllerMode::Passthrough` | `Hard { PassthroughMode }` |
 | Core kind is not mihomo | `Hard { UnsupportedKind }` |
 | Config sets `dns.listen` | `Hard { DnsListen }` |
-| Listener-restore PATCH keeps failing | hard restart, `Hard { PatchFailed }` |
+| Another inbound cannot be proven safe for overlap | `Hard { InboundConflict }` |
+| Listener-restore PATCH cannot be verified | same-epoch restart, `Hard { PatchFailed }` |
 | Otherwise | `Graceful` |
 
 ## Usage
@@ -174,7 +181,10 @@ let spec = InstanceSpec {
     options: InstanceOptions::default(),
 };
 
-let manager = CoreManager::new(ManagerOptions::default()); // Passthrough
+let manager = CoreManager::new(ManagerOptions {
+    runtime_dir: Some(Utf8PathBuf::from("/run/nyanpasu/core-runtime")),
+    ..ManagerOptions::default()
+}).await?; // Passthrough controller, manager-owned runtime snapshot
 manager.start(spec).await?; // resolves once the version probe passes
 manager.stop().await?;
 ```
@@ -194,7 +204,8 @@ let manager = CoreManager::new(ManagerOptions {
         controller_template: None,
     },
     cancel_token: CancellationToken::new(),
-});
+    ..ManagerOptions::default()
+}).await?;
 
 manager.start(spec_a).await?;
 match manager.switch(spec_b).await? {
@@ -203,10 +214,33 @@ match manager.switch(spec_b).await? {
 }
 ```
 
-In `Managed` mode the manager writes `derived_dir/epoch-{N}.yaml` (caller's
-config with the controller swapped for the per-epoch local endpoint), sweeps
-stale artifacts at startup, and deletes them on stop/switch. The advertised
-endpoint is available as `CoreStatus.controller`.
+The manager writes `config-{N}.yaml` and `core-{N}.pid` in its runtime
+directory. Managed mode may use `derived_dir` as the compatibility runtime-dir
+alias; Passthrough requires `runtime_dir` explicitly. The advertised endpoint
+is available as `CoreStatus.controller` in both modes.
+
+### Apply config with revision CAS
+
+```rust
+use nyanpasu_core_manager::{ApplyOutcome, InstanceSpec};
+
+let expected = manager.status().revision.as_ref().map(|revision| revision.id());
+match manager.apply_config(next_spec, expected).await? {
+    ApplyOutcome::Noop { revision }
+    | ApplyOutcome::Patched { revision }
+    | ApplyOutcome::Reloaded { revision }
+    | ApplyOutcome::Restarted { revision } => { /* desired revision active */ }
+    ApplyOutcome::RolledBack { revision, failed_apply } => {
+        /* old revision restored; retain failed_apply for diagnostics */
+    }
+}
+```
+
+`expected_revision` is checked before staging or publishing. PATCH writes the
+full desired file first, then requires `GET /configs` projection verification
+and a health probe. Reload uses `PUT /configs`; uncertain reconciliation stops
+and restarts from the committed snapshot. If that restart fails, the previous
+runtime file is atomically restored and restarted.
 
 ### Watch status
 
@@ -227,7 +261,24 @@ tokio::spawn(async move {
 ```
 
 `CoreStatus` also carries `changed_at` (unix ms of the last transition),
-`spec` (summary of the config in use), and `controller` (Managed mode only).
+`spec`, `controller`, and the active `ConfigRevision`. These fields are
+published together, so a new epoch is never paired with the previous epoch's
+controller.
+
+## Runtime directory security and recovery
+
+The runtime directory contains secret-bearing effective configuration. It is
+created with owner-only permissions (0700 directory and 0600 files on Unix;
+restricted ACLs on Windows), rejects symlinks/reparse points, and uses
+same-directory atomic replacement with file and directory durability. Runtime
+paths must remain inside that directory.
+
+Each pid record includes its epoch, executable identity, process start token,
+and runtime path. `CoreManager::new` sweeps before accepting work: it validates
+every record, kills only a fully matching live process, confirms death, removes
+that epoch's yaml/pid/socket/backup/temp artifacts, and seeds the next epoch
+above the maximum artifact epoch observed. If identity cannot be proven, the
+manager fails construction instead of killing an uncertain process.
 
 ### One-shot config validation
 
