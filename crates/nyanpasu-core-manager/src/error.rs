@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 
-use crate::kind::CoreKind;
+use crate::{kind::CoreKind, state::RevisionId};
 
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -27,6 +27,15 @@ pub enum Error {
     UnsafeRuntimeArtifact(Utf8PathBuf),
     #[error("core process death could not be confirmed: {0}")]
     StopUnconfirmed(String),
+    #[error("config revision conflict: expected {expected}, actual {actual:?}")]
+    RevisionConflict {
+        expected: RevisionId,
+        actual: Option<RevisionId>,
+    },
+    #[error("config apply failed: {0}")]
+    ApplyFailed(String),
+    #[error("config apply failed ({apply}); rollback also failed ({rollback})")]
+    ApplyRollbackFailed { apply: String, rollback: String },
     #[error("core did not become healthy before the startup timeout; stderr tail:\n{stderr_tail}")]
     StartupTimeout { stderr_tail: String },
     #[error("core failed to start; stderr tail:\n{stderr_tail}")]

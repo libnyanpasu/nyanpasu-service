@@ -18,6 +18,7 @@ pub(crate) struct ConfigSnapshot {
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedConfig {
     pub bytes: Vec<u8>,
+    pub document: Mapping,
     pub controller: ResolvedController,
     pub restore: RestorePlan,
     pub source_hash: String,
@@ -28,7 +29,6 @@ pub(crate) struct PreparedConfig {
 pub(crate) struct ConfigInfo {
     pub controller: Option<RawController>,
     pub secret: Option<String>,
-    pub has_dns_listen: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +102,11 @@ impl ConfigSnapshot {
         &self.source_path
     }
 
+    pub(crate) fn document(&self) -> &Mapping {
+        &self.document
+    }
+
+    #[cfg(test)]
     pub(crate) fn info(&self) -> ConfigInfo {
         inspect_mapping(&self.document)
     }
@@ -166,6 +171,7 @@ impl ConfigSnapshot {
             effective_hash: semantic_hash(&bytes),
             source_hash: self.source_hash.clone(),
             bytes,
+            document,
             controller,
             restore,
         })
@@ -233,16 +239,9 @@ fn inspect_mapping(doc: &Mapping) -> ConfigInfo {
 
     let controller =
         local.or_else(|| str_value(doc, "external-controller").map(RawController::Http));
-    let has_dns_listen = doc
-        .get(Value::String("dns".to_owned()))
-        .and_then(Value::as_mapping)
-        .and_then(|dns| dns.get(Value::String("listen".to_owned())))
-        .and_then(Value::as_str)
-        .is_some_and(|value| !value.is_empty());
     ConfigInfo {
         controller,
         secret: str_value(doc, "secret"),
-        has_dns_listen,
     }
 }
 

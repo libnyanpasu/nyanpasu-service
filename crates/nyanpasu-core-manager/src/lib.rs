@@ -4,6 +4,7 @@
 //! Design: docs/superpowers/specs/2026-07-18-nyanpasu-core-manager-design.md
 
 mod config;
+mod config_diff;
 mod error;
 mod health;
 pub mod instance;
@@ -17,9 +18,11 @@ pub use clash_api::Host;
 pub use error::Error;
 pub use instance::Instance;
 pub use kind::CoreKind;
-pub use manager::{CoreManager, DegradeReason, SwitchOutcome};
+pub use manager::{ApplyOutcome, CoreManager, DegradeReason, SwitchOutcome};
 pub use runtime_store::{RuntimeConfigBackup, RuntimeConfigStore, StagedRuntimeConfig};
 pub use spec::{
     ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, ManagerOptions, ResolvedController,
 };
-pub use state::{ConfigRevision, CoreState, CoreStatus, InstanceState, SpecSummary, StopReason};
+pub use state::{
+    ConfigRevision, CoreState, CoreStatus, InstanceState, RevisionId, SpecSummary, StopReason,
+};

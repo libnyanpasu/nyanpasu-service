@@ -85,6 +85,33 @@ pub struct ConfigRevision {
     pub runtime_path: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevisionId {
+    pub epoch: u64,
+    pub generation: u64,
+    pub effective_hash: String,
+}
+
+impl ConfigRevision {
+    pub fn id(&self) -> RevisionId {
+        RevisionId {
+            epoch: self.epoch,
+            generation: self.generation,
+            effective_hash: self.effective_hash.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for RevisionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "epoch {} generation {} ({})",
+            self.epoch, self.generation, self.effective_hash
+        )
+    }
+}
+
 /// Snapshot published on the manager's watch channel.
 #[derive(Debug, Clone)]
 pub struct CoreStatus {

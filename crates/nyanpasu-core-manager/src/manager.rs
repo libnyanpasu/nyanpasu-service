@@ -10,17 +10,20 @@ use std::{
 };
 
 use nyanpasu_utils::process::reap_epoch_pid_file;
+use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::{
     config::{self, ConfigSnapshot, DeriveMode},
+    config_diff::{self, ConfigChange, OverlapBlock},
     error::Error,
     instance::Instance,
     kind::CoreKind,
-    runtime_store::RuntimeConfigStore,
+    runtime_store::{RuntimeConfigStore, StagedRuntimeConfig},
     spec::{ControllerMode, InstanceSpec, ManagerOptions, ResolvedController},
     state::{
-        ConfigRevision, CoreState, CoreStatus, InstanceState, SpecSummary, StopReason, now_ms,
+        ConfigRevision, CoreState, CoreStatus, InstanceState, RevisionId, SpecSummary, StopReason,
+        now_ms,
     },
 };
 
@@ -30,6 +33,7 @@ pub enum DegradeReason {
     PassthroughMode,
     UnsupportedKind,
     DnsListen,
+    InboundConflict,
     PatchFailed,
 }
 
@@ -39,15 +43,42 @@ pub enum SwitchOutcome {
     Hard { reason: DegradeReason },
 }
 
-fn decide(managed: bool, kind: CoreKind, has_dns_listen: bool) -> Option<DegradeReason> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyOutcome {
+    Noop {
+        revision: ConfigRevision,
+    },
+    Patched {
+        revision: ConfigRevision,
+    },
+    Reloaded {
+        revision: ConfigRevision,
+    },
+    Restarted {
+        revision: ConfigRevision,
+    },
+    RolledBack {
+        revision: ConfigRevision,
+        failed_apply: String,
+    },
+}
+
+fn decide(
+    managed: bool,
+    kind: CoreKind,
+    overlap_block: Option<OverlapBlock>,
+) -> Option<DegradeReason> {
     if !managed {
         return Some(DegradeReason::PassthroughMode);
     }
     if !matches!(kind, CoreKind::Mihomo) {
         return Some(DegradeReason::UnsupportedKind);
     }
-    if has_dns_listen {
-        return Some(DegradeReason::DnsListen);
+    if let Some(block) = overlap_block {
+        return Some(match block {
+            OverlapBlock::DnsListen => DegradeReason::DnsListen,
+            OverlapBlock::InboundSurface => DegradeReason::InboundConflict,
+        });
     }
     None
 }
@@ -75,6 +106,8 @@ struct Active {
     forwarder: tokio::task::JoinHandle<()>,
     source_spec: InstanceSpec,
     revision: ConfigRevision,
+    source_document: Mapping,
+    effective_document: Mapping,
 }
 
 struct PreparedLaunch {
@@ -83,6 +116,18 @@ struct PreparedLaunch {
     controller: ResolvedController,
     revision: ConfigRevision,
     restore: config::RestorePlan,
+    source_document: Mapping,
+    effective_document: Mapping,
+}
+
+struct PreparedApply {
+    source_spec: InstanceSpec,
+    effective_spec: InstanceSpec,
+    controller: ResolvedController,
+    revision: ConfigRevision,
+    source_document: Mapping,
+    effective_document: Mapping,
+    staged: StagedRuntimeConfig,
 }
 
 impl Inner {
@@ -187,6 +232,493 @@ impl CoreManager {
         self.inner.status_tx.borrow().clone()
     }
 
+    pub async fn apply_config(
+        &self,
+        input: InstanceSpec,
+        expected_revision: Option<RevisionId>,
+    ) -> Result<ApplyOutcome, Error> {
+        let mut ctrl = self.inner.ctrl.lock().await;
+        let current = ctrl.current.as_ref().ok_or(Error::NotStarted)?;
+        if current.instance.state().borrow().is_terminal() {
+            return Err(Error::NotStarted);
+        }
+        let actual_revision = current.revision.id();
+        if let Some(expected) = expected_revision
+            && expected != actual_revision
+        {
+            return Err(Error::RevisionConflict {
+                expected,
+                actual: Some(actual_revision),
+            });
+        }
+
+        let snapshot = ConfigSnapshot::load(&input.config_path).await?;
+        let prepared = self
+            .prepare_apply(current, input.clone(), &snapshot)
+            .await?;
+        let change = config_diff::classify(
+            &current.source_document,
+            &current.effective_document,
+            &current.source_spec,
+            &prepared.source_document,
+            &prepared.effective_document,
+            &prepared.source_spec,
+        )?;
+        if matches!(change, ConfigChange::Noop) {
+            return Ok(ApplyOutcome::Noop {
+                revision: current.revision.clone(),
+            });
+        }
+        if matches!(change, ConfigChange::Switch) {
+            drop(prepared);
+            return self
+                .switch_with_compensation(&mut ctrl, input, snapshot)
+                .await;
+        }
+
+        let backup = self
+            .inner
+            .store
+            .backup(current.revision.epoch, prepared.revision.generation)
+            .await?;
+        let PreparedApply {
+            source_spec,
+            effective_spec,
+            controller,
+            revision,
+            source_document,
+            effective_document,
+            staged,
+        } = prepared;
+        if let Err(error) = self
+            .inner
+            .store
+            .commit_replace(staged, revision.epoch)
+            .await
+        {
+            let _ = self.inner.store.remove_backup(backup).await;
+            return Err(error);
+        }
+        let desired = PreparedLaunch {
+            source_spec,
+            effective_spec,
+            controller,
+            revision,
+            restore: config::RestorePlan::default(),
+            source_document,
+            effective_document,
+        };
+
+        let reconciled = tokio::time::timeout(
+            self.inner.options.reconcile_timeout,
+            self.reconcile_in_place(current, &change, &desired),
+        )
+        .await
+        .unwrap_or(false);
+        if reconciled {
+            let revision = desired.revision.clone();
+            let outcome = match change {
+                ConfigChange::Patch { .. } => ApplyOutcome::Patched {
+                    revision: revision.clone(),
+                },
+                ConfigChange::Reload => ApplyOutcome::Reloaded {
+                    revision: revision.clone(),
+                },
+                ConfigChange::Noop | ConfigChange::Switch => unreachable!(),
+            };
+            let source_spec = {
+                let active = ctrl.current.as_mut().expect("current held by control lock");
+                active.source_spec = desired.source_spec;
+                active.revision = desired.revision;
+                active.source_document = desired.source_document;
+                active.effective_document = desired.effective_document;
+                self.inner.publish_active(
+                    active,
+                    CoreState::Running {
+                        epoch: revision.epoch,
+                        pid: active.instance.pid().unwrap_or_default(),
+                    },
+                );
+                active.source_spec.clone()
+            };
+            ctrl.last_spec = Some(source_spec);
+            if let Err(error) = self.inner.store.remove_backup(backup).await {
+                tracing::warn!("failed to remove successful apply backup: {error}");
+            }
+            return Ok(outcome);
+        }
+
+        self.restart_with_compensation(&mut ctrl, desired, backup)
+            .await
+    }
+
+    async fn prepare_apply(
+        &self,
+        current: &Active,
+        input: InstanceSpec,
+        snapshot: &ConfigSnapshot,
+    ) -> Result<PreparedApply, Error> {
+        if tokio::fs::metadata(&input.core.binary_path).await.is_err() {
+            return Err(Error::BinaryNotFound(input.core.binary_path.clone()));
+        }
+        input
+            .core
+            .kind
+            .run_args(&input.working_dir, &input.config_path)?;
+        let epoch = current.revision.epoch;
+        let prepared = snapshot.prepare(
+            &self.inner.options.controller_mode,
+            self.inner.store.dir(),
+            epoch,
+            DeriveMode::ControllerOnly,
+        )?;
+        let staged = self.inner.store.stage(epoch, &prepared.bytes).await?;
+        let mut check_spec = input.clone();
+        check_spec.config_path = staged.path().to_owned();
+        crate::kind::check_config(&check_spec).await?;
+
+        let runtime_path = current.revision.runtime_path.clone();
+        let mut effective_spec = input.clone();
+        effective_spec.config_path = runtime_path.clone();
+        effective_spec.pid_file = Some(self.inner.store.pid_path(epoch));
+        Ok(PreparedApply {
+            source_spec: input,
+            effective_spec,
+            controller: prepared.controller,
+            revision: ConfigRevision {
+                epoch,
+                generation: current.revision.generation + 1,
+                source_hash: prepared.source_hash,
+                effective_hash: prepared.effective_hash,
+                runtime_path,
+            },
+            source_document: snapshot.document().clone(),
+            effective_document: prepared.document,
+            staged,
+        })
+    }
+
+    async fn reconcile_in_place(
+        &self,
+        current: &Active,
+        change: &ConfigChange,
+        desired: &PreparedLaunch,
+    ) -> bool {
+        let client = match crate::health::build_control_client(
+            current.instance.controller(),
+            self.inner.options.control_timeout,
+        ) {
+            Ok(client) => client,
+            Err(error) => {
+                tracing::warn!("failed to build config control client: {error}");
+                return false;
+            }
+        };
+        match change {
+            ConfigChange::Patch { patch, projection } => {
+                if let Err(error) = client.patch_config(patch).await {
+                    tracing::warn!("config PATCH returned an uncertain result: {error}");
+                }
+                match client.configs().await {
+                    Ok(runtime) => match projection.verify(&runtime) {
+                        Ok(true) => {}
+                        Ok(false) => return false,
+                        Err(error) => {
+                            tracing::warn!("failed to verify config projection: {error}");
+                            return false;
+                        }
+                    },
+                    Err(error) => {
+                        tracing::warn!("GET /configs verification failed: {error}");
+                        return false;
+                    }
+                }
+            }
+            ConfigChange::Reload => {
+                let request = clash_api::UpdateConfigRequest::from_path(
+                    desired.revision.runtime_path.to_string(),
+                );
+                if let Err(error) = client
+                    .update_config(&request, clash_api::UpdateConfigOptions { force: true })
+                    .await
+                {
+                    tracing::warn!("config PUT failed: {error}");
+                    return false;
+                }
+            }
+            ConfigChange::Switch => return false,
+            ConfigChange::Noop => return true,
+        }
+        match crate::health::HealthCheck::new(current.instance.controller()) {
+            Ok(health) => health.probe_once().await,
+            Err(error) => {
+                tracing::warn!("failed to build post-apply health probe: {error}");
+                false
+            }
+        }
+    }
+
+    async fn restart_with_compensation(
+        &self,
+        ctrl: &mut Ctrl,
+        desired: PreparedLaunch,
+        backup: crate::RuntimeConfigBackup,
+    ) -> Result<ApplyOutcome, Error> {
+        let old = ctrl.current.take().expect("current held by control lock");
+        let old_effective_spec = old.instance.spec().clone();
+        let old_controller = old.instance.controller().clone();
+        let old_source_spec = old.source_spec.clone();
+        let old_revision = old.revision.clone();
+        let old_source_document = old.source_document.clone();
+        let old_effective_document = old.effective_document.clone();
+        abort_and_await(old.forwarder).await;
+        if let Err(error) = old
+            .instance
+            .stop_and_confirm_dead(self.inner.options.stop_timeout)
+            .await
+        {
+            let message = format!("failed to stop current epoch for reconcile: {error}");
+            self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
+            return Err(Error::ApplyFailed(message));
+        }
+
+        match self
+            .spawn_replacement(
+                desired.effective_spec.clone(),
+                desired.revision.epoch,
+                desired.controller.clone(),
+            )
+            .await
+        {
+            Ok(instance) => {
+                let revision = desired.revision.clone();
+                let pid = instance.pid().unwrap_or_default();
+                let forwarder =
+                    spawn_forwarder(self.inner.clone(), instance.state(), revision.epoch);
+                ctrl.last_spec = Some(desired.source_spec.clone());
+                ctrl.current = Some(Active {
+                    instance,
+                    forwarder,
+                    source_spec: desired.source_spec,
+                    revision: desired.revision,
+                    source_document: desired.source_document,
+                    effective_document: desired.effective_document,
+                });
+                let active = ctrl.current.as_ref().expect("just installed");
+                self.inner.publish_active(
+                    active,
+                    CoreState::Running {
+                        epoch: revision.epoch,
+                        pid,
+                    },
+                );
+                if let Err(error) = self.inner.store.remove_backup(backup).await {
+                    tracing::warn!("failed to remove successful restart backup: {error}");
+                }
+                Ok(ApplyOutcome::Restarted { revision })
+            }
+            Err(apply_error) => {
+                let apply_text = apply_error.to_string();
+                if let Err(restore_error) = self.inner.store.restore(&backup).await {
+                    let error = Error::ApplyRollbackFailed {
+                        apply: apply_text,
+                        rollback: format!("runtime restore failed: {restore_error}"),
+                    };
+                    self.publish_terminal_error(&error);
+                    return Err(error);
+                }
+                match self
+                    .spawn_replacement(old_effective_spec, old_revision.epoch, old_controller)
+                    .await
+                {
+                    Ok(instance) => {
+                        let pid = instance.pid().unwrap_or_default();
+                        let forwarder = spawn_forwarder(
+                            self.inner.clone(),
+                            instance.state(),
+                            old_revision.epoch,
+                        );
+                        ctrl.last_spec = Some(old_source_spec.clone());
+                        ctrl.current = Some(Active {
+                            instance,
+                            forwarder,
+                            source_spec: old_source_spec,
+                            revision: old_revision.clone(),
+                            source_document: old_source_document,
+                            effective_document: old_effective_document,
+                        });
+                        let active = ctrl.current.as_ref().expect("rollback installed");
+                        self.inner.publish_active(
+                            active,
+                            CoreState::Running {
+                                epoch: old_revision.epoch,
+                                pid,
+                            },
+                        );
+                        if let Err(error) = self.inner.store.remove_backup(backup).await {
+                            tracing::warn!("failed to remove rollback backup: {error}");
+                        }
+                        Ok(ApplyOutcome::RolledBack {
+                            revision: old_revision,
+                            failed_apply: apply_text,
+                        })
+                    }
+                    Err(rollback_error) => {
+                        let error = Error::ApplyRollbackFailed {
+                            apply: apply_text,
+                            rollback: rollback_error.to_string(),
+                        };
+                        self.publish_terminal_error(&error);
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
+
+    async fn switch_with_compensation(
+        &self,
+        ctrl: &mut Ctrl,
+        input: InstanceSpec,
+        snapshot: ConfigSnapshot,
+    ) -> Result<ApplyOutcome, Error> {
+        let epoch = self.next_epoch();
+        let desired = self
+            .prepare_launch(&input, epoch, &snapshot, DeriveMode::ControllerOnly)
+            .await?;
+        let old = ctrl.current.take().expect("current held by control lock");
+        let old_epoch = old.revision.epoch;
+        let old_effective_spec = old.instance.spec().clone();
+        let old_controller = old.instance.controller().clone();
+        let old_source_spec = old.source_spec.clone();
+        let old_revision = old.revision.clone();
+        let old_source_document = old.source_document.clone();
+        let old_effective_document = old.effective_document.clone();
+        abort_and_await(old.forwarder).await;
+        if let Err(error) = old
+            .instance
+            .stop_and_confirm_dead(self.inner.options.stop_timeout)
+            .await
+        {
+            let _ = self.inner.store.cleanup_epoch(epoch).await;
+            let message = format!("failed to stop current epoch for switch: {error}");
+            self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
+            return Err(Error::ApplyFailed(message));
+        }
+
+        match self
+            .spawn_replacement(
+                desired.effective_spec.clone(),
+                desired.revision.epoch,
+                desired.controller.clone(),
+            )
+            .await
+        {
+            Ok(instance) => {
+                let revision = desired.revision.clone();
+                let pid = instance.pid().unwrap_or_default();
+                let forwarder =
+                    spawn_forwarder(self.inner.clone(), instance.state(), revision.epoch);
+                ctrl.last_spec = Some(desired.source_spec.clone());
+                ctrl.current = Some(Active {
+                    instance,
+                    forwarder,
+                    source_spec: desired.source_spec,
+                    revision: desired.revision,
+                    source_document: desired.source_document,
+                    effective_document: desired.effective_document,
+                });
+                let active = ctrl.current.as_ref().expect("switch installed");
+                self.inner.publish_active(
+                    active,
+                    CoreState::Running {
+                        epoch: revision.epoch,
+                        pid,
+                    },
+                );
+                if let Err(error) = self.inner.store.cleanup_epoch(old_epoch).await {
+                    tracing::warn!("failed to clean switched-out epoch: {error}");
+                }
+                Ok(ApplyOutcome::Restarted { revision })
+            }
+            Err(apply_error) => {
+                let apply_text = apply_error.to_string();
+                if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
+                    tracing::warn!("failed to clean rejected desired epoch: {error}");
+                }
+                match self
+                    .spawn_replacement(old_effective_spec, old_revision.epoch, old_controller)
+                    .await
+                {
+                    Ok(instance) => {
+                        let pid = instance.pid().unwrap_or_default();
+                        let forwarder = spawn_forwarder(
+                            self.inner.clone(),
+                            instance.state(),
+                            old_revision.epoch,
+                        );
+                        ctrl.last_spec = Some(old_source_spec.clone());
+                        ctrl.current = Some(Active {
+                            instance,
+                            forwarder,
+                            source_spec: old_source_spec,
+                            revision: old_revision.clone(),
+                            source_document: old_source_document,
+                            effective_document: old_effective_document,
+                        });
+                        let active = ctrl.current.as_ref().expect("switch rollback installed");
+                        self.inner.publish_active(
+                            active,
+                            CoreState::Running {
+                                epoch: old_revision.epoch,
+                                pid,
+                            },
+                        );
+                        Ok(ApplyOutcome::RolledBack {
+                            revision: old_revision,
+                            failed_apply: apply_text,
+                        })
+                    }
+                    Err(rollback_error) => {
+                        let error = Error::ApplyRollbackFailed {
+                            apply: apply_text,
+                            rollback: rollback_error.to_string(),
+                        };
+                        self.publish_terminal_error(&error);
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
+
+    async fn spawn_replacement(
+        &self,
+        effective_spec: InstanceSpec,
+        epoch: u64,
+        controller: ResolvedController,
+    ) -> Result<Instance, Error> {
+        let instance = Instance::spawn(
+            effective_spec,
+            epoch,
+            controller,
+            self.inner.options.cancel_token.clone(),
+        )
+        .await?;
+        if let Err(error) = instance.wait_ready().await {
+            return match instance
+                .stop_and_confirm_dead(self.inner.options.stop_timeout)
+                .await
+            {
+                Ok(()) => Err(error),
+                Err(stop_error) => Err(Error::ApplyFailed(format!(
+                    "{error}; failed to stop rejected replacement: {stop_error}"
+                ))),
+            };
+        }
+        Ok(instance)
+    }
+
     fn next_epoch(&self) -> u64 {
         self.inner.epoch.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -233,6 +765,8 @@ impl CoreManager {
                 runtime_path,
             },
             restore: prepared.restore,
+            source_document: snapshot.document().clone(),
+            effective_document: prepared.document,
         })
     }
 
@@ -329,6 +863,8 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
+            source_document: prepared.source_document,
+            effective_document: prepared.effective_document,
         });
         Ok(())
     }
@@ -385,7 +921,11 @@ impl CoreManager {
             self.inner.options.controller_mode,
             ControllerMode::Managed { .. }
         );
-        match decide(managed, spec.core.kind, snapshot.info().has_dns_listen) {
+        match decide(
+            managed,
+            spec.core.kind,
+            config_diff::overlap_block(snapshot.document()),
+        ) {
             Some(reason) => {
                 self.hard_switch(ctrl, spec, snapshot).await?;
                 Ok(SwitchOutcome::Hard { reason })
@@ -613,6 +1153,8 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
+            source_document: prepared.source_document,
+            effective_document: prepared.effective_document,
         });
         Ok(SwitchOutcome::Graceful)
     }
@@ -627,6 +1169,7 @@ impl CoreManager {
             forwarder,
             source_spec,
             revision,
+            ..
         } = active;
         abort_and_await(forwarder).await;
         if instance.state().borrow().is_terminal() {
@@ -681,6 +1224,7 @@ impl CoreManager {
                 forwarder,
                 source_spec,
                 revision,
+                ..
             } = active;
             abort_and_await(forwarder).await;
             let epoch = instance.epoch();
@@ -771,18 +1315,18 @@ mod tests {
     #[test]
     fn switch_matrix_matches_the_spec() {
         assert_eq!(
-            decide(false, CoreKind::Mihomo, false),
+            decide(false, CoreKind::Mihomo, None),
             Some(DegradeReason::PassthroughMode)
         );
         assert_eq!(
-            decide(true, CoreKind::ClashRs, false),
+            decide(true, CoreKind::ClashRs, None),
             Some(DegradeReason::UnsupportedKind)
         );
         assert_eq!(
-            decide(true, CoreKind::Mihomo, true),
+            decide(true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
             Some(DegradeReason::DnsListen)
         );
-        assert_eq!(decide(true, CoreKind::Mihomo, false), None);
+        assert_eq!(decide(true, CoreKind::Mihomo, None), None);
     }
 
     #[test]

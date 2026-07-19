@@ -149,7 +149,18 @@ impl RuntimeConfigStore {
     }
 
     pub async fn replace(&self, epoch: u64, contents: &[u8]) -> Result<Utf8PathBuf, Error> {
-        let mut staged = self.stage(epoch, contents).await?;
+        let staged = self.stage(epoch, contents).await?;
+        self.commit_replace(staged, epoch).await
+    }
+
+    /// Replaces the stable epoch file with bytes that were already staged and
+    /// validated. The staged file remains in the runtime directory, so the
+    /// atomicity guarantees are identical to [`Self::replace`].
+    pub async fn commit_replace(
+        &self,
+        mut staged: StagedRuntimeConfig,
+        epoch: u64,
+    ) -> Result<Utf8PathBuf, Error> {
         self.validate_staged(&staged, epoch).await?;
         let target = self.runtime_path(epoch);
         validate_existing_regular_target(&target).await?;

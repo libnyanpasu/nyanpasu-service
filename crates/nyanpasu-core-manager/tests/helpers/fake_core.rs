@@ -12,6 +12,7 @@ use std::{
     time::Duration,
 };
 
+use parking_lot::Mutex;
 use serde_yaml_ng::{Mapping, Value};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -24,6 +25,7 @@ struct Behavior {
     external_controller_unix: Option<String>,
     secret: Option<String>,
     mixed_port: u16,
+    allow_lan: bool,
     ready_delay_ms: u64,
     never_ready: bool,
     exit_code: Option<i32>,
@@ -31,8 +33,15 @@ struct Behavior {
     crash_after_ms: u64,
     crash_times: u64,
     state_file: Option<String>,
+    launch_count_file: Option<String>,
+    fail_after_launches: u64,
+    fail_start_when_allow_lan: bool,
     patch_log: Option<String>,
     reject_patch: bool,
+    patch_delay_ms: u64,
+    patch_no_effect: bool,
+    reject_put: bool,
+    check_delay_ms: u64,
     check_fail: Option<String>,
 }
 
@@ -65,6 +74,7 @@ fn parse(config: &str) -> Behavior {
         external_controller_unix: s(&doc, "external-controller-unix"),
         secret: s(&doc, "secret"),
         mixed_port: u(&doc, "mixed-port") as u16,
+        allow_lan: b(&doc, "allow-lan"),
         ready_delay_ms: u(&x, "ready-delay-ms"),
         never_ready: b(&x, "never-ready"),
         exit_code: x
@@ -84,8 +94,15 @@ fn parse(config: &str) -> Behavior {
         crash_after_ms: u(&x, "crash-after-ms"),
         crash_times: u(&x, "crash-times"),
         state_file: s(&x, "state-file"),
+        launch_count_file: s(&x, "launch-count-file"),
+        fail_after_launches: u(&x, "fail-after-launches"),
+        fail_start_when_allow_lan: b(&x, "fail-start-when-allow-lan"),
         patch_log: s(&x, "patch-log"),
         reject_patch: b(&x, "reject-patch"),
+        patch_delay_ms: u(&x, "patch-delay-ms"),
+        patch_no_effect: b(&x, "patch-no-effect"),
+        reject_put: b(&x, "reject-put"),
+        check_delay_ms: u(&x, "check-delay-ms"),
         check_fail: s(&x, "check-fail"),
     }
 }
@@ -93,6 +110,7 @@ fn parse(config: &str) -> Behavior {
 struct Ctx {
     ready: AtomicBool,
     behavior: Behavior,
+    runtime: Mutex<Mapping>,
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -108,6 +126,7 @@ async fn main() {
     let behavior = parse(&config);
 
     if check_mode {
+        std::thread::sleep(Duration::from_millis(behavior.check_delay_ms));
         match &behavior.check_fail {
             Some(msg) => {
                 println!("time=\"t\" level=error msg=\"{msg}\"");
@@ -119,6 +138,20 @@ async fn main() {
 
     for line in &behavior.stderr_lines {
         eprintln!("{line}");
+    }
+    if behavior.fail_start_when_allow_lan && behavior.allow_lan {
+        exit(23);
+    }
+    if let Some(counter_path) = &behavior.launch_count_file {
+        let count: u64 = std::fs::read_to_string(counter_path)
+            .ok()
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or(0)
+            + 1;
+        std::fs::write(counter_path, count.to_string()).expect("write launch counter");
+        if count > behavior.fail_after_launches {
+            exit(77);
+        }
     }
     if let Some(code) = behavior.exit_code {
         exit(code);
@@ -151,6 +184,7 @@ async fn main() {
     let ctx = Arc::new(Ctx {
         ready: AtomicBool::new(false),
         behavior,
+        runtime: Mutex::new(serde_yaml_ng::from_str(&config).expect("runtime mapping")),
     });
     if !ctx.behavior.never_ready {
         let ctx = ctx.clone();
@@ -265,7 +299,13 @@ where
     let request_line = lines.next().unwrap_or_default();
     let mut parts = request_line.split(' ');
     let method = parts.next().unwrap_or_default().to_owned();
-    let path = parts.next().unwrap_or_default().to_owned();
+    let path = parts
+        .next()
+        .unwrap_or_default()
+        .split('?')
+        .next()
+        .unwrap_or_default()
+        .to_owned();
 
     let mut content_length = 0usize;
     let mut authorization = None;
@@ -308,6 +348,24 @@ where
                 respond(&mut stream, 503, r#"{"message":"starting"}"#).await;
             }
         }
+        ("GET", "/configs") => {
+            let body = runtime_config_json(&ctx.runtime.lock());
+            respond(&mut stream, 200, &body).await;
+        }
+        ("PUT", "/configs") => {
+            if ctx.behavior.reject_put {
+                respond(&mut stream, 500, r#"{"message":"reload rejected"}"#).await;
+                return;
+            }
+            let request: Mapping = serde_yaml_ng::from_str(&body).expect("PUT JSON mapping");
+            let path = request
+                .get(Value::String("path".into()))
+                .and_then(Value::as_str)
+                .expect("PUT path");
+            let desired = std::fs::read_to_string(path).expect("read PUT path");
+            *ctx.runtime.lock() = serde_yaml_ng::from_str(&desired).expect("PUT runtime mapping");
+            respond(&mut stream, 204, "").await;
+        }
         ("PATCH", "/configs") => {
             if ctx.behavior.reject_patch {
                 respond(&mut stream, 500, r#"{"message":"patch rejected"}"#).await;
@@ -328,10 +386,142 @@ where
                     }
                 }
             }
+            if !ctx.behavior.patch_no_effect {
+                let patch: Mapping = serde_yaml_ng::from_str(&body).expect("PATCH JSON mapping");
+                merge_mapping(&mut ctx.runtime.lock(), &patch);
+            }
+            if ctx.behavior.patch_delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(ctx.behavior.patch_delay_ms)).await;
+            }
             respond(&mut stream, 204, "").await;
         }
         _ => respond(&mut stream, 404, r#"{"message":"not found"}"#).await,
     }
+}
+
+fn merge_mapping(target: &mut Mapping, patch: &Mapping) {
+    for (key, value) in patch {
+        if let (Some(target), Some(patch)) = (
+            target.get_mut(key).and_then(Value::as_mapping_mut),
+            value.as_mapping(),
+        ) {
+            merge_mapping(target, patch);
+        } else {
+            target.insert(key.clone(), value.clone());
+        }
+    }
+}
+
+fn runtime_config_json(document: &Mapping) -> String {
+    let integer = |key: &str| {
+        document
+            .get(Value::String(key.into()))
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+    };
+    let boolean = |key: &str| {
+        document
+            .get(Value::String(key.into()))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    };
+    let string = |key: &str, default: &str| {
+        document
+            .get(Value::String(key.into()))
+            .and_then(Value::as_str)
+            .unwrap_or(default)
+            .to_owned()
+    };
+    let nested = |key: &str| {
+        document
+            .get(Value::String(key.into()))
+            .map(value_to_json)
+            .unwrap_or_else(|| "{}".into())
+    };
+    let optional_string = |key: &str| {
+        document
+            .get(Value::String(key.into()))
+            .and_then(Value::as_str)
+            .map(json_string)
+            .unwrap_or_else(|| "null".into())
+    };
+    let optional_value = |key: &str| {
+        document
+            .get(Value::String(key.into()))
+            .map(value_to_json)
+            .unwrap_or_else(|| "null".into())
+    };
+    format!(
+        concat!(
+            "{{\"port\":{},\"socks-port\":{},\"redir-port\":{},\"tproxy-port\":{},",
+            "\"mixed-port\":{},\"tun\":{},\"tuic-server\":{},\"ss-config\":{},",
+            "\"vmess-config\":{},\"tcptun-config\":{},\"udptun-config\":{},",
+            "\"authentication\":null,\"skip-auth-prefixes\":{},\"lan-allowed-ips\":{},",
+            "\"lan-disallowed-ips\":{},\"allow-lan\":{},\"bind-address\":{},",
+            "\"inbound-tfo\":false,\"inbound-mptcp\":false,\"mode\":{},",
+            "\"unified-delay\":false,\"log-level\":{},\"ipv6\":{},\"interface-name\":{},",
+            "\"routing-mark\":0,\"geox-url\":{{}},\"geo-auto-update\":false,",
+            "\"geo-update-interval\":0,\"geodata-mode\":false,\"geodata-loader\":\"\",",
+            "\"geosite-matcher\":\"\",\"tcp-concurrent\":{},\"find-process-mode\":{},",
+            "\"sniffing\":{},\"global-ua\":\"\",\"etag-support\":false,",
+            "\"keep-alive-idle\":0,\"keep-alive-interval\":0,\"disable-keep-alive\":false}}"
+        ),
+        integer("port"),
+        integer("socks-port"),
+        integer("redir-port"),
+        integer("tproxy-port"),
+        integer("mixed-port"),
+        nested("tun"),
+        nested("tuic-server"),
+        json_string(&string("ss-config", "")),
+        json_string(&string("vmess-config", "")),
+        optional_string("tcptun-config"),
+        optional_string("udptun-config"),
+        optional_value("skip-auth-prefixes"),
+        optional_value("lan-allowed-ips"),
+        optional_value("lan-disallowed-ips"),
+        boolean("allow-lan"),
+        json_string(&string("bind-address", "*")),
+        json_string(&string("mode", "rule")),
+        json_string(&string("log-level", "info")),
+        boolean("ipv6"),
+        json_string(&string("interface-name", "")),
+        boolean("tcp-concurrent"),
+        json_string(&string("find-process-mode", "off")),
+        boolean("sniffing"),
+    )
+}
+
+fn value_to_json(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => value.to_string(),
+        Value::String(value) => json_string(value),
+        Value::Sequence(values) => format!(
+            "[{}]",
+            values
+                .iter()
+                .map(value_to_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Mapping(mapping) => format!(
+            "{{{}}}",
+            mapping
+                .iter()
+                .filter_map(|(key, value)| key
+                    .as_str()
+                    .map(|key| { format!("{}:{}", json_string(key), value_to_json(value)) }))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Tagged(tagged) => value_to_json(&tagged.value),
+    }
+}
+
+fn json_string(value: &str) -> String {
+    format!("{value:?}")
 }
 
 fn extract_mixed_port(body: &str) -> Option<u16> {
