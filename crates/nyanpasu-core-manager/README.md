@@ -270,8 +270,12 @@ controller.
 The runtime directory contains secret-bearing effective configuration. It is
 created with owner-only permissions (0700 directory and 0600 files on Unix;
 restricted ACLs on Windows), rejects symlinks/reparse points, and uses
-same-directory atomic replacement with file and directory durability. Runtime
-paths must remain inside that directory.
+same-directory atomic replacement. Unix fsyncs the file and parent directory;
+Windows fsyncs staged content but does not claim power-loss durability for
+`ReplaceFileW`, whose documented write-through flag is unsupported. Runtime
+paths must remain inside that directory. A process-lifetime `.manager.lock`
+prevents a second manager from sweeping or allocating epochs in an owned
+directory.
 
 Each pid record includes its epoch, executable identity, process start token,
 and runtime path. `CoreManager::new` sweeps before accepting work: it validates
@@ -279,6 +283,11 @@ every record, kills only a fully matching live process, confirms death, removes
 that epoch's yaml/pid/socket/backup/temp artifacts, and seeds the next epoch
 above the maximum artifact epoch observed. If identity cannot be proven, the
 manager fails construction instead of killing an uncertain process.
+
+Orphan termination is identity-bound to one open process handle on Windows and
+to a pidfd on supported Linux kernels. Older Linux kernels and other Unix
+targets revalidate the boot/start token and executable immediately before
+signaling; a minimal PID-reuse window remains on those fallback paths.
 
 ### One-shot config validation
 

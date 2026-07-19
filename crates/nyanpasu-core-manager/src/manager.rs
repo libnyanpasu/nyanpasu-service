@@ -16,7 +16,7 @@ use crate::{
     error::Error,
     instance::Instance,
     kind::CoreKind,
-    runtime_store::{RuntimeConfigStore, StagedRuntimeConfig},
+    runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
     spec::{ControllerMode, InstanceSpec, ManagerOptions, ResolvedController},
     state::{
         ConfigRevision, CoreState, CoreStatus, InstanceState, RevisionId, SpecSummary, StopReason,
@@ -90,6 +90,9 @@ struct Inner {
     ctrl: tokio::sync::Mutex<Ctrl>,
     status_tx: watch::Sender<CoreStatus>,
     epoch: AtomicU64,
+    // Declared last so ordinary Inner destruction drops instances/tasks before
+    // releasing directory ownership.
+    _runtime_lock: RuntimeDirectoryLock,
 }
 
 #[derive(Default)]
@@ -194,6 +197,7 @@ impl CoreManager {
             }
         };
         let store = RuntimeConfigStore::new(runtime_dir).await?;
+        let runtime_lock = store.acquire_ownership().await?;
         let max_epoch = sweep_orphans(&store).await?;
 
         if let ControllerMode::Managed {
@@ -222,6 +226,7 @@ impl CoreManager {
                 ctrl: tokio::sync::Mutex::default(),
                 status_tx,
                 epoch: AtomicU64::new(max_epoch),
+                _runtime_lock: runtime_lock,
             }),
         })
     }
@@ -510,6 +515,10 @@ impl CoreManager {
             .stop_and_confirm_dead(self.inner.options.stop_timeout)
             .await
         {
+            if matches!(error, Error::StopUnconfirmed(_)) {
+                self.publish_terminal_error(&error);
+                return Err(error);
+            }
             let message = format!("failed to stop current epoch for reconcile: {error}");
             self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
             return Err(Error::ApplyFailed(message));
@@ -549,6 +558,10 @@ impl CoreManager {
                     tracing::warn!("failed to remove successful restart backup: {error}");
                 }
                 Ok(ApplyOutcome::Restarted { revision })
+            }
+            Err(error @ Error::StopUnconfirmed(_)) => {
+                self.publish_terminal_error(&error);
+                Err(error)
             }
             Err(apply_error) => {
                 let apply_text = apply_error.to_string();
@@ -596,6 +609,13 @@ impl CoreManager {
                             failed_apply: apply_text,
                         })
                     }
+                    Err(rollback_error @ Error::StopUnconfirmed(_)) => {
+                        let error = Error::StopUnconfirmed(format!(
+                            "desired apply failed ({apply_text}); rollback replacement {rollback_error}"
+                        ));
+                        self.publish_terminal_error(&error);
+                        Err(error)
+                    }
                     Err(rollback_error) => {
                         let error = Error::ApplyRollbackFailed {
                             apply: apply_text,
@@ -632,6 +652,10 @@ impl CoreManager {
             .await
         {
             let _ = self.inner.store.cleanup_epoch(epoch).await;
+            if matches!(error, Error::StopUnconfirmed(_)) {
+                self.publish_terminal_error(&error);
+                return Err(error);
+            }
             let message = format!("failed to stop current epoch for switch: {error}");
             self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
             return Err(Error::ApplyFailed(message));
@@ -672,6 +696,10 @@ impl CoreManager {
                 }
                 Ok(ApplyOutcome::Restarted { revision })
             }
+            Err(error @ Error::StopUnconfirmed(_)) => {
+                self.publish_terminal_error(&error);
+                Err(error)
+            }
             Err(apply_error) => {
                 let apply_text = apply_error.to_string();
                 if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
@@ -710,6 +738,13 @@ impl CoreManager {
                             failed_apply: apply_text,
                         })
                     }
+                    Err(rollback_error @ Error::StopUnconfirmed(_)) => {
+                        let error = Error::StopUnconfirmed(format!(
+                            "desired switch failed ({apply_text}); rollback replacement {rollback_error}"
+                        ));
+                        self.publish_terminal_error(&error);
+                        Err(error)
+                    }
                     Err(rollback_error) => {
                         let error = Error::ApplyRollbackFailed {
                             apply: apply_text,
@@ -742,7 +777,7 @@ impl CoreManager {
                 .await
             {
                 Ok(()) => Err(error),
-                Err(stop_error) => Err(Error::ApplyFailed(format!(
+                Err(stop_error) => Err(Error::StopUnconfirmed(format!(
                     "{error}; failed to stop rejected replacement: {stop_error}"
                 ))),
             };
@@ -1147,15 +1182,23 @@ impl CoreManager {
         };
         if let Err(error) = instance.wait_ready().await {
             drop(full_staged);
-            if instance
+            match instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
                 .await
-                .is_ok()
             {
-                let _ = self.inner.store.cleanup_epoch(epoch).await;
+                Ok(()) => {
+                    let _ = self.inner.store.cleanup_epoch(epoch).await;
+                    self.republish_retained(ctrl);
+                    return Err(error);
+                }
+                Err(stop_error) => {
+                    let error = Error::StopUnconfirmed(format!(
+                        "{error}; failed to stop rejected graceful bootstrap: {stop_error}"
+                    ));
+                    self.publish_terminal_error(&error);
+                    return Err(error);
+                }
             }
-            self.republish_retained(ctrl);
-            return Err(error);
         }
 
         let old = ctrl.current.take().expect("running checked by caller");
@@ -1175,7 +1218,7 @@ impl CoreManager {
             }
             let error = match new_stop {
                 Ok(()) => error,
-                Err(new_error) => Error::ApplyFailed(format!(
+                Err(new_error) => Error::StopUnconfirmed(format!(
                     "old epoch stop failed: {error}; new bootstrap stop also failed: {new_error}"
                 )),
             };
@@ -1192,7 +1235,7 @@ impl CoreManager {
             }
             let error = match new_stop {
                 Ok(()) => error,
-                Err(new_error) => Error::ApplyFailed(format!(
+                Err(new_error) => Error::StopUnconfirmed(format!(
                     "full runtime commit failed: {error}; bootstrap stop also failed: {new_error}"
                 )),
             };
@@ -1231,6 +1274,10 @@ impl CoreManager {
             .await
         {
             Ok(replacement) => replacement,
+            Err(error @ Error::StopUnconfirmed(_)) => {
+                self.publish_terminal_error(&error);
+                return Err(error);
+            }
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
                 self.publish_terminal_error(&error);
@@ -1256,9 +1303,16 @@ impl CoreManager {
             revision,
             ..
         } = active;
+        let captured_state = instance.state().borrow().clone();
         abort_and_await(forwarder).await;
-        if instance.state().borrow().is_terminal() {
+        if captured_state.is_terminal() {
             let epoch = instance.epoch();
+            self.inner.publish(
+                instance_core_state(epoch, &captured_state),
+                Some(spec_summary(&source_spec)),
+                Some(instance.controller().host.clone()),
+                Some(revision),
+            );
             instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
                 .await?;

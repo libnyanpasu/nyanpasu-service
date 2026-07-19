@@ -93,11 +93,20 @@ async fn hard_killed_manager_is_reaped_and_all_epoch_artifacts_are_swept() {
         "temporary",
     )
     .unwrap();
+    #[cfg(windows)]
     std::fs::write(
         runtime_dir.join(format!("core-{swept_epoch}.sock")),
         "socket-placeholder",
     )
     .unwrap();
+    #[cfg(unix)]
+    {
+        let socket = std::os::unix::net::UnixListener::bind(
+            runtime_dir.join(format!("core-{swept_epoch}.sock")),
+        )
+        .unwrap();
+        drop(socket);
+    }
 
     host.hard_kill();
     // A Windows Job Object may eagerly kill the core when the host's final job
@@ -120,7 +129,7 @@ async fn hard_killed_manager_is_reaped_and_all_epoch_artifacts_are_swept() {
     while let Some(entry) = entries.next_entry().await.unwrap() {
         leftovers.push(entry.file_name().to_string_lossy().into_owned());
     }
-    assert!(leftovers.is_empty(), "unswept artifacts: {leftovers:?}");
+    assert_eq!(leftovers, [".manager.lock"], "unswept artifacts");
 
     manager
         .start(common::mihomo_spec(&dir, config))

@@ -193,6 +193,9 @@ fn process_spec_changed(current: &InstanceSpec, desired: &InstanceSpec) -> bool 
 }
 
 fn classify_documents(current: &Mapping, desired: &Mapping) -> Result<ConfigChange, Error> {
+    if dns_listen(current) != dns_listen(desired) {
+        return Ok(ConfigChange::Switch);
+    }
     let changes = diff(current, desired);
     if changes.is_empty() {
         return Ok(ConfigChange::Noop);
@@ -210,7 +213,9 @@ fn classify_documents(current: &Mapping, desired: &Mapping) -> Result<ConfigChan
 
     let reloadable = changes.iter().all(|entry| {
         entry.path.first().is_some_and(|root| {
-            RELOAD_FIELDS.contains(&root.as_str()) && !is_dns_listen(&entry.path)
+            RELOAD_FIELDS.contains(&root.as_str())
+                && !is_dns_listen(&entry.path)
+                && !(root == "dns" && entry.path.len() == 1)
         })
     });
     Ok(if reloadable {
@@ -379,6 +384,13 @@ fn is_dns_listen(path: &[String]) -> bool {
         && path.get(1).is_some_and(|value| value == "listen")
 }
 
+fn dns_listen(document: &Mapping) -> Option<&Value> {
+    document
+        .get(Value::String("dns".into()))
+        .and_then(Value::as_mapping)
+        .and_then(|dns| dns.get(Value::String("listen".into())))
+}
+
 pub(crate) fn overlap_block(document: &Mapping) -> Option<OverlapBlock> {
     if let Some(listen) = document
         .get(Value::String("dns".into()))
@@ -525,6 +537,24 @@ mod tests {
     fn deletion_is_never_patch() {
         assert!(matches!(
             classify_documents(&mapping("allow-lan: true"), &Mapping::new()).unwrap(),
+            ConfigChange::Switch
+        ));
+    }
+
+    #[test]
+    fn dns_root_shape_changes_are_never_reloadable() {
+        let current = mapping("dns: {listen: '127.0.0.1:1053', ipv6: false}");
+        for desired in ["dns: null", "dns: disabled", "dns: [invalid]"] {
+            assert!(
+                matches!(
+                    classify_documents(&current, &mapping(desired)).unwrap(),
+                    ConfigChange::Switch
+                ),
+                "{desired} bypassed dns.listen protection"
+            );
+        }
+        assert!(matches!(
+            classify_documents(&mapping("dns: {ipv6: false}"), &mapping("dns: null")).unwrap(),
             ConfigChange::Switch
         ));
     }

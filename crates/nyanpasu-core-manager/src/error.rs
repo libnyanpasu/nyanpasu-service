@@ -25,6 +25,8 @@ pub enum Error {
     InvalidManagerOptions(String),
     #[error("unsafe runtime artifact: {0}")]
     UnsafeRuntimeArtifact(Utf8PathBuf),
+    #[error("runtime directory is already owned by another manager: {0}")]
+    RuntimeDirectoryOwned(Utf8PathBuf),
     #[error("core process death could not be confirmed: {0}")]
     StopUnconfirmed(String),
     #[error("config revision conflict: expected {expected}, actual {actual:?}")]

@@ -393,3 +393,72 @@ async fn desired_and_rollback_restart_failures_report_both_errors() {
     let text = reason.to_string();
     assert!(text.contains("rollback also failed"), "{text}");
 }
+
+#[tokio::test]
+async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let counter = dir.join("launch-count.txt");
+    let counter_path = counter.as_str().replace('\\', "/");
+    let first = write_named(
+        &dir,
+        "first.yaml",
+        &passthrough_yaml(
+            port,
+            &format!(
+                "x-setting: old\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n"
+            ),
+        ),
+    );
+    let desired = write_named(
+        &dir,
+        "desired.yaml",
+        &passthrough_yaml(
+            port,
+            &format!(
+                "x-setting: desired\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n  never-ready: true\n"
+            ),
+        ),
+    );
+    let manager = std::sync::Arc::new(
+        CoreManager::new(ManagerOptions {
+            runtime_dir: Some(runtime_dir.clone()),
+            stop_timeout: Duration::from_secs(1),
+            reconcile_timeout: Duration::from_secs(3),
+            ..ManagerOptions::default()
+        })
+        .await
+        .expect("construct manager"),
+    );
+    manager.start(spec(&dir, first)).await.expect("start");
+
+    let apply = {
+        let manager = manager.clone();
+        let mut desired_spec = spec(&dir, desired);
+        desired_spec.options.startup_timeout = Duration::from_millis(300);
+        tokio::spawn(async move { manager.apply_config(desired_spec, None).await })
+    };
+    let rejected_pid = runtime_dir.join("core-2.pid");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !tokio::fs::try_exists(&rejected_pid).await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("replacement pid record never appeared");
+    std::fs::write(&rejected_pid, "identity deliberately unavailable\n").unwrap();
+
+    let result = apply.await.unwrap();
+    assert!(
+        matches!(result, Err(Error::StopUnconfirmed(_))),
+        "unexpected compensation result: {result:?}"
+    );
+    assert!(runtime_dir.join("config-2.yaml").exists());
+    assert!(rejected_pid.exists());
+    assert_eq!(std::fs::read_to_string(counter).unwrap().trim(), "2");
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Stopped { reason: Some(_) }
+    ));
+}

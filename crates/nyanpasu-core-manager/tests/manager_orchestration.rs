@@ -375,7 +375,37 @@ async fn source_mutation_after_snapshot_does_not_affect_respawn() {
 }
 
 #[tokio::test]
-async fn next_manager_reaps_orphan_and_advances_epoch() {
+async fn manager_sweeps_stale_artifacts_and_advances_epoch() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    std::fs::write(runtime_dir.join("config-7.yaml"), "stale: true\n").unwrap();
+    std::fs::write(runtime_dir.join("config-7.yaml.backup-3"), "stale backup\n").unwrap();
+
+    let manager = CoreManager::new(ManagerOptions {
+        runtime_dir: Some(runtime_dir.clone()),
+        ..ManagerOptions::default()
+    })
+    .await
+    .expect("sweeping manager");
+    assert!(!runtime_dir.join("config-7.yaml").exists());
+    assert!(!runtime_dir.join("config-7.yaml.backup-3").exists());
+
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start after sweep");
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Running { epoch: 8, .. }
+    ));
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn second_manager_cannot_take_over_an_owned_runtime_directory() {
     let (_guard, dir) = common::utf8_tempdir();
     let runtime_dir = dir.join("runtime");
     let port = common::free_port();
@@ -387,25 +417,27 @@ async fn next_manager_reaps_orphan_and_advances_epoch() {
 
     let first = CoreManager::new(options()).await.expect("first manager");
     first
-        .start(common::mihomo_spec(&dir, config.clone()))
-        .await
-        .expect("start orphan candidate");
-    assert!(runtime_dir.join("config-1.yaml").exists());
-    assert!(runtime_dir.join("core-1.pid").exists());
-    drop(first); // Simulates losing the manager without graceful teardown.
-
-    let second = CoreManager::new(options()).await.expect("reaping manager");
-    common::wait_port_refused(port).await;
-    assert!(!runtime_dir.join("config-1.yaml").exists());
-    assert!(!runtime_dir.join("core-1.pid").exists());
-
-    second
         .start(common::mihomo_spec(&dir, config))
         .await
-        .expect("start after reap");
+        .expect("start first manager's core");
+    let CoreState::Running { pid, .. } = first.status().state else {
+        panic!("first manager is not running")
+    };
+
+    let second = CoreManager::new(options()).await;
+    assert!(
+        second.is_err(),
+        "second manager acquired an owned directory"
+    );
+    let error = second.err().unwrap().to_string();
+    assert!(error.contains("already owned"), "unexpected error: {error}");
     assert!(matches!(
-        second.status().state,
-        CoreState::Running { epoch: 2, .. }
+        first.status().state,
+        CoreState::Running { pid: live_pid, .. } if live_pid == pid
     ));
-    second.shutdown().await.expect("shutdown");
+    tokio::net::TcpStream::connect(("127.0.0.1", port))
+        .await
+        .expect("second construction must not kill the owned core");
+
+    first.shutdown().await.expect("shutdown first manager");
 }

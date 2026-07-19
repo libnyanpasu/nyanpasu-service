@@ -15,6 +15,11 @@ pub struct RuntimeConfigStore {
 }
 
 #[derive(Debug)]
+pub(crate) struct RuntimeDirectoryLock {
+    _file: std::fs::File,
+}
+
+#[derive(Debug)]
 pub struct StagedRuntimeConfig {
     path: Utf8PathBuf,
     consumed: bool,
@@ -90,6 +95,13 @@ impl RuntimeConfigStore {
 
     pub fn socket_path(&self, epoch: u64) -> Utf8PathBuf {
         self.dir.join(format!("core-{epoch}.sock"))
+    }
+
+    pub(crate) async fn acquire_ownership(&self) -> Result<RuntimeDirectoryLock, Error> {
+        let path = self.dir.join(".manager.lock");
+        tokio::task::spawn_blocking(move || acquire_runtime_directory_lock(&path))
+            .await
+            .map_err(std::io::Error::other)?
     }
 
     pub async fn stage(&self, epoch: u64, contents: &[u8]) -> Result<StagedRuntimeConfig, Error> {
@@ -199,13 +211,10 @@ impl RuntimeConfigStore {
     }
 
     pub async fn cleanup_epoch(&self, epoch: u64) -> Result<(), Error> {
-        for path in [
-            self.runtime_path(epoch),
-            self.pid_path(epoch),
-            self.socket_path(epoch),
-        ] {
+        for path in [self.runtime_path(epoch), self.pid_path(epoch)] {
             remove_regular_file(&path).await?;
         }
+        remove_socket_artifact(&self.socket_path(epoch)).await?;
 
         let prefix = format!("config-{epoch}.yaml.backup-");
         let temp_prefix = format!(".config-{epoch}.yaml.tmp-");
@@ -252,6 +261,76 @@ impl RuntimeConfigStore {
         }
         validate_existing_regular_target(&staged.path).await
     }
+}
+
+fn acquire_runtime_directory_lock(path: &Utf8Path) -> Result<RuntimeDirectoryLock, Error> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                || !metadata.is_file()
+                || is_reparse_point(&metadata) =>
+        {
+            return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        options.share_mode(0);
+    }
+    let file = options.open(path).map_err(|error| {
+        if runtime_lock_is_contended(&error) {
+            Error::RuntimeDirectoryOwned(path.to_owned())
+        } else {
+            error.into()
+        }
+    })?;
+
+    #[cfg(unix)]
+    {
+        use std::os::{fd::AsRawFd, raw::c_int};
+
+        const LOCK_EX: c_int = 2;
+        const LOCK_NB: c_int = 4;
+        unsafe extern "C" {
+            fn flock(fd: c_int, operation: c_int) -> c_int;
+        }
+        // SAFETY: file owns a valid descriptor for the duration of the call.
+        if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
+            let error = std::io::Error::last_os_error();
+            return Err(if runtime_lock_is_contended(&error) {
+                Error::RuntimeDirectoryOwned(path.to_owned())
+            } else {
+                error.into()
+            });
+        }
+    }
+
+    Ok(RuntimeDirectoryLock { _file: file })
+}
+
+#[cfg(unix)]
+fn runtime_lock_is_contended(error: &std::io::Error) -> bool {
+    matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+    )
+}
+
+#[cfg(windows)]
+fn runtime_lock_is_contended(error: &std::io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(5 | 32 | 33))
 }
 
 fn artifact_epoch(name: &str) -> Option<u64> {
@@ -319,6 +398,26 @@ async fn remove_regular_file(path: &Utf8Path) -> Result<(), Error> {
         {
             Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
         }
+        Ok(_) => {
+            tokio::fs::remove_file(path).await?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+async fn remove_socket_artifact(path: &Utf8Path) -> Result<(), Error> {
+    match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) if metadata.file_type().is_symlink() || is_reparse_point(&metadata) => {
+            Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
+        }
+        #[cfg(unix)]
+        Ok(metadata) if !std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type()) => {
+            Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
+        }
+        #[cfg(windows)]
+        Ok(metadata) if !metadata.is_file() => Err(Error::UnsafeRuntimeArtifact(path.to_owned())),
         Ok(_) => {
             tokio::fs::remove_file(path).await?;
             Ok(())
@@ -638,8 +737,10 @@ async fn sync_parent(dir: &Utf8Path) -> std::io::Result<()> {
 
 #[cfg(windows)]
 async fn sync_parent(_dir: &Utf8Path) -> std::io::Result<()> {
-    // MoveFileExW/ReplaceFileW use write-through; opening directories for fsync
-    // is not supported by std on Windows.
+    // MoveFileExW requests write-through for first publication. Microsoft
+    // documents ReplaceFileW's WRITE_THROUGH flag as unsupported, and std
+    // cannot fsync a Windows directory, so replacement power-loss durability
+    // is not asserted here.
     Ok(())
 }
 
@@ -711,5 +812,26 @@ mod tests {
         store.remove_backup(backup).await.unwrap();
         store.cleanup_epoch(3).await.unwrap();
         assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cleanup_epoch_removes_a_real_unix_socket() {
+        use std::os::unix::{fs::FileTypeExt, net::UnixListener};
+
+        let (_guard, dir) = temp_store_dir();
+        let store = RuntimeConfigStore::new(dir).await.unwrap();
+        let socket_path = store.socket_path(9);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&socket_path)
+                .unwrap()
+                .file_type()
+                .is_socket()
+        );
+        drop(listener);
+
+        store.cleanup_epoch(9).await.unwrap();
+        assert!(!socket_path.exists());
     }
 }

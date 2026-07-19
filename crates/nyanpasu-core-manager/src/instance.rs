@@ -246,7 +246,13 @@ impl Instance {
         let runtime_dir = self.spec.config_path.parent().ok_or_else(|| {
             Error::StopUnconfirmed("runtime config has no parent directory".into())
         })?;
-        let reaped = reap_epoch_pid_file(pid_file.as_std_path(), runtime_dir.as_std_path()).await?;
+        let reaped = reap_epoch_pid_file(pid_file.as_std_path(), runtime_dir.as_std_path())
+            .await
+            .map_err(|error| {
+                Error::StopUnconfirmed(format!(
+                    "{stop_error}; epoch identity reaper failed: {error}"
+                ))
+            })?;
         if matches!(
             reaped,
             OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::Killed
