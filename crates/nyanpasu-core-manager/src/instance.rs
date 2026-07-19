@@ -9,7 +9,8 @@ use std::{
 };
 
 use nyanpasu_utils::process::{
-    Command, ProcessError, ProcessEvent, Supervisor, SupervisorEvent, TerminatedPayload,
+    Command, EpochPidFile, OrphanReapOutcome, ProcessError, ProcessEvent, ReadinessProbe,
+    Supervisor, SupervisorEvent, TerminatedPayload, reap_epoch_pid_file,
 };
 use tokio::{
     sync::{mpsc, watch},
@@ -92,10 +93,11 @@ impl Instance {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let supervisor = Supervisor::builder({
             let spec = spec.clone();
-            move || build_command(&spec)
+            move || build_command(&spec, epoch)
         })
         .restart_policy(spec.options.restart_policy)
         .backoff(spec.options.backoff)
+        .readiness(ReadinessProbe::Acknowledged)
         .cancel_token(cancel.clone())
         .on_event(move |event| {
             let _ = event_tx.send(event);
@@ -192,24 +194,84 @@ impl Instance {
         }
     }
 
-    /// Stops the core (graceful, then tree kill) and waits until the terminal
-    /// state is published.
+    /// Compatibility wrapper for callers that do not provide a manager stop
+    /// deadline.
     pub async fn stop(self) -> Result<(), Error> {
+        self.stop_and_confirm_dead(std::time::Duration::from_secs(10))
+            .await
+    }
+
+    /// Stops supervision and proves the epoch process is dead before returning.
+    /// If normal supervisor termination is uncertain, the structured epoch pid
+    /// record is the only authority used for the fallback kill.
+    pub async fn stop_and_confirm_dead(self, timeout: std::time::Duration) -> Result<(), Error> {
         if self.state_rx.borrow().is_terminal() {
+            self.reap_epoch_record_if_present().await?;
             return Ok(());
         }
         self.shared.user_stop.store(true, Ordering::SeqCst);
         self.shared.publish(InstanceState::Stopping);
         let supervisor = self.shared.supervisor.lock().await.take();
-        if let Some(supervisor) = supervisor {
-            match supervisor.stop().await {
-                Ok(()) | Err(ProcessError::AlreadyExited) => {}
-                Err(error) => return Err(Error::Process(error)),
+        let stop_result = match supervisor {
+            Some(supervisor) => match tokio::time::timeout(timeout, supervisor.stop()).await {
+                Ok(Ok(())) | Ok(Err(ProcessError::AlreadyExited)) => Ok(()),
+                Ok(Err(error)) => Err(format!("supervisor stop failed: {error}")),
+                Err(_) => Err(format!("supervisor stop exceeded {timeout:?}")),
+            },
+            None => Ok(()),
+        };
+
+        let mut monitor_confirmed = false;
+        if let Some(mut monitor) = self.shared.monitor.lock().await.take() {
+            match tokio::time::timeout(timeout, &mut monitor).await {
+                Ok(_) => monitor_confirmed = true,
+                Err(_) => {
+                    monitor.abort();
+                    let _ = monitor.await;
+                }
             }
         }
-        if let Some(monitor) = self.shared.monitor.lock().await.take() {
-            let _ = monitor.await;
+        let terminal = self.state_rx.borrow().is_terminal();
+        if stop_result.is_ok() && (monitor_confirmed || terminal) {
+            self.reap_epoch_record_if_present().await?;
+            return Ok(());
         }
+        let stop_error = stop_result
+            .err()
+            .unwrap_or_else(|| "instance monitor did not confirm termination".to_owned());
+
+        let Some(pid_file) = epoch_pid_path(&self.spec, self.epoch) else {
+            return Err(Error::StopUnconfirmed(stop_error));
+        };
+        let runtime_dir = self.spec.config_path.parent().ok_or_else(|| {
+            Error::StopUnconfirmed("runtime config has no parent directory".into())
+        })?;
+        let reaped = reap_epoch_pid_file(pid_file.as_std_path(), runtime_dir.as_std_path()).await?;
+        if matches!(
+            reaped,
+            OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::Killed
+        ) || (matches!(reaped, OrphanReapOutcome::NotFound) && terminal)
+        {
+            if !terminal {
+                self.shared
+                    .publish(InstanceState::Stopped(StopReason::User));
+            }
+            return Ok(());
+        }
+        Err(Error::StopUnconfirmed(stop_error))
+    }
+
+    async fn reap_epoch_record_if_present(&self) -> Result<(), Error> {
+        let Some(pid_file) = epoch_pid_path(&self.spec, self.epoch) else {
+            return Ok(());
+        };
+        if !tokio::fs::try_exists(pid_file).await? {
+            return Ok(());
+        }
+        let runtime_dir = self.spec.config_path.parent().ok_or_else(|| {
+            Error::StopUnconfirmed("runtime config has no parent directory".into())
+        })?;
+        let _ = reap_epoch_pid_file(pid_file.as_std_path(), runtime_dir.as_std_path()).await?;
         Ok(())
     }
 }
@@ -223,7 +285,7 @@ impl Drop for Instance {
     }
 }
 
-fn build_command(spec: &InstanceSpec) -> Command {
+fn build_command(spec: &InstanceSpec, epoch: u64) -> Command {
     let args = spec
         .core
         .kind
@@ -241,9 +303,27 @@ fn build_command(spec: &InstanceSpec) -> Command {
         )
         .current_dir(spec.working_dir.as_str());
     if let Some(pid_file) = &spec.pid_file {
-        command = command.pid_file(pid_file.as_str());
+        command = if epoch_pid_path(spec, epoch).is_some() {
+            command.epoch_pid_file(EpochPidFile::new(
+                pid_file.as_std_path(),
+                epoch,
+                spec.config_path.as_std_path(),
+            ))
+        } else {
+            command.pid_file(pid_file.as_std_path())
+        };
     }
     command
+}
+
+fn epoch_pid_path(spec: &InstanceSpec, epoch: u64) -> Option<&camino::Utf8Path> {
+    let pid_file = spec.pid_file.as_deref()?;
+    let expected_pid = format!("core-{epoch}.pid");
+    let expected_config = format!("config-{epoch}.yaml");
+    (pid_file.file_name() == Some(expected_pid.as_str())
+        && spec.config_path.file_name() == Some(expected_config.as_str())
+        && pid_file.parent() == spec.config_path.parent())
+    .then_some(pid_file)
 }
 
 struct Probe {
@@ -316,8 +396,16 @@ async fn monitor_loop(
                 let deadline = probe.as_ref().expect("guarded").deadline;
                 if health.probe_once().await {
                     let pid = probe.take().expect("guarded").pid;
-                    ever_ready = true;
-                    shared.publish(InstanceState::Running { pid });
+                    let supervisor = shared.supervisor.lock().await;
+                    let acknowledged = match supervisor.as_ref() {
+                        Some(supervisor) => supervisor.acknowledge_ready(pid).await,
+                        None => false,
+                    };
+                    drop(supervisor);
+                    if acknowledged {
+                        ever_ready = true;
+                        shared.publish(InstanceState::Running { pid });
+                    }
                 } else if ever_ready && Instant::now() >= deadline {
                     // A post-crash respawn never became healthy again.
                     probe = None;

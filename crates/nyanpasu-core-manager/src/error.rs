@@ -19,6 +19,14 @@ pub enum Error {
     UnsupportedCore(CoreKind),
     #[error("config check failed: {0}")]
     ConfigCheckFailed(String),
+    #[error("invalid runtime config: {0}")]
+    InvalidConfig(String),
+    #[error("invalid manager options: {0}")]
+    InvalidManagerOptions(String),
+    #[error("unsafe runtime artifact: {0}")]
+    UnsafeRuntimeArtifact(Utf8PathBuf),
+    #[error("core process death could not be confirmed: {0}")]
+    StopUnconfirmed(String),
     #[error("core did not become healthy before the startup timeout; stderr tail:\n{stderr_tail}")]
     StartupTimeout { stderr_tail: String },
     #[error("core failed to start; stderr tail:\n{stderr_tail}")]

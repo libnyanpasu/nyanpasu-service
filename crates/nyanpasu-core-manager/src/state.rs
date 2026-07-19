@@ -76,6 +76,15 @@ pub struct SpecSummary {
     pub config_path: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigRevision {
+    pub epoch: u64,
+    pub generation: u64,
+    pub source_hash: String,
+    pub effective_hash: String,
+    pub runtime_path: Utf8PathBuf,
+}
+
 /// Snapshot published on the manager's watch channel.
 #[derive(Debug, Clone)]
 pub struct CoreStatus {
@@ -83,8 +92,9 @@ pub struct CoreStatus {
     /// Unix milliseconds of the last state transition (feeds IPC `state_changed_at`).
     pub changed_at: i64,
     pub spec: Option<SpecSummary>,
-    /// The managed controller endpoint, when `ControllerMode::Managed` is active.
+    /// The controller endpoint owned by the active epoch in either mode.
     pub controller: Option<clash_api::Host>,
+    pub revision: Option<ConfigRevision>,
 }
 
 impl CoreStatus {
@@ -94,6 +104,7 @@ impl CoreStatus {
             changed_at: now_ms(),
             spec: None,
             controller: None,
+            revision: None,
         }
     }
 }

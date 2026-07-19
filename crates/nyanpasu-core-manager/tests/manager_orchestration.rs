@@ -2,10 +2,31 @@ mod common;
 
 use std::time::Duration;
 
-use nyanpasu_core_manager::{CoreState, Error, ManagerOptions, StopReason, manager::CoreManager};
+use nyanpasu_core_manager::{
+    ControllerMode, CoreState, Error, ManagerOptions, StopReason, manager::CoreManager,
+};
 
-fn manager() -> CoreManager {
-    CoreManager::new(ManagerOptions::default())
+async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
+    CoreManager::new(ManagerOptions {
+        runtime_dir: Some(runtime_dir.join("runtime")),
+        ..ManagerOptions::default()
+    })
+    .await
+    .expect("construct manager")
+}
+
+#[tokio::test]
+async fn managed_controller_template_without_epoch_is_rejected_at_construction() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let options = ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir: dir,
+            controller_template: Some(r"\\.\pipe\nyanpasu\fixed".to_owned()),
+        },
+        ..ManagerOptions::default()
+    };
+
+    assert!(CoreManager::new(options).await.is_err());
 }
 
 async fn wait_core_state(
@@ -33,7 +54,7 @@ async fn start_publishes_running_and_rejects_double_start() {
     let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
     let spec = common::mihomo_spec(&dir, config);
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     let mut rx = manager.subscribe();
     assert!(matches!(
         manager.status().state,
@@ -66,7 +87,8 @@ async fn start_publishes_running_and_rejects_double_start() {
 
 #[tokio::test]
 async fn stop_requires_a_running_core() {
-    let manager = manager();
+    let (_guard, dir) = common::utf8_tempdir();
+    let manager = manager(&dir).await;
     assert!(matches!(manager.stop().await, Err(Error::NotStarted)));
 }
 
@@ -81,7 +103,7 @@ async fn failed_start_reports_error_and_publishes_stopped() {
     let mut spec = common::mihomo_spec(&dir, config);
     spec.options.startup_timeout = Duration::from_secs(1);
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     let err = manager.start(spec).await.expect_err("must fail");
     assert!(matches!(err, Error::StartupTimeout { .. }), "got {err}");
     assert!(matches!(
@@ -95,7 +117,7 @@ async fn missing_controller_is_rejected_strictly() {
     let (_guard, dir) = common::utf8_tempdir();
     let config = common::write_config(&dir, "mixed-port: 7890\n");
     let spec = common::mihomo_spec(&dir, config);
-    let manager = manager();
+    let manager = manager(&dir).await;
     assert!(matches!(
         manager.start(spec).await,
         Err(Error::ControllerMissing)
@@ -116,7 +138,7 @@ async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
     )
     .unwrap();
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     let mut rx = manager.subscribe();
     let mut spec_a = common::mihomo_spec(&dir, config_a);
     spec_a.options.startup_timeout = Duration::from_secs(15);
@@ -146,12 +168,37 @@ async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
 }
 
 #[tokio::test]
+async fn passthrough_prepare_failure_never_leaves_switching() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config_a = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(&config_b, "mixed-port: 7890\n").unwrap();
+
+    let manager = manager(&dir).await;
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start");
+
+    let error = manager
+        .switch(common::mihomo_spec(&dir, config_b))
+        .await
+        .expect_err("missing controller must fail");
+    assert!(matches!(error, Error::ControllerMissing), "got {error}");
+    assert!(
+        !matches!(manager.status().state, CoreState::Switching { .. }),
+        "prepare failure must publish a terminal or retained state"
+    );
+}
+
+#[tokio::test]
 async fn restart_uses_the_last_spec_and_survives_stop() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     assert!(matches!(manager.restart().await, Err(Error::NotStarted)));
 
     let mut spec = common::mihomo_spec(&dir, config);
@@ -172,7 +219,7 @@ async fn switch_publishes_a_switching_window() {
     let mut spec = common::mihomo_spec(&dir, config);
     spec.options.startup_timeout = Duration::from_secs(15);
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     manager.start(spec.clone()).await.expect("start");
 
     let mut rx = manager.subscribe();
@@ -211,7 +258,7 @@ async fn lifecycle_sequence_matches_legacy_contract() {
         ),
     );
 
-    let manager = manager();
+    let manager = manager(&dir).await;
     let mut rx = manager.subscribe();
     let seen = std::sync::Arc::new(parking_lot::Mutex::new(vec![rx.borrow().state.clone()]));
     let seen_ = seen.clone();
@@ -275,4 +322,90 @@ async fn lifecycle_sequence_matches_legacy_contract() {
         running_after_restart,
         "recovery must re-confirm Running: {states:?}"
     );
+}
+
+#[tokio::test]
+async fn source_mutation_after_snapshot_does_not_affect_respawn() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let state_file = dir.join("crash-state");
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 500\n  crash-times: 1\n  state-file: {state_file}\n"
+        ),
+    );
+    let manager = manager(&dir).await;
+    manager
+        .start(common::mihomo_spec(&dir, config.clone()))
+        .await
+        .expect("start");
+
+    let revision = manager.status().revision.expect("active revision");
+    assert_eq!(revision.runtime_path.file_name(), Some("config-1.yaml"));
+    assert_ne!(revision.runtime_path, config);
+    assert!(runtime_dir.join("core-1.pid").exists());
+
+    std::fs::write(
+        &config,
+        "external-controller: 127.0.0.1:1\nx-fake-core:\n  never-ready: true\n",
+    )
+    .unwrap();
+    let mut rx = manager.subscribe();
+    wait_core_state(
+        &mut rx,
+        |state| matches!(state, CoreState::Restarting { .. }),
+        Duration::from_secs(5),
+    )
+    .await;
+    wait_core_state(
+        &mut rx,
+        |state| matches!(state, CoreState::Running { .. }),
+        Duration::from_secs(10),
+    )
+    .await;
+
+    let runtime = std::fs::read_to_string(&revision.runtime_path).unwrap();
+    assert!(runtime.contains(&format!("127.0.0.1:{port}")));
+    assert!(!runtime.contains("never-ready"));
+    manager.shutdown().await.expect("shutdown");
+    assert!(!revision.runtime_path.exists());
+    assert!(!runtime_dir.join("core-1.pid").exists());
+}
+
+#[tokio::test]
+async fn next_manager_reaps_orphan_and_advances_epoch() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let options = || ManagerOptions {
+        runtime_dir: Some(runtime_dir.clone()),
+        ..ManagerOptions::default()
+    };
+
+    let first = CoreManager::new(options()).await.expect("first manager");
+    first
+        .start(common::mihomo_spec(&dir, config.clone()))
+        .await
+        .expect("start orphan candidate");
+    assert!(runtime_dir.join("config-1.yaml").exists());
+    assert!(runtime_dir.join("core-1.pid").exists());
+    drop(first); // Simulates losing the manager without graceful teardown.
+
+    let second = CoreManager::new(options()).await.expect("reaping manager");
+    common::wait_port_refused(port).await;
+    assert!(!runtime_dir.join("config-1.yaml").exists());
+    assert!(!runtime_dir.join("core-1.pid").exists());
+
+    second
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start after reap");
+    assert!(matches!(
+        second.status().state,
+        CoreState::Running { epoch: 2, .. }
+    ));
+    second.shutdown().await.expect("shutdown");
 }

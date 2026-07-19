@@ -24,7 +24,7 @@ fn unique_template() -> Option<String> {
     }
 }
 
-fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
+async fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
     CoreManager::new(ManagerOptions {
         controller_mode: ControllerMode::Managed {
             derived_dir,
@@ -32,6 +32,8 @@ fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
         },
         ..Default::default()
     })
+    .await
+    .expect("construct manager")
 }
 
 #[tokio::test]
@@ -40,13 +42,13 @@ async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
     let derived_dir = dir.join("derived");
     // Stale artifacts from a "previous run" must be swept by CoreManager::new.
     std::fs::create_dir_all(&derived_dir).unwrap();
-    std::fs::write(derived_dir.join("epoch-99.yaml"), "stale").unwrap();
+    std::fs::write(derived_dir.join("config-99.yaml"), "stale").unwrap();
 
     // No external-controller in the user config — Managed mode injects one.
     let config = common::write_config(&dir, "mixed-port: 0\n");
-    let manager = managed_manager(derived_dir.clone());
+    let manager = managed_manager(derived_dir.clone()).await;
     assert!(
-        !derived_dir.join("epoch-99.yaml").exists(),
+        !derived_dir.join("config-99.yaml").exists(),
         "stale derived config swept on construction"
     );
 
@@ -62,11 +64,11 @@ async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
         endpoint.contains('1'),
         "endpoint should embed the epoch: {endpoint}"
     );
-    assert!(derived_dir.join("epoch-1.yaml").exists());
+    assert!(derived_dir.join("config-100.yaml").exists());
 
     manager.shutdown().await.expect("shutdown");
     assert!(
-        !derived_dir.join("epoch-1.yaml").exists(),
+        !derived_dir.join("config-100.yaml").exists(),
         "derived config removed after shutdown"
     );
     let _ = Duration::ZERO;
@@ -77,7 +79,7 @@ async fn managed_spawn_error_removes_secret_derived_config() {
     let (_guard, dir) = common::utf8_tempdir();
     let derived_dir = dir.join("derived");
     let config = common::write_config(&dir, "mixed-port: 0\nsecret: test-secret\n");
-    let manager = managed_manager(derived_dir.clone());
+    let manager = managed_manager(derived_dir.clone()).await;
     let mut spec = common::mihomo_spec(&dir, config);
     spec.core.kind = CoreKind::Meow;
 
@@ -93,7 +95,7 @@ async fn managed_spawn_error_removes_secret_derived_config() {
         }
     ));
     assert!(
-        !derived_dir.join("epoch-1.yaml").exists(),
+        !derived_dir.join("config-1.yaml").exists(),
         "secret-bearing derived config must be removed"
     );
 }
@@ -109,7 +111,7 @@ async fn stop_cleans_derived_config_for_terminal_instance() {
             "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 100\n  crash-times: 99\n  state-file: {state_file}\n"
         ),
     );
-    let manager = managed_manager(derived_dir.clone());
+    let manager = managed_manager(derived_dir.clone()).await;
     let mut rx = manager.subscribe();
 
     manager
@@ -134,12 +136,12 @@ async fn stop_cleans_derived_config_for_terminal_instance() {
     .expect("core never exhausted its restart budget");
 
     assert!(
-        derived_dir.join("epoch-1.yaml").exists(),
+        derived_dir.join("config-1.yaml").exists(),
         "derived config must exist before terminal stop cleanup"
     );
     assert!(matches!(manager.stop().await, Err(Error::NotStarted)));
     assert!(
-        !derived_dir.join("epoch-1.yaml").exists(),
+        !derived_dir.join("config-1.yaml").exists(),
         "derived config must be removed after terminal stop"
     );
     manager.shutdown().await.expect("shutdown");
@@ -164,12 +166,12 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
     )
     .unwrap();
 
-    let manager = managed_manager(derived_dir.clone());
+    let manager = managed_manager(derived_dir.clone()).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
         .expect("start A");
-    assert!(derived_dir.join("epoch-1.yaml").exists());
+    assert!(derived_dir.join("config-1.yaml").exists());
     tokio::net::TcpStream::connect(("127.0.0.1", mixed))
         .await
         .expect("A holds the mixed port");
@@ -188,7 +190,7 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
 
     let mut spec_b = common::mihomo_spec(&dir, config_b_path.clone());
     spec_b.config_path = config_b_path;
-    let outcome = manager.switch(spec_b).await.expect("switch");
+    let outcome = manager.switch(spec_b.clone()).await.expect("switch");
     assert_eq!(outcome, SwitchOutcome::Graceful);
     recorder.abort();
 
@@ -218,16 +220,29 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
         .await
         .expect("B serves the mixed port after the switch");
 
-    let CoreState::Running { epoch, .. } = manager.status().state else {
+    let status = manager.status();
+    let CoreState::Running { epoch, .. } = status.state else {
         panic!("not running after switch")
     };
     assert_eq!(epoch, 2);
+    assert_eq!(
+        status
+            .spec
+            .as_ref()
+            .map(|summary| summary.config_path.clone()),
+        Some(spec_b.config_path)
+    );
+    assert_eq!(
+        status.revision.as_ref().map(|revision| revision.epoch),
+        Some(2)
+    );
+    assert!(status.controller.is_some());
     assert!(
-        !derived_dir.join("epoch-1.yaml").exists(),
+        !derived_dir.join("config-1.yaml").exists(),
         "old derived config must be removed after switch"
     );
     assert!(
-        derived_dir.join("epoch-2.yaml").exists(),
+        derived_dir.join("config-2.yaml").exists(),
         "new derived config must remain active"
     );
     manager.shutdown().await.expect("shutdown");
@@ -240,13 +255,13 @@ async fn managed_hard_switch_removes_old_derived_config() {
     let config_a = common::write_config(&dir, "mixed-port: 0\n");
     let config_b_path = dir.join("config-b.yaml");
     std::fs::write(&config_b_path, "dns:\n  listen: 127.0.0.1:0\n").unwrap();
-    let manager = managed_manager(derived_dir.clone());
+    let manager = managed_manager(derived_dir.clone()).await;
 
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
         .expect("start A");
-    assert!(derived_dir.join("epoch-1.yaml").exists());
+    assert!(derived_dir.join("config-1.yaml").exists());
 
     let outcome = manager
         .switch(common::mihomo_spec(&dir, config_b_path))
@@ -259,10 +274,10 @@ async fn managed_hard_switch_removes_old_derived_config() {
         }
     );
     assert!(
-        !derived_dir.join("epoch-1.yaml").exists(),
+        !derived_dir.join("config-1.yaml").exists(),
         "old derived config must be removed after hard switch"
     );
-    assert!(derived_dir.join("epoch-2.yaml").exists());
+    assert!(derived_dir.join("config-2.yaml").exists());
     assert!(matches!(
         manager.status().state,
         CoreState::Running { epoch: 2, .. }
@@ -277,8 +292,8 @@ async fn derive_failure_republishes_old_running_state() {
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b_path = dir.join("config-b.yaml");
-    std::fs::write(&config_b_path, format!("mixed-port: {mixed}\n")).unwrap();
-    let manager = managed_manager(derived_dir.clone());
+    std::fs::write(&config_b_path, format!("mixed-port: {mixed}\n1: invalid\n")).unwrap();
+    let manager = managed_manager(derived_dir.clone()).await;
 
     manager
         .start(common::mihomo_spec(&dir, config_a))
@@ -292,17 +307,11 @@ async fn derive_failure_republishes_old_running_state() {
         panic!("not running")
     };
 
-    for entry in std::fs::read_dir(&derived_dir).unwrap() {
-        std::fs::remove_file(entry.unwrap().path()).unwrap();
-    }
-    std::fs::remove_dir(&derived_dir).unwrap();
-    std::fs::write(&derived_dir, "not a directory").unwrap();
-
     let error = manager
         .switch(common::mihomo_spec(&dir, config_b_path))
         .await
         .expect_err("derive must fail");
-    assert!(matches!(error, Error::Io(_)), "got {error}");
+    assert!(matches!(error, Error::InvalidConfig(_)), "got {error}");
     assert_eq!(
         manager.status().state,
         CoreState::Running {
@@ -324,7 +333,7 @@ async fn failed_new_core_while_old_restarting_republishes_actual_state() {
     let config_a = common::write_config(
         &dir,
         &format!(
-            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 100\n  crash-times: 1\n  state-file: {state_file}\n"
+            "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 400\n  crash-times: 1\n  state-file: {state_file}\n"
         ),
     );
     let config_b_path = dir.join("config-b.yaml");
@@ -336,7 +345,10 @@ async fn failed_new_core_while_old_restarting_republishes_actual_state() {
             controller_template: unique_template(),
         },
         cancel_token: cancel_token.clone(),
-    });
+        ..Default::default()
+    })
+    .await
+    .expect("construct manager");
     let mut spec_a = common::mihomo_spec(&dir, config_a);
     spec_a.options.backoff = nyanpasu_utils::process::Backoff::exponential(
         Duration::from_secs(60),
@@ -399,7 +411,7 @@ async fn failed_new_core_rolls_back_without_touching_the_old_one() {
     let config_b_path = dir.join("config-b.yaml");
     std::fs::write(&config_b_path, "x-fake-core:\n  never-ready: true\n").unwrap();
 
-    let manager = managed_manager(dir.join("derived"));
+    let manager = managed_manager(dir.join("derived")).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -442,7 +454,7 @@ async fn rejected_patch_falls_back_to_a_hard_restart() {
     )
     .unwrap();
 
-    let manager = managed_manager(dir.join("derived"));
+    let manager = managed_manager(dir.join("derived")).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
