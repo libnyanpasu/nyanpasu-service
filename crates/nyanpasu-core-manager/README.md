@@ -318,8 +318,8 @@ signaling; a minimal PID-reuse window remains on those fallback paths.
 Before killing a verified root, recovery captures its live descendant tree and
 records each descendant's executable and start token. It then confirms every
 captured identity is dead, skipping a PID that disappeared or changed identity.
-A descendant that exits or reparents before the two capture snapshots cannot be
-attributed safely and is not killed; persistent group/job identity would be
+A descendant that reparents before either capture snapshot observes it cannot
+be attributed safely and is not killed; persistent group/job identity would be
 needed to eliminate that residual gap.
 
 ### One-shot config validation

@@ -224,6 +224,37 @@ async fn failed_desired_restart_restores_and_restarts_the_old_revision() {
 }
 
 #[tokio::test]
+async fn desired_and_rollback_commits_preserve_both_durability_warnings() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let behavior = "x-fake-core:\n  patch-no-effect: true\n  fail-start-when-allow-lan: true\n";
+    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, behavior));
+    let desired = write_named(
+        &dir,
+        "desired.yaml",
+        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+    );
+    let manager = manager(&dir, Duration::from_secs(1)).await;
+    manager.start(spec(&dir, first)).await.expect("start");
+    manager.inject_runtime_parent_sync_failure_once_for_test();
+    manager.inject_runtime_parent_sync_failure_once_for_test();
+
+    let outcome = manager
+        .apply_config(spec(&dir, desired), None)
+        .await
+        .expect("rollback succeeds despite both durability warnings");
+
+    let ApplyOutcome::DurabilityUncertain { outcome, .. } = outcome else {
+        panic!("desired commit warning was lost")
+    };
+    let ApplyOutcome::DurabilityUncertain { outcome, .. } = *outcome else {
+        panic!("rollback commit warning was lost")
+    };
+    assert!(matches!(*outcome, ApplyOutcome::RolledBack { .. }));
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn revision_conflict_has_zero_process_file_and_status_side_effects() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();

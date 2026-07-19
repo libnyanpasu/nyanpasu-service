@@ -258,6 +258,7 @@ impl CoreManager {
     }
 
     /// Test-only fault hook for the installed-but-parent-sync-failed branch.
+    #[cfg(feature = "test-hooks")]
     #[doc(hidden)]
     pub fn inject_runtime_parent_sync_failure_once_for_test(&self) {
         self.inner.store.inject_replace_parent_sync_failure_once();
@@ -1152,7 +1153,6 @@ impl CoreManager {
                 epoch: first_epoch,
                 reason: failures.join(" | "),
             };
-            self.publish_terminal_error(&error);
             return Err(error);
         }
         self.inner
@@ -1729,9 +1729,6 @@ fn with_durability_result(
 ) -> Result<ApplyOutcome, Error> {
     match (result, warning) {
         (Ok(outcome), warning) => Ok(with_durability_warning(outcome, warning)),
-        (Err(Error::StopUnconfirmed(message)), Some(warning)) => Err(Error::StopUnconfirmed(
-            format!("{message}; runtime durability warning: {warning}"),
-        )),
         (Err(error), Some(warning)) => Err(Error::DurabilityUncertain {
             source: Box::new(error),
             warning,
@@ -1759,9 +1756,6 @@ fn with_switch_durability_result(
 ) -> Result<SwitchOutcome, Error> {
     match (result, warning) {
         (Ok(outcome), warning) => Ok(with_switch_durability_warning(outcome, warning)),
-        (Err(Error::StopUnconfirmed(message)), Some(warning)) => Err(Error::StopUnconfirmed(
-            format!("{message}; runtime durability warning: {warning}"),
-        )),
         (Err(error), Some(warning)) => Err(Error::DurabilityUncertain {
             source: Box::new(error),
             warning,
@@ -1834,5 +1828,28 @@ mod tests {
         };
         assert!(matches!(*source, Error::ApplyRollbackFailed { .. }));
         assert_eq!(warning, "directory sync failed");
+    }
+
+    #[test]
+    fn durability_warning_wraps_stop_unconfirmed_without_flattening() {
+        let apply = with_durability_result(
+            Err(Error::StopUnconfirmed("apply stop uncertain".into())),
+            Some("apply sync warning".into()),
+        );
+        let Err(Error::DurabilityUncertain { source, warning }) = apply else {
+            panic!("apply stop uncertainty was not structurally wrapped")
+        };
+        assert!(matches!(*source, Error::StopUnconfirmed(_)));
+        assert_eq!(warning, "apply sync warning");
+
+        let switch = with_switch_durability_result(
+            Err(Error::StopUnconfirmed("switch stop uncertain".into())),
+            Some("switch sync warning".into()),
+        );
+        let Err(Error::DurabilityUncertain { source, warning }) = switch else {
+            panic!("switch stop uncertainty was not structurally wrapped")
+        };
+        assert!(matches!(*source, Error::StopUnconfirmed(_)));
+        assert_eq!(warning, "switch sync warning");
     }
 }

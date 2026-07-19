@@ -5,6 +5,10 @@ edition.workspace = true
 repository.workspace = true
 license.workspace = true
 
+[features]
+default = []
+test-hooks = []
+
 [[bin]]
 doc = false
 name = "nyanpasu-fake-core"
@@ -31,4 +35,5 @@ tokio-util.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+nyanpasu-core-manager = { path = ".", features = ["test-hooks"] }
 tempfile = "3"

@@ -1,9 +1,9 @@
 //! Durable, manager-owned runtime configuration artifacts.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "test-hooks")]
+use std::sync::{Arc, atomic::AtomicUsize};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -15,7 +15,8 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 #[derive(Debug, Clone)]
 pub struct RuntimeConfigStore {
     dir: Utf8PathBuf,
-    replace_parent_sync_failure: Arc<parking_lot::Mutex<Option<String>>>,
+    #[cfg(feature = "test-hooks")]
+    replace_parent_sync_failures: Arc<AtomicUsize>,
 }
 
 #[derive(Debug)]
@@ -113,7 +114,8 @@ impl RuntimeConfigStore {
 
         Ok(Self {
             dir,
-            replace_parent_sync_failure: Arc::new(parking_lot::Mutex::new(None)),
+            #[cfg(feature = "test-hooks")]
+            replace_parent_sync_failures: Arc::new(AtomicUsize::new(0)),
         })
     }
 
@@ -133,9 +135,10 @@ impl RuntimeConfigStore {
         self.dir.join(format!("core-{epoch}.sock"))
     }
 
+    #[cfg(feature = "test-hooks")]
     pub(crate) fn inject_replace_parent_sync_failure_once(&self) {
-        *self.replace_parent_sync_failure.lock() =
-            Some("injected parent-directory synchronization failure".into());
+        self.replace_parent_sync_failures
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) async fn acquire_ownership(&self) -> Result<RuntimeDirectoryLock, Error> {
@@ -219,11 +222,23 @@ impl RuntimeConfigStore {
         validate_existing_regular_target(&target).await?;
         atomic_replace(&staged.path, &target).await?;
         staged.consumed = true;
-        let injected_failure = self.replace_parent_sync_failure.lock().take();
-        let parent_sync = match injected_failure {
-            Some(message) => Err(std::io::Error::other(message)),
-            None => sync_parent(&self.dir).await,
+        #[cfg(feature = "test-hooks")]
+        let injected_failure = self
+            .replace_parent_sync_failures
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok();
+        #[cfg(feature = "test-hooks")]
+        let parent_sync = if injected_failure {
+            Err(std::io::Error::other(
+                "injected parent-directory synchronization failure",
+            ))
+        } else {
+            sync_parent(&self.dir).await
         };
+        #[cfg(not(feature = "test-hooks"))]
+        let parent_sync = sync_parent(&self.dir).await;
         Ok(installed_commit(target, parent_sync))
     }
 
