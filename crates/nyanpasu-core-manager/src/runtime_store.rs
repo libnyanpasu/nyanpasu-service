@@ -45,6 +45,35 @@ pub struct RuntimeConfigBackup {
     epoch: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeCommitDurability {
+    Durable,
+    Uncertain(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeConfigCommit {
+    path: Utf8PathBuf,
+    durability: RuntimeCommitDurability,
+}
+
+impl RuntimeConfigCommit {
+    pub fn path(&self) -> &Utf8Path {
+        &self.path
+    }
+
+    pub fn durability(&self) -> &RuntimeCommitDurability {
+        &self.durability
+    }
+
+    pub fn durability_warning(&self) -> Option<&str> {
+        match &self.durability {
+            RuntimeCommitDurability::Durable => None,
+            RuntimeCommitDurability::Uncertain(warning) => Some(warning),
+        }
+    }
+}
+
 impl RuntimeConfigBackup {
     pub fn path(&self) -> &Utf8Path {
         &self.path
@@ -160,7 +189,7 @@ impl RuntimeConfigStore {
         Ok(target)
     }
 
-    pub async fn replace(&self, epoch: u64, contents: &[u8]) -> Result<Utf8PathBuf, Error> {
+    pub async fn replace(&self, epoch: u64, contents: &[u8]) -> Result<RuntimeConfigCommit, Error> {
         let staged = self.stage(epoch, contents).await?;
         self.commit_replace(staged, epoch).await
     }
@@ -172,14 +201,13 @@ impl RuntimeConfigStore {
         &self,
         mut staged: StagedRuntimeConfig,
         epoch: u64,
-    ) -> Result<Utf8PathBuf, Error> {
+    ) -> Result<RuntimeConfigCommit, Error> {
         self.validate_staged(&staged, epoch).await?;
         let target = self.runtime_path(epoch);
         validate_existing_regular_target(&target).await?;
         atomic_replace(&staged.path, &target).await?;
         staged.consumed = true;
-        sync_parent(&self.dir).await?;
-        Ok(target)
+        Ok(installed_commit(target, sync_parent(&self.dir).await))
     }
 
     pub async fn backup(&self, epoch: u64, generation: u64) -> Result<RuntimeConfigBackup, Error> {
@@ -200,7 +228,10 @@ impl RuntimeConfigStore {
         })
     }
 
-    pub async fn restore(&self, backup: &RuntimeConfigBackup) -> Result<Utf8PathBuf, Error> {
+    pub async fn restore(
+        &self,
+        backup: &RuntimeConfigBackup,
+    ) -> Result<RuntimeConfigCommit, Error> {
         validate_existing_regular_target(&backup.path).await?;
         let contents = tokio::fs::read(&backup.path).await?;
         self.replace(backup.epoch, &contents).await
@@ -218,13 +249,17 @@ impl RuntimeConfigStore {
 
         let prefix = format!("config-{epoch}.yaml.backup-");
         let temp_prefix = format!(".config-{epoch}.yaml.tmp-");
+        let pid_temp_prefix = format!("core-{epoch}.pid.tmp-");
         let mut entries = tokio::fs::read_dir(&self.dir).await?;
         while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if name.starts_with(&prefix) || name.starts_with(&temp_prefix) {
+            if name.starts_with(&prefix)
+                || name.starts_with(&temp_prefix)
+                || name.starts_with(&pid_temp_prefix)
+            {
                 let path = Utf8PathBuf::from_path_buf(entry.path())
                     .map_err(|_| Error::UnsafeRuntimeArtifact(self.dir.clone()))?;
                 remove_regular_file(&path).await?;
@@ -351,8 +386,22 @@ fn artifact_epoch(name: &str) -> Option<u64> {
         .or_else(|| {
             name.strip_prefix(".config-")
                 .and_then(|value| value.split_once(".yaml.tmp-").map(|(epoch, _)| epoch))
+        })
+        .or_else(|| {
+            name.strip_prefix("core-")
+                .and_then(|value| value.split_once(".pid.tmp-").map(|(epoch, _)| epoch))
         })?;
     rest.parse().ok()
+}
+
+fn installed_commit(path: Utf8PathBuf, parent_sync: std::io::Result<()>) -> RuntimeConfigCommit {
+    let durability = match parent_sync {
+        Ok(()) => RuntimeCommitDurability::Durable,
+        Err(error) => RuntimeCommitDurability::Uncertain(format!(
+            "runtime config was atomically installed, but parent-directory synchronization failed: {error}"
+        )),
+    };
+    RuntimeConfigCommit { path, durability }
 }
 
 fn validate_directory_metadata(path: &Utf8Path, metadata: &std::fs::Metadata) -> Result<(), Error> {
@@ -833,5 +882,20 @@ mod tests {
 
         store.cleanup_epoch(9).await.unwrap();
         assert!(!socket_path.exists());
+    }
+
+    #[test]
+    fn installed_commit_reports_parent_sync_uncertainty_without_becoming_an_error() {
+        let path = Utf8PathBuf::from("config-4.yaml");
+        let commit = installed_commit(
+            path.clone(),
+            Err(std::io::Error::other("injected directory fsync failure")),
+        );
+        assert_eq!(commit.path(), path);
+        assert!(matches!(
+            commit.durability(),
+            RuntimeCommitDurability::Uncertain(message)
+                if message.contains("atomically installed") && message.contains("injected")
+        ));
     }
 }

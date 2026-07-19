@@ -262,7 +262,11 @@ pub(crate) fn managed_endpoint_path(
 ) -> Result<String, Error> {
     validate_controller_template(template)?;
     if let Some(template) = template {
-        return Ok(template.replace("{epoch}", &epoch.to_string()));
+        let endpoint = template.replace("{epoch}", &epoch.to_string());
+        #[cfg(windows)]
+        return Ok(endpoint);
+        #[cfg(unix)]
+        return managed_unix_endpoint(runtime_dir, &endpoint);
     }
     #[cfg(windows)]
     {
@@ -273,6 +277,36 @@ pub(crate) fn managed_endpoint_path(
     {
         Ok(runtime_dir.join(format!("core-{epoch}.sock")).to_string())
     }
+}
+
+#[cfg(unix)]
+fn managed_unix_endpoint(runtime_dir: &Utf8Path, endpoint: &str) -> Result<String, Error> {
+    let endpoint = Utf8Path::new(endpoint);
+    let candidate = if endpoint.is_absolute() {
+        endpoint.to_owned()
+    } else {
+        runtime_dir.join(endpoint)
+    };
+    let parent = candidate.parent().ok_or_else(|| {
+        Error::InvalidManagerOptions("managed Unix controller has no parent directory".into())
+    })?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|error| {
+        Error::InvalidManagerOptions(format!(
+            "managed Unix controller parent `{parent}` cannot be canonicalized: {error}"
+        ))
+    })?;
+    let canonical_parent = Utf8PathBuf::from_path_buf(canonical_parent).map_err(|_| {
+        Error::InvalidManagerOptions("managed Unix controller path is not UTF-8".into())
+    })?;
+    if !canonical_parent.starts_with(runtime_dir) {
+        return Err(Error::InvalidManagerOptions(format!(
+            "managed Unix controller `{candidate}` escapes runtime directory `{runtime_dir}`"
+        )));
+    }
+    let file_name = candidate.file_name().ok_or_else(|| {
+        Error::InvalidManagerOptions("managed Unix controller must name a socket file".into())
+    })?;
+    Ok(canonical_parent.join(file_name).to_string())
 }
 
 fn zero_listener(document: &mut Mapping, key: &str) {
@@ -361,10 +395,24 @@ mod tests {
     fn endpoint_template_requires_and_substitutes_epoch() {
         let dir = Utf8Path::new("/tmp/x");
         assert!(managed_endpoint_path(dir, Some("fixed"), 1).is_err());
+        #[cfg(windows)]
         assert_eq!(
             managed_endpoint_path(dir, Some(r"\\.\pipe\ny-{epoch}"), 42).unwrap(),
             r"\\.\pipe\ny-42"
         );
         assert!(managed_endpoint_path(dir, None, 42).unwrap().contains("42"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_unix_template_must_stay_inside_runtime_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let runtime = Utf8PathBuf::from_path_buf(root.path().join("runtime")).unwrap();
+        std::fs::create_dir(&runtime).unwrap();
+        assert!(managed_endpoint_path(&runtime, Some("core-{epoch}.sock"), 4).is_ok());
+        let outside = root.path().join("escaped-{epoch}.sock");
+        let outside = outside.to_str().unwrap();
+        let error = managed_endpoint_path(&runtime, Some(outside), 4).unwrap_err();
+        assert!(error.to_string().contains("escapes runtime directory"));
     }
 }

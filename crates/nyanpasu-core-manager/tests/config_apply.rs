@@ -431,11 +431,14 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
         .await
         .expect("construct manager"),
     );
-    manager.start(spec(&dir, first)).await.expect("start");
+    manager
+        .start(spec(&dir, first.clone()))
+        .await
+        .expect("start");
 
     let apply = {
         let manager = manager.clone();
-        let mut desired_spec = spec(&dir, desired);
+        let mut desired_spec = spec(&dir, desired.clone());
         desired_spec.options.startup_timeout = Duration::from_millis(300);
         tokio::spawn(async move { manager.apply_config(desired_spec, None).await })
     };
@@ -447,6 +450,7 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     })
     .await
     .expect("replacement pid record never appeared");
+    let valid_pid_record = std::fs::read_to_string(&rejected_pid).unwrap();
     std::fs::write(&rejected_pid, "identity deliberately unavailable\n").unwrap();
 
     let result = apply.await.unwrap();
@@ -461,4 +465,105 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
         manager.status().state,
         CoreState::Stopped { reason: Some(_) }
     ));
+
+    let CoreState::Stopped {
+        reason: Some(reason),
+    } = manager.status().state
+    else {
+        panic!("quarantine was not published")
+    };
+    let status_reason = reason.to_string();
+    assert!(status_reason.contains("quarantin"), "{status_reason}");
+    let start_error = manager
+        .start(spec(&dir, first.clone()))
+        .await
+        .expect_err("quarantine must reject start");
+    assert!(
+        start_error.to_string().contains("quarantin"),
+        "{start_error}"
+    );
+    let apply_error = manager
+        .apply_config(spec(&dir, desired), None)
+        .await
+        .expect_err("quarantine must reject apply");
+    assert!(
+        apply_error.to_string().contains("quarantin"),
+        "{apply_error}"
+    );
+    assert!(matches!(
+        manager.switch(spec(&dir, first.clone())).await,
+        Err(Error::ManagerQuarantined { .. })
+    ));
+    assert!(matches!(
+        manager.restart().await,
+        Err(Error::ManagerQuarantined { .. })
+    ));
+
+    std::fs::write(rejected_pid, valid_pid_record).unwrap();
+    common::wait_port_refused(port).await;
+    manager
+        .recover_quarantine()
+        .await
+        .expect("identity-verified recovery");
+    assert!(!runtime_dir.join("config-2.yaml").exists());
+    manager
+        .start(spec(&dir, first))
+        .await
+        .expect("start after quarantine recovery");
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn compensation_publishes_restart_before_replacement_is_ready() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let launches = dir.join("launch-count.txt");
+    let launch_path = launches.as_str().replace('\\', "/");
+    let behavior = format!(
+        "x-fake-core:\n  patch-no-effect: true\n  ready-delay-ms: 700\n  launch-count-file: '{launch_path}'\n  fail-after-launches: 99\n"
+    );
+    let first = write_named(
+        &dir,
+        "first.yaml",
+        &passthrough_yaml(port, &format!("allow-lan: false\n{behavior}")),
+    );
+    let desired = write_named(
+        &dir,
+        "desired.yaml",
+        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+    );
+    let manager = std::sync::Arc::new(manager(&dir, Duration::from_secs(1)).await);
+    manager.start(spec(&dir, first)).await.expect("start");
+    let CoreState::Running { pid: old_pid, .. } = manager.status().state else {
+        panic!("initial core not running")
+    };
+
+    let apply = {
+        let manager = manager.clone();
+        tokio::spawn(async move { manager.apply_config(spec(&dir, desired), None).await })
+    };
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if std::fs::read_to_string(&launches)
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                == Some(2)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("replacement never launched");
+    assert!(
+        matches!(manager.status().state, CoreState::Restarting { .. }),
+        "dead pid {old_pid} remained published as {:?}",
+        manager.status().state
+    );
+    assert!(matches!(
+        apply.await.unwrap().unwrap(),
+        ApplyOutcome::Restarted { .. }
+    ));
+    manager.shutdown().await.unwrap();
 }

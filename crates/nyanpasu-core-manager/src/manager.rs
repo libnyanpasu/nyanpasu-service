@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use nyanpasu_utils::process::reap_epoch_pid_file;
+use nyanpasu_utils::process::{OrphanReapOutcome, reap_epoch_pid_file};
 use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
@@ -58,6 +58,10 @@ pub enum ApplyOutcome {
         revision: ConfigRevision,
         failed_apply: String,
     },
+    DurabilityUncertain {
+        outcome: Box<ApplyOutcome>,
+        warning: String,
+    },
 }
 
 fn graceful_degrade_reason(
@@ -99,6 +103,13 @@ struct Inner {
 struct Ctrl {
     current: Option<Active>,
     last_spec: Option<InstanceSpec>,
+    quarantine: Vec<QuarantinedEpoch>,
+}
+
+#[derive(Debug, Clone)]
+struct QuarantinedEpoch {
+    epoch: u64,
+    reason: String,
 }
 
 struct Active {
@@ -198,14 +209,13 @@ impl CoreManager {
         };
         let store = RuntimeConfigStore::new(runtime_dir).await?;
         let runtime_lock = store.acquire_ownership().await?;
-        let max_epoch = sweep_orphans(&store).await?;
 
         if let ControllerMode::Managed {
             controller_template,
             ..
         } = &options.controller_mode
         {
-            config::validate_controller_template(controller_template.as_deref())?;
+            config::managed_endpoint_path(store.dir(), controller_template.as_deref(), 0)?;
         }
         for (name, timeout) in [
             ("control_timeout", options.control_timeout),
@@ -218,6 +228,7 @@ impl CoreManager {
                 )));
             }
         }
+        let max_epoch = sweep_orphans(&store).await?;
         let (status_tx, _) = watch::channel(CoreStatus::initial());
         Ok(Self {
             inner: Arc::new(Inner {
@@ -245,6 +256,7 @@ impl CoreManager {
         expected_revision: Option<RevisionId>,
     ) -> Result<ApplyOutcome, Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
+        reject_quarantine(&ctrl)?;
         let current = ctrl.current.as_ref().ok_or(Error::NotStarted)?;
         if current.instance.state().borrow().is_terminal() {
             return Err(Error::NotStarted);
@@ -297,15 +309,19 @@ impl CoreManager {
             effective_document,
             staged,
         } = prepared;
-        if let Err(error) = self
+        let commit = match self
             .inner
             .store
             .commit_replace(staged, revision.epoch)
             .await
         {
-            let _ = self.inner.store.remove_backup(backup).await;
-            return Err(error);
-        }
+            Ok(commit) => commit,
+            Err(error) => {
+                let _ = self.inner.store.remove_backup(backup).await;
+                return Err(error);
+            }
+        };
+        let durability_warning = commit.durability_warning().map(str::to_owned);
         let desired = PreparedLaunch {
             source_spec,
             effective_spec,
@@ -351,11 +367,13 @@ impl CoreManager {
             if let Err(error) = self.inner.store.remove_backup(backup).await {
                 tracing::warn!("failed to remove successful apply backup: {error}");
             }
-            return Ok(outcome);
+            return Ok(with_durability_warning(outcome, durability_warning));
         }
 
-        self.restart_with_compensation(&mut ctrl, desired, backup)
-            .await
+        let result = self
+            .restart_with_compensation(&mut ctrl, desired, backup)
+            .await;
+        with_durability_result(result, durability_warning)
     }
 
     async fn prepare_apply(
@@ -516,13 +534,22 @@ impl CoreManager {
             .await
         {
             if matches!(error, Error::StopUnconfirmed(_)) {
-                self.publish_terminal_error(&error);
-                return Err(error);
+                return Err(self.latch_quarantine(ctrl, old_revision.epoch, error));
             }
             let message = format!("failed to stop current epoch for reconcile: {error}");
             self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
             return Err(Error::ApplyFailed(message));
         }
+
+        self.inner.publish(
+            CoreState::Restarting {
+                epoch: desired.revision.epoch,
+                attempt: 0,
+            },
+            Some(spec_summary(&desired.source_spec)),
+            Some(desired.controller.host.clone()),
+            Some(desired.revision.clone()),
+        );
 
         match self
             .spawn_replacement(
@@ -535,8 +562,7 @@ impl CoreManager {
             Ok(instance) => {
                 let revision = desired.revision.clone();
                 let pid = instance.pid().unwrap_or_default();
-                let forwarder =
-                    spawn_forwarder(self.inner.clone(), instance.state(), revision.epoch);
+                let forwarder = spawn_forwarder(&self.inner, instance.state(), revision.epoch);
                 ctrl.last_spec = Some(desired.source_spec.clone());
                 ctrl.current = Some(Active {
                     instance,
@@ -560,30 +586,39 @@ impl CoreManager {
                 Ok(ApplyOutcome::Restarted { revision })
             }
             Err(error @ Error::StopUnconfirmed(_)) => {
-                self.publish_terminal_error(&error);
-                Err(error)
+                Err(self.latch_quarantine(ctrl, desired.revision.epoch, error))
             }
             Err(apply_error) => {
                 let apply_text = apply_error.to_string();
-                if let Err(restore_error) = self.inner.store.restore(&backup).await {
-                    let error = Error::ApplyRollbackFailed {
-                        apply: apply_text,
-                        rollback: format!("runtime restore failed: {restore_error}"),
-                    };
-                    self.publish_terminal_error(&error);
-                    return Err(error);
-                }
-                match self
+                let restore = match self.inner.store.restore(&backup).await {
+                    Ok(restore) => restore,
+                    Err(restore_error) => {
+                        let error = Error::ApplyRollbackFailed {
+                            apply: apply_text,
+                            rollback: format!("runtime restore failed: {restore_error}"),
+                        };
+                        self.publish_terminal_error(&error);
+                        return Err(error);
+                    }
+                };
+                let restore_warning = restore.durability_warning().map(str::to_owned);
+                self.inner.publish(
+                    CoreState::Restarting {
+                        epoch: old_revision.epoch,
+                        attempt: 0,
+                    },
+                    Some(spec_summary(&old_source_spec)),
+                    Some(old_controller.host.clone()),
+                    Some(old_revision.clone()),
+                );
+                let rollback = match self
                     .spawn_replacement(old_effective_spec, old_revision.epoch, old_controller)
                     .await
                 {
                     Ok(instance) => {
                         let pid = instance.pid().unwrap_or_default();
-                        let forwarder = spawn_forwarder(
-                            self.inner.clone(),
-                            instance.state(),
-                            old_revision.epoch,
-                        );
+                        let forwarder =
+                            spawn_forwarder(&self.inner, instance.state(), old_revision.epoch);
                         ctrl.last_spec = Some(old_source_spec.clone());
                         ctrl.current = Some(Active {
                             instance,
@@ -613,8 +648,7 @@ impl CoreManager {
                         let error = Error::StopUnconfirmed(format!(
                             "desired apply failed ({apply_text}); rollback replacement {rollback_error}"
                         ));
-                        self.publish_terminal_error(&error);
-                        Err(error)
+                        Err(self.latch_quarantine(ctrl, old_revision.epoch, error))
                     }
                     Err(rollback_error) => {
                         let error = Error::ApplyRollbackFailed {
@@ -624,7 +658,8 @@ impl CoreManager {
                         self.publish_terminal_error(&error);
                         Err(error)
                     }
-                }
+                };
+                with_durability_result(rollback, restore_warning)
             }
         }
     }
@@ -653,13 +688,22 @@ impl CoreManager {
         {
             let _ = self.inner.store.cleanup_epoch(epoch).await;
             if matches!(error, Error::StopUnconfirmed(_)) {
-                self.publish_terminal_error(&error);
-                return Err(error);
+                return Err(self.latch_quarantine(ctrl, old_epoch, error));
             }
             let message = format!("failed to stop current epoch for switch: {error}");
             self.publish_terminal_error(&Error::ApplyFailed(message.clone()));
             return Err(Error::ApplyFailed(message));
         }
+
+        self.inner.publish(
+            CoreState::Switching {
+                from: Some(old_epoch),
+                to: desired.revision.epoch,
+            },
+            Some(spec_summary(&desired.source_spec)),
+            Some(desired.controller.host.clone()),
+            Some(desired.revision.clone()),
+        );
 
         match self
             .spawn_replacement(
@@ -672,8 +716,7 @@ impl CoreManager {
             Ok(instance) => {
                 let revision = desired.revision.clone();
                 let pid = instance.pid().unwrap_or_default();
-                let forwarder =
-                    spawn_forwarder(self.inner.clone(), instance.state(), revision.epoch);
+                let forwarder = spawn_forwarder(&self.inner, instance.state(), revision.epoch);
                 ctrl.last_spec = Some(desired.source_spec.clone());
                 ctrl.current = Some(Active {
                     instance,
@@ -697,25 +740,30 @@ impl CoreManager {
                 Ok(ApplyOutcome::Restarted { revision })
             }
             Err(error @ Error::StopUnconfirmed(_)) => {
-                self.publish_terminal_error(&error);
-                Err(error)
+                Err(self.latch_quarantine(ctrl, desired.revision.epoch, error))
             }
             Err(apply_error) => {
                 let apply_text = apply_error.to_string();
                 if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
                     tracing::warn!("failed to clean rejected desired epoch: {error}");
                 }
+                self.inner.publish(
+                    CoreState::Restarting {
+                        epoch: old_revision.epoch,
+                        attempt: 0,
+                    },
+                    Some(spec_summary(&old_source_spec)),
+                    Some(old_controller.host.clone()),
+                    Some(old_revision.clone()),
+                );
                 match self
                     .spawn_replacement(old_effective_spec, old_revision.epoch, old_controller)
                     .await
                 {
                     Ok(instance) => {
                         let pid = instance.pid().unwrap_or_default();
-                        let forwarder = spawn_forwarder(
-                            self.inner.clone(),
-                            instance.state(),
-                            old_revision.epoch,
-                        );
+                        let forwarder =
+                            spawn_forwarder(&self.inner, instance.state(), old_revision.epoch);
                         ctrl.last_spec = Some(old_source_spec.clone());
                         ctrl.current = Some(Active {
                             instance,
@@ -742,8 +790,7 @@ impl CoreManager {
                         let error = Error::StopUnconfirmed(format!(
                             "desired switch failed ({apply_text}); rollback replacement {rollback_error}"
                         ));
-                        self.publish_terminal_error(&error);
-                        Err(error)
+                        Err(self.latch_quarantine(ctrl, old_revision.epoch, error))
                     }
                     Err(rollback_error) => {
                         let error = Error::ApplyRollbackFailed {
@@ -900,6 +947,7 @@ impl CoreManager {
 
     pub async fn start(&self, spec: InstanceSpec) -> Result<(), Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
+        reject_quarantine(&ctrl)?;
         let running = ctrl
             .current
             .as_ref()
@@ -910,10 +958,16 @@ impl CoreManager {
         if let Some(stale) = ctrl.current.take() {
             abort_and_await(stale.forwarder).await;
             let epoch = stale.instance.epoch();
-            stale
+            if let Err(error) = stale
                 .instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await?;
+                .await
+            {
+                if matches!(error, Error::StopUnconfirmed(_)) {
+                    return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+                }
+                return Err(error);
+            }
             self.inner.store.cleanup_epoch(epoch).await?;
         }
         self.start_locked(&mut ctrl, spec).await
@@ -963,15 +1017,23 @@ impl CoreManager {
             }
         };
 
-        if let Err(error) = instance.wait_ready().await {
-            let stopped = instance
+        if let Err(readiness_error) = instance.wait_ready().await {
+            match instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await;
-            if stopped.is_ok() {
-                let _ = self.inner.store.cleanup_epoch(epoch).await;
+                .await
+            {
+                Ok(()) => {
+                    let _ = self.inner.store.cleanup_epoch(epoch).await;
+                    self.publish_terminal_error(&readiness_error);
+                    return Err(readiness_error);
+                }
+                Err(stop_error) => {
+                    let error = Error::StopUnconfirmed(format!(
+                        "{readiness_error}; failed to stop rejected initial instance: {stop_error}"
+                    ));
+                    return Err(self.latch_quarantine(ctrl, epoch, error));
+                }
             }
-            self.publish_terminal_error(&error);
-            return Err(error);
         }
 
         let pid = instance.pid().unwrap_or_default();
@@ -981,7 +1043,7 @@ impl CoreManager {
             Some(instance.controller().host.clone()),
             Some(prepared.revision.clone()),
         );
-        let forwarder = spawn_forwarder(self.inner.clone(), instance.state(), epoch);
+        let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
         ctrl.current = Some(Active {
             instance,
@@ -1005,14 +1067,64 @@ impl CoreManager {
         );
     }
 
+    fn latch_quarantine(&self, ctrl: &mut Ctrl, epoch: u64, error: Error) -> Error {
+        record_quarantine(ctrl, epoch, error.to_string());
+        let quarantine = quarantine_error(ctrl).expect("quarantine was just inserted");
+        self.publish_terminal_error(&quarantine);
+        error
+    }
+
+    /// Attempts identity-verified recovery of every uncertain epoch. Manager
+    /// operations remain rejected until every quarantined process is proven
+    /// dead and its artifacts are cleaned.
+    pub async fn recover_quarantine(&self) -> Result<(), Error> {
+        let mut ctrl = self.inner.ctrl.lock().await;
+        if ctrl.quarantine.is_empty() {
+            return Ok(());
+        }
+        let quarantined = ctrl.quarantine.clone();
+        for entry in quarantined {
+            let pid_path = self.inner.store.pid_path(entry.epoch);
+            match reap_epoch_pid_file(pid_path.as_std_path(), self.inner.store.dir().as_std_path())
+                .await
+            {
+                Ok(OrphanReapOutcome::AlreadyExited | OrphanReapOutcome::Killed) => {
+                    self.inner.store.cleanup_epoch(entry.epoch).await?;
+                    ctrl.quarantine
+                        .retain(|quarantine| quarantine.epoch != entry.epoch);
+                }
+                Ok(OrphanReapOutcome::NotFound) => {
+                    return Err(Error::ManagerQuarantined {
+                        epoch: entry.epoch,
+                        reason: format!(
+                            "{}; authoritative epoch pid record is unavailable",
+                            entry.reason
+                        ),
+                    });
+                }
+                Err(error) => {
+                    return Err(Error::ManagerQuarantined {
+                        epoch: entry.epoch,
+                        reason: format!("{}; recovery failed: {error}", entry.reason),
+                    });
+                }
+            }
+        }
+        self.inner
+            .publish(CoreState::Stopped { reason: None }, None, None, None);
+        Ok(())
+    }
+
     pub async fn restart(&self) -> Result<SwitchOutcome, Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
+        reject_quarantine(&ctrl)?;
         let spec = ctrl.last_spec.clone().ok_or(Error::NotStarted)?;
         self.switch_locked(&mut ctrl, spec).await
     }
 
     pub async fn switch(&self, spec: InstanceSpec) -> Result<SwitchOutcome, Error> {
         let mut ctrl = self.inner.ctrl.lock().await;
+        reject_quarantine(&ctrl)?;
         self.switch_locked(&mut ctrl, spec).await
     }
 
@@ -1029,10 +1141,16 @@ impl CoreManager {
             if let Some(stale) = ctrl.current.take() {
                 abort_and_await(stale.forwarder).await;
                 let epoch = stale.instance.epoch();
-                stale
+                if let Err(error) = stale
                     .instance
                     .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                    .await?;
+                    .await
+                {
+                    if matches!(error, Error::StopUnconfirmed(_)) {
+                        return Err(self.latch_quarantine(ctrl, epoch, error));
+                    }
+                    return Err(error);
+                }
                 self.inner.store.cleanup_epoch(epoch).await?;
             }
             self.start_locked(ctrl, spec).await?;
@@ -1094,6 +1212,9 @@ impl CoreManager {
             .await
         {
             let _ = self.inner.store.cleanup_epoch(epoch).await;
+            if matches!(error, Error::StopUnconfirmed(_)) {
+                return Err(self.latch_quarantine(ctrl, old_epoch, error));
+            }
             self.publish_terminal_error(&error);
             return Err(error);
         }
@@ -1121,7 +1242,7 @@ impl CoreManager {
             Some(instance.controller().host.clone()),
             Some(prepared.revision.clone()),
         );
-        let forwarder = spawn_forwarder(self.inner.clone(), instance.state(), epoch);
+        let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
         ctrl.current = Some(Active {
             instance,
@@ -1195,8 +1316,7 @@ impl CoreManager {
                     let error = Error::StopUnconfirmed(format!(
                         "{error}; failed to stop rejected graceful bootstrap: {stop_error}"
                     ));
-                    self.publish_terminal_error(&error);
-                    return Err(error);
+                    return Err(self.latch_quarantine(ctrl, epoch, error));
                 }
             }
         }
@@ -1210,37 +1330,56 @@ impl CoreManager {
             .await
         {
             drop(full_staged);
+            let old_uncertain = matches!(error, Error::StopUnconfirmed(_));
+            let old_reason = error.to_string();
             let new_stop = instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
                 .await;
-            if new_stop.is_ok() {
-                let _ = self.inner.store.cleanup_epoch(epoch).await;
+            match new_stop {
+                Ok(()) => {
+                    let _ = self.inner.store.cleanup_epoch(epoch).await;
+                    if old_uncertain {
+                        return Err(self.latch_quarantine(ctrl, old_epoch, error));
+                    }
+                    self.publish_terminal_error(&error);
+                    return Err(error);
+                }
+                Err(new_error) => {
+                    if old_uncertain {
+                        record_quarantine(ctrl, old_epoch, old_reason);
+                    }
+                    let error = Error::StopUnconfirmed(format!(
+                        "old epoch stop failed: {error}; new bootstrap stop also failed: {new_error}"
+                    ));
+                    return Err(self.latch_quarantine(ctrl, epoch, error));
+                }
             }
-            let error = match new_stop {
-                Ok(()) => error,
-                Err(new_error) => Error::StopUnconfirmed(format!(
-                    "old epoch stop failed: {error}; new bootstrap stop also failed: {new_error}"
-                )),
-            };
-            self.publish_terminal_error(&error);
-            return Err(error);
         }
 
-        if let Err(error) = self.inner.store.commit_replace(full_staged, epoch).await {
-            let new_stop = instance
-                .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await;
-            if new_stop.is_ok() {
-                let _ = self.inner.store.cleanup_epoch(epoch).await;
+        let commit = match self.inner.store.commit_replace(full_staged, epoch).await {
+            Ok(commit) => commit,
+            Err(error) => {
+                let new_stop = instance
+                    .stop_and_confirm_dead(self.inner.options.stop_timeout)
+                    .await;
+                if new_stop.is_ok() {
+                    let _ = self.inner.store.cleanup_epoch(epoch).await;
+                }
+                let error = match new_stop {
+                    Ok(()) => error,
+                    Err(new_error) => Error::StopUnconfirmed(format!(
+                        "full runtime commit failed: {error}; bootstrap stop also failed: {new_error}"
+                    )),
+                };
+                if matches!(error, Error::StopUnconfirmed(_)) {
+                    return Err(self.latch_quarantine(ctrl, epoch, error));
+                }
+                self.publish_terminal_error(&error);
+                return Err(error);
             }
-            let error = match new_stop {
-                Ok(()) => error,
-                Err(new_error) => Error::StopUnconfirmed(format!(
-                    "full runtime commit failed: {error}; bootstrap stop also failed: {new_error}"
-                )),
-            };
-            self.publish_terminal_error(&error);
-            return Err(error);
+        };
+        if let Some(warning) = commit.durability_warning() {
+            tracing::warn!("graceful runtime replacement durability is uncertain: {warning}");
         }
 
         let reconciled = tokio::time::timeout(self.inner.options.reconcile_timeout, async {
@@ -1266,6 +1405,9 @@ impl CoreManager {
             .stop_and_confirm_dead(self.inner.options.stop_timeout)
             .await
         {
+            if matches!(error, Error::StopUnconfirmed(_)) {
+                return Err(self.latch_quarantine(ctrl, epoch, error));
+            }
             self.publish_terminal_error(&error);
             return Err(error);
         }
@@ -1275,8 +1417,7 @@ impl CoreManager {
         {
             Ok(replacement) => replacement,
             Err(error @ Error::StopUnconfirmed(_)) => {
-                self.publish_terminal_error(&error);
-                return Err(error);
+                return Err(self.latch_quarantine(ctrl, epoch, error));
             }
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -1313,9 +1454,15 @@ impl CoreManager {
                 Some(instance.controller().host.clone()),
                 Some(revision),
             );
-            instance
+            if let Err(error) = instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await?;
+                .await
+            {
+                if matches!(error, Error::StopUnconfirmed(_)) {
+                    return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+                }
+                return Err(error);
+            }
             if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
                 self.publish_terminal_error(&error);
                 return Err(error);
@@ -1333,6 +1480,9 @@ impl CoreManager {
             .stop_and_confirm_dead(self.inner.options.stop_timeout)
             .await
         {
+            if matches!(error, Error::StopUnconfirmed(_)) {
+                return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+            }
             self.publish_terminal_error(&error);
             return Err(error);
         }
@@ -1377,6 +1527,9 @@ impl CoreManager {
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
                 .await
             {
+                if matches!(error, Error::StopUnconfirmed(_)) {
+                    return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+                }
                 self.publish_terminal_error(&error);
                 return Err(error);
             }
@@ -1394,6 +1547,44 @@ impl CoreManager {
             );
         }
         Ok(())
+    }
+}
+
+fn quarantine_error(ctrl: &Ctrl) -> Option<Error> {
+    let first = ctrl.quarantine.first()?;
+    let reason = if ctrl.quarantine.len() == 1 {
+        first.reason.clone()
+    } else {
+        let epochs = ctrl
+            .quarantine
+            .iter()
+            .map(|entry| entry.epoch.to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("{}; additional uncertain epochs: {epochs}", first.reason)
+    };
+    Some(Error::ManagerQuarantined {
+        epoch: first.epoch,
+        reason,
+    })
+}
+
+fn record_quarantine(ctrl: &mut Ctrl, epoch: u64, reason: String) {
+    if let Some(existing) = ctrl
+        .quarantine
+        .iter_mut()
+        .find(|quarantine| quarantine.epoch == epoch)
+    {
+        existing.reason = reason;
+    } else {
+        ctrl.quarantine.push(QuarantinedEpoch { epoch, reason });
+    }
+}
+
+fn reject_quarantine(ctrl: &Ctrl) -> Result<(), Error> {
+    match quarantine_error(ctrl) {
+        Some(error) => Err(error),
+        None => Ok(()),
     }
 }
 
@@ -1431,20 +1622,50 @@ fn instance_core_state(epoch: u64, state: &InstanceState) -> CoreState {
 }
 
 fn spawn_forwarder(
-    inner: Arc<Inner>,
+    inner: &Arc<Inner>,
     mut state_rx: watch::Receiver<InstanceState>,
     epoch: u64,
 ) -> tokio::task::JoinHandle<()> {
+    let inner = Arc::downgrade(inner);
     tokio::spawn(async move {
         while state_rx.changed().await.is_ok() {
             let state = state_rx.borrow_and_update().clone();
             let terminal = state.is_terminal();
+            let Some(inner) = inner.upgrade() else {
+                break;
+            };
             inner.publish_epoch_state(epoch, instance_core_state(epoch, &state));
             if terminal {
                 break;
             }
         }
     })
+}
+
+fn with_durability_warning(outcome: ApplyOutcome, warning: Option<String>) -> ApplyOutcome {
+    match warning {
+        Some(warning) => ApplyOutcome::DurabilityUncertain {
+            outcome: Box::new(outcome),
+            warning,
+        },
+        None => outcome,
+    }
+}
+
+fn with_durability_result(
+    result: Result<ApplyOutcome, Error>,
+    warning: Option<String>,
+) -> Result<ApplyOutcome, Error> {
+    match (result, warning) {
+        (Ok(outcome), warning) => Ok(with_durability_warning(outcome, warning)),
+        (Err(Error::StopUnconfirmed(message)), Some(warning)) => Err(Error::StopUnconfirmed(
+            format!("{message}; runtime durability warning: {warning}"),
+        )),
+        (Err(error), Some(warning)) => Err(Error::ApplyFailed(format!(
+            "{error}; runtime durability warning: {warning}"
+        ))),
+        (Err(error), None) => Err(error),
+    }
 }
 
 #[cfg(test)]

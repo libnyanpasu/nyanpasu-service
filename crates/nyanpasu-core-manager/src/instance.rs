@@ -206,7 +206,11 @@ impl Instance {
     /// record is the only authority used for the fallback kill.
     pub async fn stop_and_confirm_dead(self, timeout: std::time::Duration) -> Result<(), Error> {
         if self.state_rx.borrow().is_terminal() {
-            self.reap_epoch_record_if_present().await?;
+            self.reap_epoch_record_if_present().await.map_err(|error| {
+                Error::StopUnconfirmed(format!(
+                    "terminal instance identity verification failed: {error}"
+                ))
+            })?;
             return Ok(());
         }
         self.shared.user_stop.store(true, Ordering::SeqCst);

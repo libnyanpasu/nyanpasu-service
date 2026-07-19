@@ -29,6 +29,25 @@ async fn managed_controller_template_without_epoch_is_rejected_at_construction()
     assert!(CoreManager::new(options).await.is_err());
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn managed_unix_controller_template_cannot_escape_runtime_directory() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime = dir.join("runtime");
+    let escaped = dir.join("escaped-{epoch}.sock").to_string();
+    let result = CoreManager::new(ManagerOptions {
+        runtime_dir: Some(runtime.clone()),
+        controller_mode: ControllerMode::Managed {
+            derived_dir: runtime,
+            controller_template: Some(escaped),
+        },
+        ..ManagerOptions::default()
+    })
+    .await;
+    let error = result.err().expect("escaped template was accepted");
+    assert!(error.to_string().contains("escapes runtime directory"));
+}
+
 async fn wait_core_state(
     rx: &mut tokio::sync::watch::Receiver<nyanpasu_core_manager::CoreStatus>,
     pred: impl Fn(&CoreState) -> bool,
@@ -333,7 +352,7 @@ async fn source_mutation_after_snapshot_does_not_affect_respawn() {
     let config = common::write_config(
         &dir,
         &format!(
-            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 500\n  crash-times: 1\n  state-file: {state_file}\n"
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 1500\n  crash-times: 1\n  state-file: {state_file}\n"
         ),
     );
     let manager = manager(&dir).await;
@@ -383,6 +402,11 @@ async fn manager_sweeps_stale_artifacts_and_advances_epoch() {
     std::fs::create_dir_all(&runtime_dir).unwrap();
     std::fs::write(runtime_dir.join("config-7.yaml"), "stale: true\n").unwrap();
     std::fs::write(runtime_dir.join("config-7.yaml.backup-3"), "stale backup\n").unwrap();
+    std::fs::write(
+        runtime_dir.join("core-9.pid.tmp-123-0"),
+        "stale pid staging\n",
+    )
+    .unwrap();
 
     let manager = CoreManager::new(ManagerOptions {
         runtime_dir: Some(runtime_dir.clone()),
@@ -392,6 +416,7 @@ async fn manager_sweeps_stale_artifacts_and_advances_epoch() {
     .expect("sweeping manager");
     assert!(!runtime_dir.join("config-7.yaml").exists());
     assert!(!runtime_dir.join("config-7.yaml.backup-3").exists());
+    assert!(!runtime_dir.join("core-9.pid.tmp-123-0").exists());
 
     manager
         .start(common::mihomo_spec(&dir, config))
@@ -399,9 +424,101 @@ async fn manager_sweeps_stale_artifacts_and_advances_epoch() {
         .expect("start after sweep");
     assert!(matches!(
         manager.status().state,
-        CoreState::Running { epoch: 8, .. }
+        CoreState::Running { epoch: 10, .. }
     ));
     manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn dropping_live_manager_releases_runtime_ownership() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let options = || ManagerOptions {
+        runtime_dir: Some(runtime_dir.clone()),
+        ..ManagerOptions::default()
+    };
+    let manager = CoreManager::new(options()).await.expect("first manager");
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start live core");
+    drop(manager);
+
+    let replacement = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match CoreManager::new(options()).await {
+                Ok(manager) => break manager,
+                Err(Error::RuntimeDirectoryOwned(_)) => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("unexpected construction error: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("dropping the manager retained its runtime lock");
+    replacement.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn initial_start_stop_uncertainty_quarantines_until_recovery() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let config = common::write_config(
+        &dir,
+        &format!("external-controller: 127.0.0.1:{port}\nx-fake-core:\n  never-ready: true\n"),
+    );
+    let manager = std::sync::Arc::new(
+        CoreManager::new(ManagerOptions {
+            runtime_dir: Some(runtime_dir.clone()),
+            stop_timeout: Duration::from_secs(1),
+            ..ManagerOptions::default()
+        })
+        .await
+        .unwrap(),
+    );
+    let start = {
+        let manager = manager.clone();
+        let mut spec = common::mihomo_spec(&dir, config.clone());
+        spec.options.startup_timeout = Duration::from_millis(300);
+        tokio::spawn(async move { manager.start(spec).await })
+    };
+    let pid_path = runtime_dir.join("core-1.pid");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !pid_path.exists() {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("initial pid record never appeared");
+    let record = std::fs::read_to_string(&pid_path).unwrap();
+    std::fs::write(&pid_path, "corrupt record\n").unwrap();
+
+    assert!(matches!(
+        start.await.unwrap(),
+        Err(Error::StopUnconfirmed(_))
+    ));
+    let start_error = manager
+        .start(common::mihomo_spec(&dir, config.clone()))
+        .await
+        .expect_err("quarantine must reject another initial start");
+    assert!(matches!(
+        start_error,
+        Error::ManagerQuarantined { epoch: 1, .. }
+    ));
+
+    std::fs::write(&pid_path, record).unwrap();
+    common::wait_port_refused(port).await;
+    manager.recover_quarantine().await.unwrap();
+    let healthy = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    manager
+        .start(common::mihomo_spec(&dir, healthy))
+        .await
+        .expect("start after initial quarantine recovery");
+    manager.shutdown().await.unwrap();
 }
 
 #[tokio::test]

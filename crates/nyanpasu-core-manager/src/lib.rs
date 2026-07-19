@@ -19,7 +19,10 @@ pub use error::Error;
 pub use instance::Instance;
 pub use kind::CoreKind;
 pub use manager::{ApplyOutcome, CoreManager, DegradeReason, SwitchOutcome};
-pub use runtime_store::{RuntimeConfigBackup, RuntimeConfigStore, StagedRuntimeConfig};
+pub use runtime_store::{
+    RuntimeCommitDurability, RuntimeConfigBackup, RuntimeConfigCommit, RuntimeConfigStore,
+    StagedRuntimeConfig,
+};
 pub use spec::{
     ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, ManagerOptions, ResolvedController,
 };

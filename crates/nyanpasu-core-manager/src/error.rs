@@ -29,6 +29,8 @@ pub enum Error {
     RuntimeDirectoryOwned(Utf8PathBuf),
     #[error("core process death could not be confirmed: {0}")]
     StopUnconfirmed(String),
+    #[error("manager is quarantined by uncertain epoch {epoch}: {reason}")]
+    ManagerQuarantined { epoch: u64, reason: String },
     #[error("config revision conflict: expected {expected}, actual {actual:?}")]
     RevisionConflict {
         expected: RevisionId,

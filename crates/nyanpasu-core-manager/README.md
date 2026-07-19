@@ -233,6 +233,9 @@ match manager.apply_config(next_spec, expected).await? {
     ApplyOutcome::RolledBack { revision, failed_apply } => {
         /* old revision restored; retain failed_apply for diagnostics */
     }
+    ApplyOutcome::DurabilityUncertain { outcome, warning } => {
+        /* `outcome` was reconciled; persist/report the durability warning */
+    }
 }
 ```
 
@@ -277,12 +280,22 @@ paths must remain inside that directory. A process-lifetime `.manager.lock`
 prevents a second manager from sweeping or allocating epochs in an owned
 directory.
 
+If atomic replacement succeeds but parent-directory synchronization fails,
+reconciliation continues from the installed desired file and `apply_config`
+returns `ApplyOutcome::DurabilityUncertain` around the actual apply outcome.
+
 Each pid record includes its epoch, executable identity, process start token,
 and runtime path. `CoreManager::new` sweeps before accepting work: it validates
 every record, kills only a fully matching live process, confirms death, removes
 that epoch's yaml/pid/socket/backup/temp artifacts, and seeds the next epoch
 above the maximum artifact epoch observed. If identity cannot be proven, the
 manager fails construction instead of killing an uncertain process.
+
+If an in-process stop cannot prove death, the epoch is quarantined. Start,
+switch, restart, and config application return `Error::ManagerQuarantined`
+until `recover_quarantine()` validates the epoch record, confirms death, and
+cleans the retained artifacts. A missing or unverifiable record never clears
+the quarantine.
 
 Orphan termination is identity-bound to one open process handle on Windows and
 to a pidfd on supported Linux kernels. Older Linux kernels and other Unix
