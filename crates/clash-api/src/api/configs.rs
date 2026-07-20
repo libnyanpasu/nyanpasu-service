@@ -26,7 +26,9 @@ pub enum FindProcessMode {
 pub enum TunStack {
     #[serde(rename = "gVisor")]
     Gvisor,
+    #[serde(rename = "system")]
     System,
+    #[serde(rename = "mixed")]
     Mixed,
     #[serde(other)]
     Unknown,
@@ -219,6 +221,10 @@ pub struct RuntimeConfig {
     pub tuic_server: RuntimeTuicServer,
     pub ss_config: String,
     pub vmess_config: String,
+    #[serde(default)]
+    pub tcptun_config: Option<String>,
+    #[serde(default)]
+    pub udptun_config: Option<String>,
     pub authentication: Option<Vec<String>>,
     #[specta(type = Option<Vec<String>>)]
     pub skip_auth_prefixes: Option<Vec<IpNet>>,
@@ -281,8 +287,10 @@ pub struct UpdateConfigOptions {
 }
 
 /// Body accepted by `PATCH /configs`. Every outer field maps to a Go pointer.
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
-#[serde(rename_all = "kebab-case")]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct ConfigPatch {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<i64>,
@@ -335,8 +343,10 @@ pub struct ConfigPatch {
     pub interface_name: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
-#[serde(rename_all = "kebab-case")]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct TunPatch {
     pub enable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -432,8 +442,10 @@ pub struct TunPatch {
     pub sendmsgx: Option<bool>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, specta::Type)]
-#[serde(rename_all = "kebab-case")]
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type,
+)]
+#[serde(default, rename_all = "kebab-case")]
 pub struct TuicServerPatch {
     pub enable: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -521,5 +533,26 @@ mod tests {
             serde_json::to_value(patch).unwrap(),
             serde_json::json!({"tun": {"enable": false}})
         );
+    }
+
+    #[test]
+    fn runtime_config_without_optional_tunnel_configs_is_backward_compatible() {
+        let value = serde_json::json!({
+            "port": 0, "socks-port": 0, "redir-port": 0, "tproxy-port": 0,
+            "mixed-port": 0, "tun": {}, "tuic-server": {}, "ss-config": "",
+            "vmess-config": "", "authentication": null, "skip-auth-prefixes": null,
+            "lan-allowed-ips": null, "lan-disallowed-ips": null, "allow-lan": false,
+            "bind-address": "*", "inbound-tfo": false, "inbound-mptcp": false,
+            "mode": "rule", "unified-delay": false, "log-level": "info", "ipv6": false,
+            "interface-name": "", "routing-mark": 0, "geox-url": {},
+            "geo-auto-update": false, "geo-update-interval": 0, "geodata-mode": false,
+            "geodata-loader": "", "geosite-matcher": "", "tcp-concurrent": false,
+            "find-process-mode": "off", "sniffing": false, "global-ua": "",
+            "etag-support": false, "keep-alive-idle": 0, "keep-alive-interval": 0,
+            "disable-keep-alive": false
+        });
+        let config: RuntimeConfig = serde_json::from_value(value).unwrap();
+        assert_eq!(config.tcptun_config, None);
+        assert_eq!(config.udptun_config, None);
     }
 }

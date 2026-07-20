@@ -4,11 +4,24 @@ use std::time::Duration;
 
 use crate::{error::Error, spec::ResolvedController};
 
-/// Builds a probe/control client: 1s per-request timeout so one hung request
-/// can never eat the whole startup deadline; retrying is the caller's loop.
-pub(crate) fn build_client(controller: &ResolvedController) -> Result<clash_api::Client, Error> {
+/// Builds a probe client with the fixed one-second health timeout.
+pub(crate) fn build_health_client(
+    controller: &ResolvedController,
+) -> Result<clash_api::Client, Error> {
     let mut builder = clash_api::Client::builder(controller.host.clone())
         .configure_reqwest(|b| b.timeout(Duration::from_secs(1)));
+    if let Some(secret) = &controller.secret {
+        builder = builder.secret(secret.as_str());
+    }
+    Ok(builder.build()?)
+}
+
+pub(crate) fn build_control_client(
+    controller: &ResolvedController,
+    timeout: Duration,
+) -> Result<clash_api::Client, Error> {
+    let mut builder = clash_api::Client::builder(controller.host.clone())
+        .configure_reqwest(|builder| builder.timeout(timeout));
     if let Some(secret) = &controller.secret {
         builder = builder.secret(secret.as_str());
     }
@@ -22,7 +35,7 @@ pub(crate) struct HealthCheck {
 impl HealthCheck {
     pub(crate) fn new(controller: &ResolvedController) -> Result<Self, Error> {
         Ok(Self {
-            client: build_client(controller)?,
+            client: build_health_client(controller)?,
         })
     }
 

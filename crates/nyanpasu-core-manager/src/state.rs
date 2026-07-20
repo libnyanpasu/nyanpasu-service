@@ -76,6 +76,42 @@ pub struct SpecSummary {
     pub config_path: Utf8PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigRevision {
+    pub epoch: u64,
+    pub generation: u64,
+    pub source_hash: String,
+    pub effective_hash: String,
+    pub runtime_path: Utf8PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevisionId {
+    pub epoch: u64,
+    pub generation: u64,
+    pub effective_hash: String,
+}
+
+impl ConfigRevision {
+    pub fn id(&self) -> RevisionId {
+        RevisionId {
+            epoch: self.epoch,
+            generation: self.generation,
+            effective_hash: self.effective_hash.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for RevisionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "epoch {} generation {} ({})",
+            self.epoch, self.generation, self.effective_hash
+        )
+    }
+}
+
 /// Snapshot published on the manager's watch channel.
 #[derive(Debug, Clone)]
 pub struct CoreStatus {
@@ -83,8 +119,9 @@ pub struct CoreStatus {
     /// Unix milliseconds of the last state transition (feeds IPC `state_changed_at`).
     pub changed_at: i64,
     pub spec: Option<SpecSummary>,
-    /// The managed controller endpoint, when `ControllerMode::Managed` is active.
+    /// The controller endpoint owned by the active epoch in either mode.
     pub controller: Option<clash_api::Host>,
+    pub revision: Option<ConfigRevision>,
 }
 
 impl CoreStatus {
@@ -94,6 +131,7 @@ impl CoreStatus {
             changed_at: now_ms(),
             spec: None,
             controller: None,
+            revision: None,
         }
     }
 }

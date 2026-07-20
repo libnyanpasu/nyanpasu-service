@@ -73,10 +73,29 @@ pub enum ControllerMode {
     },
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ManagerOptions {
     pub controller_mode: ControllerMode,
+    /// Manager-owned runtime artifact directory. Required for Passthrough;
+    /// Managed mode falls back to `derived_dir` for compatibility.
+    pub runtime_dir: Option<Utf8PathBuf>,
+    pub control_timeout: Duration,
+    pub reconcile_timeout: Duration,
+    pub stop_timeout: Duration,
     pub cancel_token: CancellationToken,
+}
+
+impl Default for ManagerOptions {
+    fn default() -> Self {
+        Self {
+            controller_mode: ControllerMode::default(),
+            runtime_dir: None,
+            control_timeout: Duration::from_secs(10),
+            reconcile_timeout: Duration::from_secs(30),
+            stop_timeout: Duration::from_secs(10),
+            cancel_token: CancellationToken::new(),
+        }
+    }
 }
 
 #[cfg(test)]
