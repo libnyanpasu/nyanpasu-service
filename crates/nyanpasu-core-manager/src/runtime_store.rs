@@ -851,16 +851,20 @@ mod tests {
             let new = new.to_vec();
             readers.push(tokio::spawn(async move {
                 for _ in 0..500 {
+                    #[cfg(windows)]
                     let observed = loop {
                         match tokio::fs::read(&path).await {
                             Ok(observed) => break observed,
-                            #[cfg(windows)]
                             Err(error) if matches!(error.raw_os_error(), Some(2 | 5 | 32 | 33)) => {
                                 tokio::task::yield_now().await;
                             }
                             Err(error) => panic!("runtime read failed: {error}"),
                         }
                     };
+                    #[cfg(not(windows))]
+                    let observed = tokio::fs::read(&path)
+                        .await
+                        .unwrap_or_else(|error| panic!("runtime read failed: {error}"));
                     assert!(observed == old || observed == new, "partial YAML observed");
                     tokio::task::yield_now().await;
                 }
