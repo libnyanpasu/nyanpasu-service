@@ -6,7 +6,7 @@ use camino::Utf8PathBuf;
 use nyanpasu_utils::process::{Backoff, RestartPolicy};
 use tokio_util::sync::CancellationToken;
 
-use crate::kind::CoreKind;
+use crate::{health::HealthPolicy, kind::CoreKind};
 
 #[derive(Debug, Clone)]
 pub struct CoreSpec {
@@ -30,9 +30,9 @@ pub struct InstanceSpec {
 
 #[derive(Debug, Clone)]
 pub struct InstanceOptions {
-    /// Total limit for the initial start (spawn → version probe success).
+    /// Total limit for the initial start (spawn → readiness threshold).
     pub startup_timeout: Duration,
-    pub probe_interval: Duration,
+    pub health: HealthPolicy,
     pub restart_policy: RestartPolicy,
     pub backoff: Backoff,
 }
@@ -41,7 +41,7 @@ impl Default for InstanceOptions {
     fn default() -> Self {
         Self {
             startup_timeout: Duration::from_secs(30),
-            probe_interval: Duration::from_millis(250),
+            health: HealthPolicy::default(),
             restart_policy: RestartPolicy::OnFailure { max_restarts: 5 },
             backoff: Backoff::exponential(Duration::from_secs(1), Duration::from_secs(30))
                 .with_jitter(),
@@ -106,7 +106,11 @@ mod tests {
     fn instance_options_defaults_match_spec() {
         let o = InstanceOptions::default();
         assert_eq!(o.startup_timeout, Duration::from_secs(30));
-        assert_eq!(o.probe_interval, Duration::from_millis(250));
+        assert_eq!(o.health.interval(), Duration::from_millis(250));
+        assert_eq!(o.health.timeout(), Duration::from_secs(1));
+        assert_eq!(o.health.failure_threshold().get(), 3);
+        assert_eq!(o.health.success_threshold().get(), 1);
+        assert_eq!(o.health.start_period(), Duration::ZERO);
         assert_eq!(
             o.restart_policy,
             RestartPolicy::OnFailure { max_restarts: 5 }

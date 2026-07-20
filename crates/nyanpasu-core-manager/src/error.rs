@@ -23,6 +23,8 @@ pub enum Error {
     InvalidConfig(String),
     #[error("invalid manager options: {0}")]
     InvalidManagerOptions(String),
+    #[error("invalid health policy: {0}")]
+    InvalidHealthPolicy(String),
     #[error("unsafe runtime artifact: {0}")]
     UnsafeRuntimeArtifact(Utf8PathBuf),
     #[error("runtime directory is already owned by another manager: {0}")]

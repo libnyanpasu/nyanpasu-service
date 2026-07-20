@@ -4,9 +4,54 @@ use camino::Utf8PathBuf;
 
 use crate::kind::CoreKind;
 
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthState {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct HealthStatus {
+    pub state: HealthState,
+    /// Unix milliseconds of the last health-state transition.
+    pub changed_at: i64,
+    pub consecutive_failures: u32,
+    pub last_error: Option<String>,
+    pub last_success_at: Option<i64>,
+}
+
+impl std::fmt::Debug for HealthStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HealthStatus")
+            .field("state", &self.state)
+            .field("changed_at", &self.changed_at)
+            .field("consecutive_failures", &self.consecutive_failures)
+            .field(
+                "last_error",
+                &self.last_error.as_ref().map(|_| "<redacted>"),
+            )
+            .field("last_success_at", &self.last_success_at)
+            .finish()
+    }
+}
+
+impl HealthStatus {
+    pub(crate) fn starting() -> Self {
+        Self {
+            state: HealthState::Starting,
+            changed_at: now_ms(),
+            consecutive_failures: 0,
+            last_error: None,
+            last_success_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstanceState {
-    /// Spawned; the version health probe has not passed yet.
+    /// Spawned; the readiness success threshold has not been reached yet.
     Starting,
     Running {
         pid: u32,
@@ -22,6 +67,21 @@ pub enum InstanceState {
 impl InstanceState {
     pub fn is_terminal(&self) -> bool {
         matches!(self, Self::Stopped(_))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstanceStatus {
+    pub state: InstanceState,
+    pub health: Option<HealthStatus>,
+}
+
+impl InstanceStatus {
+    pub(crate) fn initial() -> Self {
+        Self {
+            state: InstanceState::Starting,
+            health: Some(HealthStatus::starting()),
+        }
     }
 }
 
@@ -118,6 +178,7 @@ pub struct CoreStatus {
     pub state: CoreState,
     /// Unix milliseconds of the last state transition (feeds IPC `state_changed_at`).
     pub changed_at: i64,
+    pub health: Option<HealthStatus>,
     pub spec: Option<SpecSummary>,
     /// The controller endpoint owned by the active epoch in either mode.
     pub controller: Option<clash_api::Host>,
@@ -129,6 +190,7 @@ impl CoreStatus {
         Self {
             state: CoreState::Stopped { reason: None },
             changed_at: now_ms(),
+            health: None,
             spec: None,
             controller: None,
             revision: None,

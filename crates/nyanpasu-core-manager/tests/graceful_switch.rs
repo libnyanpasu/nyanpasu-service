@@ -3,8 +3,8 @@ mod common;
 use std::time::Duration;
 
 use nyanpasu_core_manager::{
-    ControllerMode, CoreKind, CoreState, DegradeReason, Error, ManagerOptions, StopReason,
-    manager::CoreManager,
+    ControllerMode, ControllerVersionProbe, CoreKind, CoreState, DegradeReason, Error, HealthProbe,
+    ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 fn unique_template() -> Option<String> {
@@ -479,7 +479,7 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
     let config_b = dir.join("config-b.yaml");
     std::fs::write(
         &config_b,
-        format!("mixed-port: {mixed}\nx-fake-core:\n  ready-delay-ms: 750\n"),
+        format!("mixed-port: {mixed}\nx-fake-core:\n  ready-delay-ms: 5000\n"),
     )
     .unwrap();
     let manager = Arc::new(managed_manager(derived_dir.clone()).await);
@@ -493,10 +493,11 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
 
     let switching = {
         let manager = manager.clone();
-        let spec_b = common::mihomo_spec(&dir, config_b);
+        let mut spec_b = common::mihomo_spec(&dir, config_b);
+        spec_b.options.startup_timeout = Duration::from_secs(15);
         tokio::spawn(async move { manager.switch(spec_b).await })
     };
-    let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(5), async {
+    let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let old = nyanpasu_utils::process::read_epoch_pid_file(
                 derived_dir.join("core-1.pid").as_std_path(),
@@ -536,7 +537,7 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
     let config_b = dir.join("config-b.yaml");
     std::fs::write(
         &config_b,
-        "mixed-port: 0\nx-fake-core:\n  ready-delay-ms: 700\n",
+        "mixed-port: 0\nx-fake-core:\n  ready-delay-ms: 5000\n",
     )
     .unwrap();
     let manager = Arc::new(
@@ -556,14 +557,15 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
         .await
         .unwrap();
 
-    let spec_b = common::mihomo_spec(&dir, config_b);
+    let mut spec_b = common::mihomo_spec(&dir, config_b);
+    spec_b.options.startup_timeout = Duration::from_secs(15);
     let switching = {
         let manager = manager.clone();
         tokio::spawn(async move { manager.switch(spec_b).await })
     };
     let first_pid = derived_dir.join("core-1.pid");
     let second_pid = derived_dir.join("core-2.pid");
-    tokio::time::timeout(Duration::from_secs(5), async {
+    tokio::time::timeout(Duration::from_secs(15), async {
         while !second_pid.exists() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -802,7 +804,32 @@ async fn rejected_patch_falls_back_to_a_hard_restart() {
     )
     .unwrap();
 
-    let manager = managed_manager(dir.join("derived")).await;
+    let attempts = Arc::new(Mutex::new(Vec::<(u64, u32)>::new()));
+    let readiness = ProbeHandle::from_fn("graceful-recorded-readiness", {
+        let attempts = attempts.clone();
+        move |context| {
+            attempts.lock().push((context.epoch, context.pid));
+            async move {
+                match ControllerVersionProbe::new(context.controller.as_ref()) {
+                    Ok(probe) => probe.check(context).await,
+                    Err(error) => ProbeResult::Unhealthy {
+                        detail: Some(error.to_string()),
+                    },
+                }
+            }
+        }
+    });
+    let manager = CoreManager::builder(ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir: dir.join("derived"),
+            controller_template: unique_template(),
+        },
+        ..ManagerOptions::default()
+    })
+    .readiness_probe(readiness)
+    .build()
+    .await
+    .unwrap();
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -822,5 +849,26 @@ async fn rejected_patch_falls_back_to_a_hard_restart() {
     tokio::net::TcpStream::connect(("127.0.0.1", mixed))
         .await
         .expect("fallback core serves the mixed port");
+    let (initial_pids, candidate_pids): (
+        std::collections::HashSet<_>,
+        std::collections::HashSet<_>,
+    ) = {
+        let attempts = attempts.lock();
+        (
+            attempts
+                .iter()
+                .filter_map(|(epoch, pid)| (*epoch == 1).then_some(*pid))
+                .collect(),
+            attempts
+                .iter()
+                .filter_map(|(epoch, pid)| (*epoch == 2).then_some(*pid))
+                .collect(),
+        )
+    };
+    assert!(!initial_pids.is_empty(), "initial start missed probe plan");
+    assert!(
+        candidate_pids.len() >= 2,
+        "graceful bootstrap and fallback did not both inherit probe plan"
+    );
     manager.shutdown().await.expect("shutdown");
 }
