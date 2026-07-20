@@ -42,6 +42,7 @@ struct Behavior {
     patch_no_effect: bool,
     reject_put: bool,
     check_delay_ms: u64,
+    check_started_file: Option<String>,
     check_fail: Option<String>,
 }
 
@@ -103,6 +104,7 @@ fn parse(config: &str) -> Behavior {
         patch_no_effect: b(&x, "patch-no-effect"),
         reject_put: b(&x, "reject-put"),
         check_delay_ms: u(&x, "check-delay-ms"),
+        check_started_file: s(&x, "check-started-file"),
         check_fail: s(&x, "check-fail"),
     }
 }
@@ -126,6 +128,9 @@ async fn main() {
     let behavior = parse(&config);
 
     if check_mode {
+        if let Some(path) = &behavior.check_started_file {
+            std::fs::write(path, "started").expect("write check-started marker");
+        }
         std::thread::sleep(Duration::from_millis(behavior.check_delay_ms));
         match &behavior.check_fail {
             Some(msg) => {

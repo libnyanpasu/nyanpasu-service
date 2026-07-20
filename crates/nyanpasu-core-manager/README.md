@@ -17,9 +17,11 @@ Key concepts:
 - **Manager-owned snapshots** — both controller modes run from a private,
   stable `config-{epoch}.yaml`, never directly from the caller's mutable file.
   Supervisor respawns therefore reload the committed desired revision.
-- **Health-probed startup** — a start is only confirmed once
-  `GET /version` on the core's external controller answers. `startup_timeout`
-  is a *total* budget covering spawn, crash retries, and probing.
+- **Health-probed startup and runtime status** — a start is only confirmed once
+  its readiness probe passes. The default is `GET /version`; custom readiness
+  and optional runtime liveness probes are installed through builders.
+  `startup_timeout` is a *total* budget covering spawn, crash retries, grace,
+  and threshold evaluation.
 - **Supervision** — crash → backoff → respawn → re-probe, bounded by
   `RestartPolicy`/`Backoff` from `nyanpasu-utils`. Dropping an `Instance`
   without `stop()` kills the whole process tree.
@@ -38,12 +40,17 @@ sets `SAFE_PATHS` to the working dir plus the config dir.
 ## Instance state machine
 
 Every instance starts in `Starting` and ends in exactly one `Stopped` state.
-`InstanceState` is defined in [`src/state.rs`](src/state.rs).
+`InstanceStatus` publishes that lifecycle together with an orthogonal health
+dimension in one watch snapshot, so a PID can never be paired with health from
+another process run. `InstanceState` and `HealthState` are defined in
+[`src/state.rs`](src/state.rs). `Instance::state()` therefore yields
+`watch::Receiver<InstanceStatus>`, not the bare `InstanceState` it returned
+before.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Starting: Instance::spawn
-    Starting --> Running: GET /version OK
+    [*] --> Starting: Instance:\:spawn
+    Starting --> Running: readiness success threshold
     Starting --> Stopped: startup timeout / spawn failed / budget exhausted
     Running --> Restarting: process exited, restart budget left
     Restarting --> Running: respawn probe OK
@@ -54,6 +61,21 @@ stateDiagram-v2
     Stopping --> Stopped: process tree dead
     Stopped --> [*]
 ```
+
+While the lifecycle is `Starting` or `Restarting`, health is `Starting`.
+Acknowledged `Running` begins as `Healthy`. If liveness is configured,
+consecutive failures can change health to `Unhealthy` while lifecycle remains
+`Running`; consecutive successes recover it to `Healthy`. A lone failure does
+not flap the state. `Stopping` and `Stopped` carry no health value.
+
+Readiness acknowledgement occurs exactly once for each child-process run.
+Runtime recovery never acknowledges again, so health flapping cannot reset the
+supervisor restart budget. `HealthStatus.changed_at` records only health
+transitions; `CoreStatus.changed_at` remains the lifecycle transition time.
+
+`HealthStatus` also carries `consecutive_failures`, `last_success_at`, and
+`last_error`. Its `Debug` renders `last_error` as `<redacted>`; read the field
+directly when the text is needed.
 
 `Stopped` carries a `StopReason`:
 
@@ -102,7 +124,7 @@ sequenceDiagram
     M->>I: spawn(spec, N, controller)
     I->>S: spawn(-m -d dir -f cfg, SAFE_PATHS=…)
     S->>C: exec
-    loop every probe_interval, within startup_timeout
+    loop immediate first attempt, then health.interval, all within startup_timeout
         I->>C: GET /version
     end
     C-->>I: 200 OK
@@ -110,6 +132,30 @@ sequenceDiagram
     M-->>App: Ok(())
     Note over M: forwarder mirrors instance transitions<br/>into the CoreStatus watch channel
 ```
+
+### Runtime liveness (when configured)
+
+```mermaid
+sequenceDiagram
+    participant D as Probe driver
+    participant P as Custom liveness probe
+    participant T as Health tracker
+    participant W as watch#lt;InstanceStatus#gt;
+
+    loop completion + health.interval
+        D->>P: check(epoch, run_id/PID, Liveness)
+        P-->>D: Healthy / Unhealthy
+        D->>T: serialized observation
+        T-->>W: Running + health transition/counters
+    end
+    Note over D,W: Reconcile checks share this queue,<br/>at most one probe is in flight per instance
+    Note over T,W: Sustained Unhealthy is observe-only,<br/>the process is not restarted automatically
+```
+
+If a future release adds a restart reaction, it must be manager-owned and pass
+through the existing stop confirmation, quarantine, and proof-of-death paths.
+It must not call supervisor readiness acknowledgement on runtime recovery or
+kill/restart an epoch directly from the probe driver.
 
 ### Graceful switch
 
@@ -136,7 +182,7 @@ sequenceDiagram
     alt patch verified
         M-->>App: SwitchOutcome::Graceful
     else patch failed or uncertain
-        M->>B: stop_and_confirm_dead(); restart from committed full B (same epoch)
+        M->>B: stop_and_confirm_dead(), then restart from committed full B (same epoch)
         M-->>App: SwitchOutcome::Hard { PatchFailed }
     end
 ```
@@ -193,6 +239,64 @@ let manager = CoreManager::new(ManagerOptions {
 manager.start(spec).await?; // resolves once the version probe passes
 manager.stop().await?;
 ```
+
+### Custom readiness and liveness
+
+```rust
+use std::{num::NonZeroU32, time::Duration};
+use nyanpasu_core_manager::{
+    CoreManager, HealthPolicy, ProbeHandle, ProbeResult,
+};
+
+spec.options.health = HealthPolicy::new(
+    Duration::from_millis(250),
+    Duration::from_secs(1),
+    NonZeroU32::new(3).unwrap(), // failures before Unhealthy
+    NonZeroU32::new(2).unwrap(), // successes before Healthy/ready
+    Duration::from_secs(2),      // initial failure grace per process run
+)?;
+
+let tcp_liveness = ProbeHandle::from_fn("proxy-tcp", |context| async move {
+    match tokio::net::TcpStream::connect(("127.0.0.1", 7890)).await {
+        Ok(_) => ProbeResult::Healthy,
+        Err(error) => ProbeResult::Unhealthy { detail: Some(error.to_string()) },
+    }
+});
+
+let manager = CoreManager::builder(manager_options)
+    // Omit readiness_probe() to retain ControllerVersionProbe.
+    .liveness_probe(tcp_liveness)
+    .build()
+    .await?;
+```
+
+`.liveness_with_readiness_probe()` reuses one probe for both phases. Prefer
+separate probes during graceful switching: the bootstrap intentionally zeroes
+proxy listener ports, so a proxy-port TCP check is unsuitable for readiness
+even though it is useful after `Running`.
+
+Each attempt receives a `ProbeContext` carrying `epoch`, `pid`, `phase`, the
+resolved `controller`, and a `cancel` token. It deliberately does not implement
+`Debug`, because the controller may hold an authentication secret.
+
+| `ProbePhase` | When it runs | Probe used |
+| --- | --- | --- |
+| `Readiness` | until the start is acknowledged | readiness |
+| `Liveness` | after `Running`, only when configured | liveness |
+| `Reconcile` | on demand after PATCH/reload and switch verification | liveness if configured, else readiness |
+
+`Instance::probe_now()` accepts `Reconcile` only; the periodic phases are driven
+by the instance itself, and requesting one directly returns `Unhealthy`.
+
+Implementing `HealthProbe` instead of using `ProbeHandle::from_fn` carries one
+contract: the returned future must be cancellation-safe, so dropping it must
+not leave a detached task behind. A probe that shells out must pass arguments
+to `tokio::process::Command` directly rather than concatenate a shell command,
+and must set `kill_on_drop(true)` so the child dies with the future.
+
+`CoreManager` installs both probes into every epoch it spawns. To drive a bare
+instance instead, `Instance::builder(spec, epoch, controller, parent)` exposes
+the same three methods before `.spawn()`.
 
 ### Managed mode + graceful switch
 
@@ -256,14 +360,19 @@ runtime file is atomically restored and restarted.
 ### Watch status
 
 ```rust
-use nyanpasu_core_manager::CoreState;
+use nyanpasu_core_manager::{CoreState, HealthState};
 
 let mut rx = manager.subscribe();
 tokio::spawn(async move {
     while rx.changed().await.is_ok() {
         let status = rx.borrow().clone();
         match status.state {
-            CoreState::Running { epoch, pid } => { /* … */ }
+            CoreState::Running { epoch, pid } => {
+                // Observe-only: nothing restarts the core on Unhealthy.
+                if let Some(HealthState::Unhealthy) = status.health.map(|h| h.state) {
+                    /* surface a warning */
+                }
+            }
             CoreState::Stopped { .. } => break,
             _ => { /* Starting / Restarting / Switching / Stopping */ }
         }
@@ -271,10 +380,10 @@ tokio::spawn(async move {
 });
 ```
 
-`CoreStatus` also carries `changed_at` (unix ms of the last transition),
-`spec`, `controller`, and the active `ConfigRevision`. These fields are
-published together, so a new epoch is never paired with the previous epoch's
-controller.
+`CoreStatus` also carries `changed_at` (unix ms of the last lifecycle
+transition), `health`, `spec`, `controller`, and the active `ConfigRevision`.
+These fields are published together, so a new epoch is never paired with the
+previous epoch's controller or health.
 
 ## Runtime directory security and recovery
 
@@ -336,19 +445,32 @@ nyanpasu_core_manager::kind::check_config(spec).await?;
 
 ```rust
 use std::time::Duration;
-use nyanpasu_core_manager::InstanceOptions;
+use std::num::NonZeroU32;
+use nyanpasu_core_manager::{HealthPolicy, InstanceOptions};
 use nyanpasu_utils::process::{Backoff, RestartPolicy};
 
 let options = InstanceOptions {
     // Total budget for the initial start, crash retries included.
     startup_timeout: Duration::from_secs(30),
-    // GET /version cadence; each probe has a 1s request timeout.
-    probe_interval: Duration::from_millis(250),
+    health: HealthPolicy::new(
+        Duration::from_millis(250), // delay after each completed probe
+        Duration::from_secs(1),     // per-attempt timeout
+        NonZeroU32::new(3).unwrap(),// failures before Unhealthy
+        NonZeroU32::MIN,            // successes before Healthy/ready
+        Duration::ZERO,             // failure grace per child run
+    )?,
     restart_policy: RestartPolicy::OnFailure { max_restarts: 5 },
     backoff: Backoff::exponential(Duration::from_secs(1), Duration::from_secs(30))
         .with_jitter(),
 };
 ```
+
+The default readiness probe is `ControllerVersionProbe` with its fixed one
+second HTTP timeout. Runtime liveness is off unless configured, preserving the
+previous post-start behavior and overhead. `start_period` ignores initial
+failures only; its first success ends the grace immediately. Threshold streaks
+reset on the opposite result and on each new child-process run. None of these
+settings extend the one absolute initial `startup_timeout` deadline.
 
 ## Testing
 

@@ -1,10 +1,19 @@
 mod common;
 
-use std::time::Duration;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use nyanpasu_core_manager::{
-    ApplyOutcome, CoreManager, CoreState, Error, InstanceSpec, ManagerOptions, RevisionId,
+    ApplyOutcome, ControllerVersionProbe, CoreManager, CoreState, Error, HealthProbe, InstanceSpec,
+    ManagerOptions, ProbeHandle, ProbePhase, ProbeResult, RevisionId,
 };
+use parking_lot::Mutex;
 
 async fn manager(dir: &camino::Utf8Path, control_timeout: Duration) -> CoreManager {
     CoreManager::new(ManagerOptions {
@@ -36,6 +45,78 @@ fn spec(dir: &camino::Utf8Path, path: camino::Utf8PathBuf) -> InstanceSpec {
 
 fn passthrough_yaml(port: u16, extra: &str) -> String {
     format!("external-controller: 127.0.0.1:{port}\nmode: rule\n{extra}")
+}
+
+#[tokio::test]
+async fn custom_probe_plan_reaches_desired_replacement_and_rollback() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let first = write_named(
+        &dir,
+        "probe-old.yaml",
+        &passthrough_yaml(port, "x-setting: old\n"),
+    );
+    let desired = write_named(
+        &dir,
+        "probe-desired.yaml",
+        &passthrough_yaml(port, "x-setting: desired\n"),
+    );
+    let attempts = Arc::new(Mutex::new(Vec::<(u64, u32)>::new()));
+    let readiness = ProbeHandle::from_fn("recorded-readiness", {
+        let attempts = attempts.clone();
+        move |context| {
+            attempts.lock().push((context.epoch, context.pid));
+            async move {
+                if context.epoch == 2 {
+                    return ProbeResult::Unhealthy {
+                        detail: Some("reject desired epoch".into()),
+                    };
+                }
+                match ControllerVersionProbe::new(context.controller.as_ref()) {
+                    Ok(probe) => probe.check(context).await,
+                    Err(error) => ProbeResult::Unhealthy {
+                        detail: Some(error.to_string()),
+                    },
+                }
+            }
+        }
+    });
+    let manager = CoreManager::builder(ManagerOptions {
+        runtime_dir: Some(dir.join("runtime")),
+        ..ManagerOptions::default()
+    })
+    .readiness_probe(readiness)
+    .build()
+    .await
+    .unwrap();
+    manager.start(spec(&dir, first)).await.unwrap();
+    let mut desired_spec = spec(&dir, desired);
+    desired_spec.options.startup_timeout = Duration::from_secs(2);
+
+    let outcome = manager.apply_config(desired_spec, None).await.unwrap();
+    assert!(matches!(outcome, ApplyOutcome::RolledBack { .. }));
+    let (old_pids, desired_pids): (HashSet<_>, HashSet<_>) = {
+        let attempts = attempts.lock();
+        (
+            attempts
+                .iter()
+                .filter_map(|(epoch, pid)| (*epoch == 1).then_some(*pid))
+                .collect(),
+            attempts
+                .iter()
+                .filter_map(|(epoch, pid)| (*epoch == 2).then_some(*pid))
+                .collect(),
+        )
+    };
+    assert!(
+        old_pids.len() >= 2,
+        "initial and rollback did not both probe"
+    );
+    assert!(
+        !desired_pids.is_empty(),
+        "desired replacement did not probe"
+    );
+    manager.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -90,6 +171,62 @@ async fn apply_patch_updates_the_revision_without_restarting() {
     assert_eq!(running(&manager), before);
     assert_eq!(revision.generation, 2);
     manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn custom_reconcile_failure_uses_the_existing_restart_path() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let first = write_named(&dir, "reconcile-first.yaml", &passthrough_yaml(port, ""));
+    let desired = write_named(
+        &dir,
+        "reconcile-desired.yaml",
+        &passthrough_yaml(port, "allow-lan: true\n"),
+    );
+    let saw_reconcile = Arc::new(AtomicBool::new(false));
+    let probe = ProbeHandle::from_fn("reconcile-aware", {
+        let saw_reconcile = saw_reconcile.clone();
+        move |context| {
+            let reconcile = context.phase == ProbePhase::Reconcile;
+            if reconcile {
+                saw_reconcile.store(true, Ordering::SeqCst);
+            }
+            async move {
+                if reconcile {
+                    ProbeResult::Unhealthy {
+                        detail: Some("force restart compensation".into()),
+                    }
+                } else {
+                    match ControllerVersionProbe::new(context.controller.as_ref()) {
+                        Ok(probe) => probe.check(context).await,
+                        Err(error) => ProbeResult::Unhealthy {
+                            detail: Some(error.to_string()),
+                        },
+                    }
+                }
+            }
+        }
+    });
+    let manager = CoreManager::builder(ManagerOptions {
+        runtime_dir: Some(dir.join("runtime")),
+        ..ManagerOptions::default()
+    })
+    .readiness_probe(probe)
+    .build()
+    .await
+    .unwrap();
+    manager.start(spec(&dir, first)).await.unwrap();
+    let before = running(&manager);
+
+    let outcome = manager
+        .apply_config(spec(&dir, desired), None)
+        .await
+        .unwrap();
+
+    assert!(saw_reconcile.load(Ordering::SeqCst));
+    assert!(matches!(outcome, ApplyOutcome::Restarted { .. }));
+    assert_ne!(running(&manager).1, before.1);
+    manager.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -368,16 +505,22 @@ fn revision_id_is_an_explicit_cas_token() {
 async fn source_mutation_during_staged_check_cannot_change_the_apply() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let behavior = "x-fake-core:\n  check-delay-ms: 300\n";
+    let check_started = dir.join("check-started");
+    let check_started_path = check_started.as_str().replace('\\', "/");
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, &format!("x-setting: old\n{behavior}")),
+        &passthrough_yaml(port, "x-setting: old\n"),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("x-setting: desired\n{behavior}")),
+        &passthrough_yaml(
+            port,
+            &format!(
+                "x-setting: desired\nx-fake-core:\n  check-delay-ms: 1000\n  check-started-file: '{check_started_path}'\n"
+            ),
+        ),
     );
     let manager = std::sync::Arc::new(manager(&dir, Duration::from_secs(1)).await);
     manager
@@ -390,7 +533,13 @@ async fn source_mutation_during_staged_check_cannot_change_the_apply() {
         let apply_spec = spec(&dir, desired.clone());
         tokio::spawn(async move { manager.apply_config(apply_spec, None).await })
     };
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !tokio::fs::try_exists(&check_started).await.unwrap() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("staged config check never started");
     std::fs::write(
         &desired,
         passthrough_yaml(port, "x-setting: mutated\nx-fake-core:\n  exit-code: 91\n"),
@@ -461,6 +610,8 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     let port = common::free_port();
     let counter = dir.join("launch-count.txt");
     let counter_path = counter.as_str().replace('\\', "/");
+    let rejected_state = dir.join("rejected-crash-state");
+    let rejected_state_path = rejected_state.as_str().replace('\\', "/");
     let first = write_named(
         &dir,
         "first.yaml",
@@ -474,6 +625,136 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     let desired = write_named(
         &dir,
         "desired.yaml",
+        &passthrough_yaml(
+            port,
+            &format!(
+                "x-setting: desired\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n  never-ready: true\n  crash-after-ms: 3000\n  crash-times: 1\n  state-file: '{rejected_state_path}'\n"
+            ),
+        ),
+    );
+    let manager = std::sync::Arc::new(
+        CoreManager::new(ManagerOptions {
+            runtime_dir: Some(runtime_dir.clone()),
+            stop_timeout: Duration::from_secs(1),
+            reconcile_timeout: Duration::from_secs(3),
+            ..ManagerOptions::default()
+        })
+        .await
+        .expect("construct manager"),
+    );
+    manager
+        .start(spec(&dir, first.clone()))
+        .await
+        .expect("start");
+
+    let apply = {
+        let manager = manager.clone();
+        let mut desired_spec = spec(&dir, desired.clone());
+        // Leave enough time for the replacement process to execute its launch
+        // hook even when this integration binary runs many fake cores in
+        // parallel; the test is about unconfirmed death, not a short budget.
+        desired_spec.options.startup_timeout = Duration::from_secs(15);
+        desired_spec.options.restart_policy =
+            nyanpasu_utils::process::RestartPolicy::OnFailure { max_restarts: 0 };
+        tokio::spawn(async move { manager.apply_config(desired_spec, None).await })
+    };
+    let rejected_pid = runtime_dir.join("core-2.pid");
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let pid_exists = tokio::fs::try_exists(&rejected_pid).await.unwrap();
+            let replacement_launched =
+                std::fs::read_to_string(&counter).is_ok_and(|value| value.trim() == "2");
+            if pid_exists && replacement_launched {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("replacement pid record never appeared");
+    let valid_pid_record = std::fs::read_to_string(&rejected_pid).unwrap();
+    std::fs::write(&rejected_pid, "identity deliberately unavailable\n").unwrap();
+
+    let result = apply.await.unwrap();
+    assert!(
+        matches!(result, Err(Error::StopUnconfirmed(_))),
+        "unexpected compensation result: {result:?}"
+    );
+    assert!(runtime_dir.join("config-2.yaml").exists());
+    assert!(rejected_pid.exists());
+    assert_eq!(std::fs::read_to_string(counter).unwrap().trim(), "2");
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Stopped { reason: Some(_) }
+    ));
+
+    let CoreState::Stopped {
+        reason: Some(reason),
+    } = manager.status().state
+    else {
+        panic!("quarantine was not published")
+    };
+    let status_reason = reason.to_string();
+    assert!(status_reason.contains("quarantin"), "{status_reason}");
+    let start_error = manager
+        .start(spec(&dir, first.clone()))
+        .await
+        .expect_err("quarantine must reject start");
+    assert!(
+        start_error.to_string().contains("quarantin"),
+        "{start_error}"
+    );
+    let apply_error = manager
+        .apply_config(spec(&dir, desired), None)
+        .await
+        .expect_err("quarantine must reject apply");
+    assert!(
+        apply_error.to_string().contains("quarantin"),
+        "{apply_error}"
+    );
+    assert!(matches!(
+        manager.switch(spec(&dir, first.clone())).await,
+        Err(Error::ManagerQuarantined { .. })
+    ));
+    assert!(matches!(
+        manager.restart().await,
+        Err(Error::ManagerQuarantined { .. })
+    ));
+
+    std::fs::write(rejected_pid, valid_pid_record).unwrap();
+    common::wait_port_refused(port).await;
+    manager
+        .recover_quarantine()
+        .await
+        .expect("identity-verified recovery");
+    assert!(!runtime_dir.join("config-2.yaml").exists());
+    manager
+        .start(spec(&dir, first))
+        .await
+        .expect("start after quarantine recovery");
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn readiness_timeout_with_unconfirmed_stop_preserves_and_quarantines_epoch() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let runtime_dir = dir.join("runtime");
+    let port = common::free_port();
+    let counter = dir.join("readiness-timeout-launch-count.txt");
+    let counter_path = counter.as_str().replace('\\', "/");
+    let first = write_named(
+        &dir,
+        "readiness-timeout-first.yaml",
+        &passthrough_yaml(
+            port,
+            &format!(
+                "x-setting: old\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n"
+            ),
+        ),
+    );
+    let desired = write_named(
+        &dir,
+        "readiness-timeout-desired.yaml",
         &passthrough_yaml(
             port,
             &format!(
@@ -499,32 +780,38 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     let apply = {
         let manager = manager.clone();
         let mut desired_spec = spec(&dir, desired.clone());
-        desired_spec.options.startup_timeout = Duration::from_millis(300);
+        // This remains an absolute startup budget, but is intentionally
+        // generous because this integration binary launches many fake cores
+        // concurrently. The marker below proves epoch 2 launched before its
+        // identity record is corrupted.
+        desired_spec.options.startup_timeout = Duration::from_secs(15);
         tokio::spawn(async move { manager.apply_config(desired_spec, None).await })
     };
     let rejected_pid = runtime_dir.join("core-2.pid");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !tokio::fs::try_exists(&rejected_pid).await.unwrap() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let pid_exists = tokio::fs::try_exists(&rejected_pid).await.unwrap();
+            let replacement_launched =
+                std::fs::read_to_string(&counter).is_ok_and(|value| value.trim() == "2");
+            if pid_exists && replacement_launched {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
     .await
-    .expect("replacement pid record never appeared");
+    .expect("never-ready replacement pid record never appeared");
     let valid_pid_record = std::fs::read_to_string(&rejected_pid).unwrap();
     std::fs::write(&rejected_pid, "identity deliberately unavailable\n").unwrap();
 
     let result = apply.await.unwrap();
     assert!(
         matches!(result, Err(Error::StopUnconfirmed(_))),
-        "unexpected compensation result: {result:?}"
+        "unexpected readiness-timeout compensation result: {result:?}"
     );
     assert!(runtime_dir.join("config-2.yaml").exists());
     assert!(rejected_pid.exists());
-    assert_eq!(std::fs::read_to_string(counter).unwrap().trim(), "2");
-    assert!(matches!(
-        manager.status().state,
-        CoreState::Stopped { reason: Some(_) }
-    ));
+    assert_eq!(std::fs::read_to_string(&counter).unwrap().trim(), "2");
 
     let CoreState::Stopped {
         reason: Some(reason),

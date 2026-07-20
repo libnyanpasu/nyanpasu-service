@@ -12,7 +12,7 @@ async fn fake_core_serves_version_and_records_patches() {
     let config = common::write_config(
         &dir,
         &format!(
-            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  ready-delay-ms: 200\n  patch-log: {patch_log}\n"
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  ready-delay-ms: 1500\n  patch-log: {patch_log}\n"
         ),
     );
 

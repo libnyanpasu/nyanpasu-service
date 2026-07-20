@@ -16,11 +16,12 @@ use crate::{
     error::Error,
     instance::Instance,
     kind::CoreKind,
+    probe::{ProbeHandle, ProbePhase},
     runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
     spec::{ControllerMode, InstanceSpec, ManagerOptions, ResolvedController},
     state::{
-        ConfigRevision, CoreState, CoreStatus, InstanceState, RevisionId, SpecSummary, StopReason,
-        now_ms,
+        ConfigRevision, CoreState, CoreStatus, HealthStatus, InstanceState, InstanceStatus,
+        RevisionId, SpecSummary, StopReason, now_ms,
     },
 };
 
@@ -94,8 +95,21 @@ pub struct CoreManager {
     inner: Arc<Inner>,
 }
 
+pub struct CoreManagerBuilder {
+    options: ManagerOptions,
+    probes: ProbePlan,
+}
+
+#[derive(Clone, Default)]
+struct ProbePlan {
+    readiness: Option<ProbeHandle>,
+    liveness: Option<ProbeHandle>,
+    liveness_with_readiness: bool,
+}
+
 struct Inner {
     options: ManagerOptions,
+    probes: ProbePlan,
     store: RuntimeConfigStore,
     ctrl: tokio::sync::Mutex<Ctrl>,
     status_tx: watch::Sender<CoreStatus>,
@@ -162,37 +176,92 @@ impl Inner {
         revision: Option<ConfigRevision>,
     ) {
         self.status_tx.send_modify(|status| {
+            let lifecycle_changed = status.state != state;
+            let health = default_health_for_state(status.health.as_ref(), &state);
             status.state = state;
+            status.health = health;
             status.spec = spec;
             status.controller = controller;
             status.revision = revision;
-            status.changed_at = now_ms();
-        });
-    }
-
-    fn publish_active(&self, active: &Active, state: CoreState) {
-        self.publish(
-            state,
-            Some(spec_summary(&active.source_spec)),
-            Some(active.instance.controller().host.clone()),
-            Some(active.revision.clone()),
-        );
-    }
-
-    fn publish_epoch_state(&self, epoch: u64, state: CoreState) {
-        self.status_tx.send_modify(|status| {
-            if apply_epoch_state(status, epoch, state.clone()) {
+            if lifecycle_changed {
                 status.changed_at = now_ms();
             }
         });
     }
+
+    fn publish_active(&self, active: &Active, state: CoreState) {
+        self.publish_instance(
+            &active.instance,
+            state,
+            &active.source_spec,
+            &active.revision,
+        );
+    }
+
+    fn publish_instance(
+        &self,
+        instance: &Instance,
+        state: CoreState,
+        source_spec: &InstanceSpec,
+        revision: &ConfigRevision,
+    ) {
+        let health = instance.state().borrow().health.clone();
+        self.status_tx.send_modify(|status| {
+            let lifecycle_changed = status.state != state;
+            status.state = state;
+            status.health = health;
+            status.spec = Some(spec_summary(source_spec));
+            status.controller = Some(instance.controller().host.clone());
+            status.revision = Some(revision.clone());
+            if lifecycle_changed {
+                status.changed_at = now_ms();
+            }
+        });
+    }
+
+    fn publish_epoch_status(&self, epoch: u64, instance: InstanceStatus) {
+        self.status_tx
+            .send_if_modified(|status| apply_epoch_status(status, epoch, &instance));
+    }
 }
 
-fn apply_epoch_state(status: &mut CoreStatus, epoch: u64, state: CoreState) -> bool {
+fn default_health_for_state(
+    previous: Option<&HealthStatus>,
+    state: &CoreState,
+) -> Option<HealthStatus> {
+    let target = match state {
+        CoreState::Starting { .. } | CoreState::Restarting { .. } | CoreState::Switching { .. } => {
+            crate::state::HealthState::Starting
+        }
+        CoreState::Running { .. } => crate::state::HealthState::Healthy,
+        CoreState::Stopping { .. } | CoreState::Stopped { .. } => return None,
+    };
+    let mut health = HealthStatus::starting();
+    health.state = target;
+    if let Some(previous) = previous.filter(|status| status.state == target) {
+        health.changed_at = previous.changed_at;
+        health.consecutive_failures = previous.consecutive_failures;
+        health.last_error.clone_from(&previous.last_error);
+        health.last_success_at = previous.last_success_at;
+    }
+    Some(health)
+}
+
+fn apply_epoch_status(status: &mut CoreStatus, epoch: u64, instance: &InstanceStatus) -> bool {
     if status.revision.as_ref().map(|revision| revision.epoch) != Some(epoch) {
         return false;
     }
+    let state = instance_core_state(epoch, &instance.state);
+    let lifecycle_changed = status.state != state;
+    let health_changed = status.health != instance.health;
+    if !lifecycle_changed && !health_changed {
+        return false;
+    }
     status.state = state;
+    status.health = instance.health.clone();
+    if lifecycle_changed {
+        status.changed_at = now_ms();
+    }
     true
 }
 
@@ -203,8 +272,43 @@ fn spec_summary(spec: &InstanceSpec) -> SpecSummary {
     }
 }
 
+impl CoreManagerBuilder {
+    pub fn readiness_probe(mut self, probe: ProbeHandle) -> Self {
+        self.probes.readiness = Some(probe);
+        self
+    }
+
+    pub fn liveness_probe(mut self, probe: ProbeHandle) -> Self {
+        self.probes.liveness = Some(probe);
+        self.probes.liveness_with_readiness = false;
+        self
+    }
+
+    pub fn liveness_with_readiness_probe(mut self) -> Self {
+        self.probes.liveness = None;
+        self.probes.liveness_with_readiness = true;
+        self
+    }
+
+    pub async fn build(self) -> Result<CoreManager, Error> {
+        CoreManager::build_configured(self).await
+    }
+}
+
 impl CoreManager {
+    pub fn builder(options: ManagerOptions) -> CoreManagerBuilder {
+        CoreManagerBuilder {
+            options,
+            probes: ProbePlan::default(),
+        }
+    }
+
     pub async fn new(options: ManagerOptions) -> Result<Self, Error> {
+        Self::builder(options).build().await
+    }
+
+    async fn build_configured(builder: CoreManagerBuilder) -> Result<Self, Error> {
+        let CoreManagerBuilder { options, probes } = builder;
         let runtime_dir = match (&options.runtime_dir, &options.controller_mode) {
             (Some(runtime_dir), _) => runtime_dir.clone(),
             (None, ControllerMode::Managed { derived_dir, .. }) => derived_dir.clone(),
@@ -240,6 +344,7 @@ impl CoreManager {
         Ok(Self {
             inner: Arc::new(Inner {
                 options,
+                probes,
                 store,
                 ctrl: tokio::sync::Mutex::default(),
                 status_tx,
@@ -272,7 +377,7 @@ impl CoreManager {
         let mut ctrl = self.inner.ctrl.lock().await;
         reject_quarantine(&ctrl)?;
         let current = ctrl.current.as_ref().ok_or(Error::NotStarted)?;
-        if current.instance.state().borrow().is_terminal() {
+        if current.instance.state().borrow().state.is_terminal() {
             return Err(Error::NotStarted);
         }
         let actual_revision = current.revision.id();
@@ -443,7 +548,7 @@ impl CoreManager {
     ) -> bool {
         if let ConfigChange::Patch { patch, projection } = change {
             return self
-                .patch_and_verify(current.instance.controller(), patch, projection)
+                .patch_and_verify(&current.instance, patch, projection)
                 .await;
         }
         if matches!(change, ConfigChange::Switch) {
@@ -479,17 +584,21 @@ impl CoreManager {
                 unreachable!()
             }
         }
-        self.probe_health(current.instance.controller()).await
+        current
+            .instance
+            .probe_now(ProbePhase::Reconcile)
+            .await
+            .is_healthy()
     }
 
     async fn patch_and_verify(
         &self,
-        controller: &ResolvedController,
+        instance: &Instance,
         patch: &clash_api::ConfigPatch,
         projection: &config_diff::RuntimeProjection,
     ) -> bool {
         let client = match crate::health::build_control_client(
-            controller,
+            instance.controller(),
             self.inner.options.control_timeout,
         ) {
             Ok(client) => client,
@@ -515,17 +624,7 @@ impl CoreManager {
                 return false;
             }
         }
-        self.probe_health(controller).await
-    }
-
-    async fn probe_health(&self, controller: &ResolvedController) -> bool {
-        match crate::health::HealthCheck::new(controller) {
-            Ok(health) => health.probe_once().await,
-            Err(error) => {
-                tracing::warn!("failed to build post-apply health probe: {error}");
-                false
-            }
-        }
+        instance.probe_now(ProbePhase::Reconcile).await.is_healthy()
     }
 
     async fn restart_with_compensation(
@@ -825,13 +924,9 @@ impl CoreManager {
         epoch: u64,
         controller: ResolvedController,
     ) -> Result<Instance, Error> {
-        let instance = Instance::spawn(
-            effective_spec,
-            epoch,
-            controller,
-            self.inner.options.cancel_token.clone(),
-        )
-        .await?;
+        let instance = self
+            .spawn_instance(effective_spec, epoch, controller)
+            .await?;
         if let Err(error) = instance.wait_ready().await {
             return match instance
                 .stop_and_confirm_dead(self.inner.options.stop_timeout)
@@ -844,6 +939,30 @@ impl CoreManager {
             };
         }
         Ok(instance)
+    }
+
+    async fn spawn_instance(
+        &self,
+        effective_spec: InstanceSpec,
+        epoch: u64,
+        controller: ResolvedController,
+    ) -> Result<Instance, Error> {
+        let mut builder = Instance::builder(
+            effective_spec,
+            epoch,
+            controller,
+            self.inner.options.cancel_token.clone(),
+        );
+        if let Some(probe) = self.inner.probes.readiness.clone() {
+            builder = builder.readiness_probe(probe);
+        }
+        if let Some(probe) = self.inner.probes.liveness.clone() {
+            builder = builder.liveness_probe(probe);
+        }
+        if self.inner.probes.liveness_with_readiness {
+            builder = builder.liveness_with_readiness_probe();
+        }
+        builder.spawn().await
     }
 
     fn next_epoch(&self) -> u64 {
@@ -965,7 +1084,7 @@ impl CoreManager {
         let running = ctrl
             .current
             .as_ref()
-            .is_some_and(|active| !active.instance.state().borrow().is_terminal());
+            .is_some_and(|active| !active.instance.state().borrow().state.is_terminal());
         if running {
             return Err(Error::AlreadyRunning);
         }
@@ -1015,13 +1134,9 @@ impl CoreManager {
             Some(prepared.controller.host.clone()),
             Some(prepared.revision.clone()),
         );
-        let instance = match Instance::spawn(
-            prepared.effective_spec,
-            epoch,
-            prepared.controller,
-            self.inner.options.cancel_token.clone(),
-        )
-        .await
+        let instance = match self
+            .spawn_instance(prepared.effective_spec, epoch, prepared.controller)
+            .await
         {
             Ok(instance) => instance,
             Err(error) => {
@@ -1051,11 +1166,11 @@ impl CoreManager {
         }
 
         let pid = instance.pid().unwrap_or_default();
-        self.inner.publish(
+        self.inner.publish_instance(
+            &instance,
             CoreState::Running { epoch, pid },
-            Some(spec_summary(&prepared.source_spec)),
-            Some(instance.controller().host.clone()),
-            Some(prepared.revision.clone()),
+            &prepared.source_spec,
+            &prepared.revision,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -1181,7 +1296,7 @@ impl CoreManager {
         let running = ctrl
             .current
             .as_ref()
-            .is_some_and(|active| !active.instance.state().borrow().is_terminal());
+            .is_some_and(|active| !active.instance.state().borrow().state.is_terminal());
         if !running {
             if let Some(stale) = ctrl.current.take() {
                 abort_and_await(stale.forwarder).await;
@@ -1274,18 +1389,21 @@ impl CoreManager {
         let Some(active) = ctrl.current.as_ref() else {
             return;
         };
-        let state = instance_core_state(active.instance.epoch(), &active.instance.state().borrow());
+        let state = instance_core_state(
+            active.instance.epoch(),
+            &active.instance.state().borrow().state,
+        );
         self.inner.publish_active(active, state);
     }
 
     fn install_switched(&self, ctrl: &mut Ctrl, instance: Instance, prepared: PreparedLaunch) {
         let epoch = prepared.revision.epoch;
         let pid = instance.pid().unwrap_or_default();
-        self.inner.publish(
+        self.inner.publish_instance(
+            &instance,
             CoreState::Running { epoch, pid },
-            Some(spec_summary(&prepared.source_spec)),
-            Some(instance.controller().host.clone()),
-            Some(prepared.revision.clone()),
+            &prepared.source_spec,
+            &prepared.revision,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -1330,13 +1448,13 @@ impl CoreManager {
             Some(launch.revision.clone()),
         );
 
-        let instance = match Instance::spawn(
-            launch.effective_spec.clone(),
-            epoch,
-            launch.controller.clone(),
-            self.inner.options.cancel_token.clone(),
-        )
-        .await
+        let instance = match self
+            .spawn_instance(
+                launch.effective_spec.clone(),
+                epoch,
+                launch.controller.clone(),
+            )
+            .await
         {
             Ok(instance) => instance,
             Err(error) => {
@@ -1431,10 +1549,9 @@ impl CoreManager {
         let reconciled = tokio::time::timeout(self.inner.options.reconcile_timeout, async {
             match restoration.as_ref() {
                 Some((patch, projection)) => {
-                    self.patch_and_verify(instance.controller(), patch, projection)
-                        .await
+                    self.patch_and_verify(&instance, patch, projection).await
                 }
-                None => self.probe_health(instance.controller()).await,
+                None => instance.probe_now(ProbePhase::Reconcile).await.is_healthy(),
             }
         })
         .await
@@ -1507,12 +1624,12 @@ impl CoreManager {
             revision,
             ..
         } = active;
-        let captured_state = instance.state().borrow().clone();
+        let captured_status = instance.state().borrow().clone();
         abort_and_await(forwarder).await;
-        if captured_state.is_terminal() {
+        if captured_status.state.is_terminal() {
             let epoch = instance.epoch();
             self.inner.publish(
-                instance_core_state(epoch, &captured_state),
+                instance_core_state(epoch, &captured_status.state),
                 Some(spec_summary(&source_spec)),
                 Some(instance.controller().host.clone()),
                 Some(revision),
@@ -1694,18 +1811,18 @@ fn instance_core_state(epoch: u64, state: &InstanceState) -> CoreState {
 
 fn spawn_forwarder(
     inner: &Arc<Inner>,
-    mut state_rx: watch::Receiver<InstanceState>,
+    mut state_rx: watch::Receiver<InstanceStatus>,
     epoch: u64,
 ) -> tokio::task::JoinHandle<()> {
     let inner = Arc::downgrade(inner);
     tokio::spawn(async move {
         while state_rx.changed().await.is_ok() {
-            let state = state_rx.borrow_and_update().clone();
-            let terminal = state.is_terminal();
+            let status = state_rx.borrow_and_update().clone();
+            let terminal = status.state.is_terminal();
             let Some(inner) = inner.upgrade() else {
                 break;
             };
-            inner.publish_epoch_state(epoch, instance_core_state(epoch, &state));
+            inner.publish_epoch_status(epoch, status);
             if terminal {
                 break;
             }
@@ -1806,12 +1923,74 @@ mod tests {
                 reason: Some(StopReason::Finished),
             },
         ] {
-            assert!(!apply_epoch_state(&mut status, 8, stale));
+            let stale_status = InstanceStatus {
+                state: match stale {
+                    CoreState::Running { pid, .. } => InstanceState::Running { pid },
+                    CoreState::Restarting { attempt, .. } => InstanceState::Restarting { attempt },
+                    CoreState::Stopped { reason } => {
+                        InstanceState::Stopped(reason.unwrap_or(StopReason::Finished))
+                    }
+                    _ => unreachable!(),
+                },
+                health: None,
+            };
+            assert!(!apply_epoch_status(&mut status, 8, &stale_status));
             assert!(matches!(
                 status.state,
                 CoreState::Running { epoch: 9, pid: 90 }
             ));
         }
+    }
+
+    #[test]
+    fn stale_epoch_status_neither_mutates_nor_wakes_watchers() {
+        let mut status = CoreStatus::initial();
+        status.revision = Some(ConfigRevision {
+            epoch: 9,
+            generation: 1,
+            source_hash: "source".into(),
+            effective_hash: "effective".into(),
+            runtime_path: "config-9.yaml".into(),
+        });
+        status.state = CoreState::Running { epoch: 9, pid: 90 };
+        let (tx, rx) = watch::channel(status);
+        let stale = InstanceStatus {
+            state: InstanceState::Running { pid: 80 },
+            health: Some(HealthStatus::starting()),
+        };
+
+        let sent = tx.send_if_modified(|status| apply_epoch_status(status, 8, &stale));
+
+        assert!(!sent);
+        assert!(!rx.has_changed().unwrap());
+        assert!(matches!(
+            rx.borrow().state,
+            CoreState::Running { epoch: 9, pid: 90 }
+        ));
+    }
+
+    #[test]
+    fn pure_health_transition_preserves_lifecycle_changed_at() {
+        let mut status = CoreStatus::initial();
+        status.revision = Some(ConfigRevision {
+            epoch: 3,
+            generation: 1,
+            source_hash: "source".into(),
+            effective_hash: "effective".into(),
+            runtime_path: "config-3.yaml".into(),
+        });
+        status.state = CoreState::Running { epoch: 3, pid: 30 };
+        status.changed_at = 7;
+        let mut health = HealthStatus::starting();
+        health.state = crate::state::HealthState::Unhealthy;
+        let instance = InstanceStatus {
+            state: InstanceState::Running { pid: 30 },
+            health: Some(health.clone()),
+        };
+
+        assert!(apply_epoch_status(&mut status, 3, &instance));
+        assert_eq!(status.changed_at, 7);
+        assert_eq!(status.health, Some(health));
     }
 
     #[test]

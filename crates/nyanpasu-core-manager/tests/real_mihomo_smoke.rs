@@ -83,7 +83,7 @@ async fn real_core_starts_probes_and_stops() {
         .await
         .expect("real mihomo passes the version probe");
     assert!(matches!(
-        *instance.state().borrow(),
+        instance.state().borrow().state,
         InstanceState::Running { pid } if pid > 0
     ));
 

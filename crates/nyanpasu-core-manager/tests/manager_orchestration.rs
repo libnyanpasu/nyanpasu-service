@@ -1,9 +1,17 @@
 mod common;
 
-use std::time::Duration;
+use std::{
+    num::NonZeroU32,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use nyanpasu_core_manager::{
-    ControllerMode, CoreState, Error, ManagerOptions, StopReason, manager::CoreManager,
+    ControllerMode, CoreState, Error, HealthPolicy, HealthState, ManagerOptions, ProbeHandle,
+    ProbeResult, StopReason, manager::CoreManager,
 };
 
 async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
@@ -13,6 +21,92 @@ async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
     })
     .await
     .expect("construct manager")
+}
+
+#[tokio::test]
+async fn manager_builder_forwards_atomic_runtime_health_without_bumping_lifecycle_time() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.health = HealthPolicy::new(
+        Duration::from_millis(20),
+        Duration::from_secs(1),
+        NonZeroU32::new(2).unwrap(),
+        NonZeroU32::MIN,
+        Duration::ZERO,
+    )
+    .unwrap();
+    let readiness_calls = Arc::new(AtomicUsize::new(0));
+    let readiness = ProbeHandle::from_fn("manager-readiness", {
+        let readiness_calls = readiness_calls.clone();
+        move |context| {
+            assert_eq!(context.epoch, 1);
+            readiness_calls.fetch_add(1, Ordering::SeqCst);
+            async { ProbeResult::Healthy }
+        }
+    });
+    let failing = Arc::new(AtomicBool::new(false));
+    let liveness = ProbeHandle::from_fn("manager-liveness", {
+        let failing = failing.clone();
+        move |_| {
+            let fail = failing.load(Ordering::SeqCst);
+            async move {
+                if fail {
+                    ProbeResult::Unhealthy {
+                        detail: Some("runtime API unavailable".into()),
+                    }
+                } else {
+                    ProbeResult::Healthy
+                }
+            }
+        }
+    });
+    let manager = CoreManager::builder(ManagerOptions {
+        runtime_dir: Some(dir.join("runtime")),
+        ..ManagerOptions::default()
+    })
+    .readiness_probe(readiness)
+    .liveness_probe(liveness)
+    .build()
+    .await
+    .unwrap();
+    let mut status_rx = manager.subscribe();
+    manager.start(spec).await.unwrap();
+    assert!(readiness_calls.load(Ordering::SeqCst) >= 1);
+    let running = manager.status();
+    let running_changed_at = running.changed_at;
+    let CoreState::Running { epoch, pid } = running.state else {
+        panic!("manager did not publish running")
+    };
+    assert_eq!(epoch, 1);
+    assert_eq!(running.health.unwrap().state, HealthState::Healthy);
+
+    failing.store(true, Ordering::SeqCst);
+    let unhealthy = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            status_rx.changed().await.unwrap();
+            let status = status_rx.borrow_and_update().clone();
+            if status
+                .health
+                .as_ref()
+                .is_some_and(|health| health.state == HealthState::Unhealthy)
+            {
+                break status;
+            }
+        }
+    })
+    .await
+    .expect("manager did not forward unhealthy state");
+    assert!(matches!(
+        unhealthy.state,
+        CoreState::Running {
+            epoch: 1,
+            pid: current
+        } if current == pid
+    ));
+    assert_eq!(unhealthy.changed_at, running_changed_at);
+    manager.stop().await.unwrap();
 }
 
 #[tokio::test]
@@ -273,7 +367,7 @@ async fn lifecycle_sequence_matches_legacy_contract() {
     let config = common::write_config(
         &dir,
         &format!(
-            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 400\n  crash-times: 1\n  state-file: {state_file}\n"
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  crash-after-ms: 1500\n  crash-times: 1\n  state-file: {state_file}\n"
         ),
     );
 
@@ -294,8 +388,24 @@ async fn lifecycle_sequence_matches_legacy_contract() {
         .start(common::mihomo_spec(&dir, config))
         .await
         .expect("start");
-    // Crash at ~400ms, recovery, then user stop.
-    tokio::time::sleep(Duration::from_secs(3)).await;
+    let first_pid = match manager.status().state {
+        CoreState::Running { pid, .. } => pid,
+        ref state => panic!("expected initial Running, got {state:?}"),
+    };
+    let mut recovery_rx = manager.subscribe();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if matches!(
+                recovery_rx.borrow_and_update().state,
+                CoreState::Running { pid, .. } if pid != first_pid
+            ) {
+                break;
+            }
+            recovery_rx.changed().await.expect("status channel open");
+        }
+    })
+    .await
+    .expect("core never recovered from scripted crash");
     manager.stop().await.expect("stop");
     // Let the recorder drain the final Stopped notification before teardown — on the current-thread runtime the woken recorder task only runs once we yield.
     tokio::time::timeout(Duration::from_secs(2), async {
@@ -453,6 +563,9 @@ async fn dropping_live_manager_releases_runtime_ownership() {
                 Err(Error::RuntimeDirectoryOwned(_)) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
+                Err(Error::Io(error)) if error.kind() == std::io::ErrorKind::PermissionDenied => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
                 Err(error) => panic!("unexpected construction error: {error}"),
             }
         }
@@ -467,9 +580,13 @@ async fn initial_start_stop_uncertainty_quarantines_until_recovery() {
     let (_guard, dir) = common::utf8_tempdir();
     let runtime_dir = dir.join("runtime");
     let port = common::free_port();
+    let crash_state = dir.join("initial-crash-state");
+    let launch_count = dir.join("initial-launch-count");
     let config = common::write_config(
         &dir,
-        &format!("external-controller: 127.0.0.1:{port}\nx-fake-core:\n  never-ready: true\n"),
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  never-ready: true\n  crash-after-ms: 3000\n  crash-times: 1\n  state-file: '{crash_state}'\n  launch-count-file: '{launch_count}'\n  fail-after-launches: 99\n"
+        ),
     );
     let manager = std::sync::Arc::new(
         CoreManager::new(ManagerOptions {
@@ -483,12 +600,19 @@ async fn initial_start_stop_uncertainty_quarantines_until_recovery() {
     let start = {
         let manager = manager.clone();
         let mut spec = common::mihomo_spec(&dir, config.clone());
-        spec.options.startup_timeout = Duration::from_millis(300);
+        spec.options.startup_timeout = Duration::from_secs(15);
+        spec.options.restart_policy =
+            nyanpasu_utils::process::RestartPolicy::OnFailure { max_restarts: 0 };
         tokio::spawn(async move { manager.start(spec).await })
     };
     let pid_path = runtime_dir.join("core-1.pid");
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !pid_path.exists() {
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let launched =
+                std::fs::read_to_string(&launch_count).is_ok_and(|value| value.trim() == "1");
+            if pid_path.exists() && launched {
+                break;
+            }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     })
