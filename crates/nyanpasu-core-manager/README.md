@@ -43,11 +43,13 @@ Every instance starts in `Starting` and ends in exactly one `Stopped` state.
 `InstanceStatus` publishes that lifecycle together with an orthogonal health
 dimension in one watch snapshot, so a PID can never be paired with health from
 another process run. `InstanceState` and `HealthState` are defined in
-[`src/state.rs`](src/state.rs).
+[`src/state.rs`](src/state.rs). `Instance::state()` therefore yields
+`watch::Receiver<InstanceStatus>`, not the bare `InstanceState` it returned
+before.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Starting: Instance::spawn
+    [*] --> Starting: Instance:\:spawn
     Starting --> Running: readiness success threshold
     Starting --> Stopped: startup timeout / spawn failed / budget exhausted
     Running --> Restarting: process exited, restart budget left
@@ -70,6 +72,10 @@ Readiness acknowledgement occurs exactly once for each child-process run.
 Runtime recovery never acknowledges again, so health flapping cannot reset the
 supervisor restart budget. `HealthStatus.changed_at` records only health
 transitions; `CoreStatus.changed_at` remains the lifecycle transition time.
+
+`HealthStatus` also carries `consecutive_failures`, `last_success_at`, and
+`last_error`. Its `Debug` renders `last_error` as `<redacted>`; read the field
+directly when the text is needed.
 
 `Stopped` carries a `StopReason`:
 
@@ -118,7 +124,7 @@ sequenceDiagram
     M->>I: spawn(spec, N, controller)
     I->>S: spawn(-m -d dir -f cfg, SAFE_PATHS=…)
     S->>C: exec
-    loop immediate first attempt, then health.interval; within startup_timeout
+    loop immediate first attempt, then health.interval, all within startup_timeout
         I->>C: GET /version
     end
     C-->>I: 200 OK
@@ -134,7 +140,7 @@ sequenceDiagram
     participant D as Probe driver
     participant P as Custom liveness probe
     participant T as Health tracker
-    participant W as watch&lt;InstanceStatus&gt;
+    participant W as watch#lt;InstanceStatus#gt;
 
     loop completion + health.interval
         D->>P: check(epoch, run_id/PID, Liveness)
@@ -142,8 +148,8 @@ sequenceDiagram
         D->>T: serialized observation
         T-->>W: Running + health transition/counters
     end
-    Note over D,W: Reconcile checks share this queue;<br/>at most one probe is in flight per instance
-    Note over T,W: Sustained Unhealthy is observe-only;<br/>the process is not restarted automatically
+    Note over D,W: Reconcile checks share this queue,<br/>at most one probe is in flight per instance
+    Note over T,W: Sustained Unhealthy is observe-only,<br/>the process is not restarted automatically
 ```
 
 If a future release adds a restart reaction, it must be manager-owned and pass
@@ -176,7 +182,7 @@ sequenceDiagram
     alt patch verified
         M-->>App: SwitchOutcome::Graceful
     else patch failed or uncertain
-        M->>B: stop_and_confirm_dead(); restart from committed full B (same epoch)
+        M->>B: stop_and_confirm_dead(), then restart from committed full B (same epoch)
         M-->>App: SwitchOutcome::Hard { PatchFailed }
     end
 ```
@@ -269,6 +275,29 @@ separate probes during graceful switching: the bootstrap intentionally zeroes
 proxy listener ports, so a proxy-port TCP check is unsuitable for readiness
 even though it is useful after `Running`.
 
+Each attempt receives a `ProbeContext` carrying `epoch`, `pid`, `phase`, the
+resolved `controller`, and a `cancel` token. It deliberately does not implement
+`Debug`, because the controller may hold an authentication secret.
+
+| `ProbePhase` | When it runs | Probe used |
+| --- | --- | --- |
+| `Readiness` | until the start is acknowledged | readiness |
+| `Liveness` | after `Running`, only when configured | liveness |
+| `Reconcile` | on demand after PATCH/reload and switch verification | liveness if configured, else readiness |
+
+`Instance::probe_now()` accepts `Reconcile` only; the periodic phases are driven
+by the instance itself, and requesting one directly returns `Unhealthy`.
+
+Implementing `HealthProbe` instead of using `ProbeHandle::from_fn` carries one
+contract: the returned future must be cancellation-safe, so dropping it must
+not leave a detached task behind. A probe that shells out must pass arguments
+to `tokio::process::Command` directly rather than concatenate a shell command,
+and must set `kill_on_drop(true)` so the child dies with the future.
+
+`CoreManager` installs both probes into every epoch it spawns. To drive a bare
+instance instead, `Instance::builder(spec, epoch, controller, parent)` exposes
+the same three methods before `.spawn()`.
+
 ### Managed mode + graceful switch
 
 ```rust
@@ -331,14 +360,19 @@ runtime file is atomically restored and restarted.
 ### Watch status
 
 ```rust
-use nyanpasu_core_manager::CoreState;
+use nyanpasu_core_manager::{CoreState, HealthState};
 
 let mut rx = manager.subscribe();
 tokio::spawn(async move {
     while rx.changed().await.is_ok() {
         let status = rx.borrow().clone();
         match status.state {
-            CoreState::Running { epoch, pid } => { /* … */ }
+            CoreState::Running { epoch, pid } => {
+                // Observe-only: nothing restarts the core on Unhealthy.
+                if let Some(HealthState::Unhealthy) = status.health.map(|h| h.state) {
+                    /* surface a warning */
+                }
+            }
             CoreState::Stopped { .. } => break,
             _ => { /* Starting / Restarting / Switching / Stopping */ }
         }
