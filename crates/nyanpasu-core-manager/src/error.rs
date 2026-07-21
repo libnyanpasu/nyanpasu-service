@@ -61,3 +61,19 @@ pub enum Error {
     #[error(transparent)]
     Io(#[from] std::io::Error),
 }
+
+impl From<nyanpasu_utils::io::atomic_fs::AtomicFsError> for Error {
+    fn from(error: nyanpasu_utils::io::atomic_fs::AtomicFsError) -> Self {
+        use nyanpasu_utils::io::atomic_fs::AtomicFsError;
+        match error {
+            AtomicFsError::UnsafePath(path) => Error::UnsafeRuntimeArtifact(utf8_lossy(path)),
+            AtomicFsError::Contended(path) => Error::RuntimeDirectoryOwned(utf8_lossy(path)),
+            AtomicFsError::Io(io_error) => Error::Io(io_error),
+        }
+    }
+}
+
+fn utf8_lossy(path: std::path::PathBuf) -> Utf8PathBuf {
+    Utf8PathBuf::from_path_buf(path)
+        .unwrap_or_else(|path| Utf8PathBuf::from(path.to_string_lossy().into_owned()))
+}

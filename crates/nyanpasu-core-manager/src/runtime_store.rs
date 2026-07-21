@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, atomic::AtomicUsize};
 
 use camino::{Utf8Path, Utf8PathBuf};
+use nyanpasu_utils::io::atomic_fs;
 use tokio::io::AsyncWriteExt;
 
 use crate::Error;
@@ -21,7 +22,7 @@ pub struct RuntimeConfigStore {
 
 #[derive(Debug)]
 pub(crate) struct RuntimeDirectoryLock {
-    _file: std::fs::File,
+    _lock: atomic_fs::DirLock,
 }
 
 #[derive(Debug)]
@@ -102,8 +103,8 @@ impl RuntimeConfigStore {
         }
         #[cfg(windows)]
         {
-            harden_windows_directory_acl(&dir)?;
-            verify_windows_directory_acl(&dir)?;
+            atomic_fs::harden_windows_directory_acl(&dir)?;
+            atomic_fs::verify_windows_directory_acl(&dir)?;
         }
 
         let canonical = tokio::fs::canonicalize(&dir).await?;
@@ -154,7 +155,7 @@ impl RuntimeConfigStore {
             ".config-{epoch}.yaml.tmp-{}-{counter}",
             std::process::id()
         ));
-        validate_absent_regular_target(&path).await?;
+        atomic_fs::validate_absent_regular_target(&path).await?;
 
         let mut options = tokio::fs::OpenOptions::new();
         options.create_new(true).write(true);
@@ -197,10 +198,10 @@ impl RuntimeConfigStore {
     ) -> Result<Utf8PathBuf, Error> {
         self.validate_staged(&staged, epoch).await?;
         let target = self.runtime_path(epoch);
-        validate_absent_regular_target(&target).await?;
-        atomic_move_new(&staged.path, &target).await?;
+        atomic_fs::validate_absent_regular_target(&target).await?;
+        atomic_fs::atomic_move_new(&staged.path, &target).await?;
         staged.consumed = true;
-        sync_parent(&self.dir).await?;
+        atomic_fs::sync_dir(&self.dir).await?;
         Ok(target)
     }
 
@@ -219,8 +220,8 @@ impl RuntimeConfigStore {
     ) -> Result<RuntimeConfigCommit, Error> {
         self.validate_staged(&staged, epoch).await?;
         let target = self.runtime_path(epoch);
-        validate_existing_regular_target(&target).await?;
-        atomic_replace(&staged.path, &target).await?;
+        atomic_fs::validate_existing_regular_target(&target).await?;
+        atomic_fs::atomic_replace(&staged.path, &target).await?;
         staged.consumed = true;
         #[cfg(feature = "test-hooks")]
         let injected_failure = self
@@ -235,25 +236,25 @@ impl RuntimeConfigStore {
                 "injected parent-directory synchronization failure",
             ))
         } else {
-            sync_parent(&self.dir).await
+            atomic_fs::sync_dir(&self.dir).await
         };
         #[cfg(not(feature = "test-hooks"))]
-        let parent_sync = sync_parent(&self.dir).await;
+        let parent_sync = atomic_fs::sync_dir(&self.dir).await;
         Ok(installed_commit(target, parent_sync))
     }
 
     pub async fn backup(&self, epoch: u64, generation: u64) -> Result<RuntimeConfigBackup, Error> {
         let target = self.runtime_path(epoch);
-        validate_existing_regular_target(&target).await?;
+        atomic_fs::validate_existing_regular_target(&target).await?;
         let contents = tokio::fs::read(&target).await?;
         let mut staged = self.stage(epoch, &contents).await?;
         let backup_path = self
             .dir
             .join(format!("config-{epoch}.yaml.backup-{generation}"));
-        validate_absent_regular_target(&backup_path).await?;
-        atomic_move_new(&staged.path, &backup_path).await?;
+        atomic_fs::validate_absent_regular_target(&backup_path).await?;
+        atomic_fs::atomic_move_new(&staged.path, &backup_path).await?;
         staged.consumed = true;
-        sync_parent(&self.dir).await?;
+        atomic_fs::sync_dir(&self.dir).await?;
         Ok(RuntimeConfigBackup {
             path: backup_path,
             epoch,
@@ -264,18 +265,20 @@ impl RuntimeConfigStore {
         &self,
         backup: &RuntimeConfigBackup,
     ) -> Result<RuntimeConfigCommit, Error> {
-        validate_existing_regular_target(&backup.path).await?;
+        atomic_fs::validate_existing_regular_target(&backup.path).await?;
         let contents = tokio::fs::read(&backup.path).await?;
         self.replace(backup.epoch, &contents).await
     }
 
     pub async fn remove_backup(&self, backup: RuntimeConfigBackup) -> Result<(), Error> {
-        remove_regular_file(&backup.path).await
+        atomic_fs::remove_regular_file(&backup.path)
+            .await
+            .map_err(Error::from)
     }
 
     pub async fn cleanup_epoch(&self, epoch: u64) -> Result<(), Error> {
         for path in [self.runtime_path(epoch), self.pid_path(epoch)] {
-            remove_regular_file(&path).await?;
+            atomic_fs::remove_regular_file(&path).await?;
         }
         remove_socket_artifact(&self.socket_path(epoch)).await?;
 
@@ -294,10 +297,10 @@ impl RuntimeConfigStore {
             {
                 let path = Utf8PathBuf::from_path_buf(entry.path())
                     .map_err(|_| Error::UnsafeRuntimeArtifact(self.dir.clone()))?;
-                remove_regular_file(&path).await?;
+                atomic_fs::remove_regular_file(&path).await?;
             }
         }
-        sync_parent(&self.dir).await?;
+        atomic_fs::sync_dir(&self.dir).await?;
         Ok(())
     }
 
@@ -326,78 +329,16 @@ impl RuntimeConfigStore {
         {
             return Err(Error::UnsafeRuntimeArtifact(staged.path.clone()));
         }
-        validate_existing_regular_target(&staged.path).await
+        atomic_fs::validate_existing_regular_target(&staged.path)
+            .await
+            .map_err(Error::from)
     }
 }
 
 fn acquire_runtime_directory_lock(path: &Utf8Path) -> Result<RuntimeDirectoryLock, Error> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || is_reparse_point(&metadata) =>
-        {
-            return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
-        }
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    let mut options = std::fs::OpenOptions::new();
-    options.create(true).read(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::OpenOptionsExt;
-        options.share_mode(0);
-    }
-    let file = options.open(path).map_err(|error| {
-        if runtime_lock_is_contended(&error) {
-            Error::RuntimeDirectoryOwned(path.to_owned())
-        } else {
-            error.into()
-        }
-    })?;
-
-    #[cfg(unix)]
-    {
-        use std::os::{fd::AsRawFd, raw::c_int};
-
-        const LOCK_EX: c_int = 2;
-        const LOCK_NB: c_int = 4;
-        unsafe extern "C" {
-            fn flock(fd: c_int, operation: c_int) -> c_int;
-        }
-        // SAFETY: file owns a valid descriptor for the duration of the call.
-        if unsafe { flock(file.as_raw_fd(), LOCK_EX | LOCK_NB) } != 0 {
-            let error = std::io::Error::last_os_error();
-            return Err(if runtime_lock_is_contended(&error) {
-                Error::RuntimeDirectoryOwned(path.to_owned())
-            } else {
-                error.into()
-            });
-        }
-    }
-
-    Ok(RuntimeDirectoryLock { _file: file })
-}
-
-#[cfg(unix)]
-fn runtime_lock_is_contended(error: &std::io::Error) -> bool {
-    matches!(
-        error.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
-    )
-}
-
-#[cfg(windows)]
-fn runtime_lock_is_contended(error: &std::io::Error) -> bool {
-    matches!(error.raw_os_error(), Some(5 | 32 | 33))
+    atomic_fs::acquire_dir_lock(path)
+        .map(|lock| RuntimeDirectoryLock { _lock: lock })
+        .map_err(Error::from)
 }
 
 fn artifact_epoch(name: &str) -> Option<u64> {
@@ -437,60 +378,20 @@ fn installed_commit(path: Utf8PathBuf, parent_sync: std::io::Result<()>) -> Runt
 }
 
 fn validate_directory_metadata(path: &Utf8Path, metadata: &std::fs::Metadata) -> Result<(), Error> {
-    if metadata.file_type().is_symlink() || !metadata.is_dir() || is_reparse_point(metadata) {
+    if metadata.file_type().is_symlink()
+        || !metadata.is_dir()
+        || atomic_fs::is_reparse_point(metadata)
+    {
         return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
     }
     Ok(())
-}
-
-async fn validate_absent_regular_target(path: &Utf8Path) -> Result<(), Error> {
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || is_reparse_point(&metadata) =>
-        {
-            Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
-        }
-        Ok(_) => Err(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("runtime artifact already exists: {path}"),
-        )
-        .into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
-}
-
-async fn validate_existing_regular_target(path: &Utf8Path) -> Result<(), Error> {
-    let metadata = tokio::fs::symlink_metadata(path).await?;
-    if metadata.file_type().is_symlink() || !metadata.is_file() || is_reparse_point(&metadata) {
-        return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
-    }
-    Ok(())
-}
-
-async fn remove_regular_file(path: &Utf8Path) -> Result<(), Error> {
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_file()
-                || is_reparse_point(&metadata) =>
-        {
-            Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
-        }
-        Ok(_) => {
-            tokio::fs::remove_file(path).await?;
-            Ok(())
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 async fn remove_socket_artifact(path: &Utf8Path) -> Result<(), Error> {
     match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) if metadata.file_type().is_symlink() || is_reparse_point(&metadata) => {
+        Ok(metadata)
+            if metadata.file_type().is_symlink() || atomic_fs::is_reparse_point(&metadata) =>
+        {
             Err(Error::UnsafeRuntimeArtifact(path.to_owned()))
         }
         #[cfg(unix)]
@@ -506,323 +407,6 @@ async fn remove_socket_artifact(path: &Utf8Path) -> Result<(), Error> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error.into()),
     }
-}
-
-#[cfg(windows)]
-fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    metadata.file_attributes() & 0x400 != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_metadata: &std::fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(windows)]
-fn harden_windows_directory_acl(path: &Utf8Path) -> Result<(), Error> {
-    use std::{iter, os::windows::ffi::OsStrExt};
-
-    const SDDL_REVISION_1: u32 = 1;
-    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
-    #[link(name = "Advapi32")]
-    unsafe extern "system" {
-        fn ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            source: *const u16,
-            revision: u32,
-            descriptor: *mut *mut core::ffi::c_void,
-            size: *mut u32,
-        ) -> i32;
-        fn SetFileSecurityW(
-            file_name: *const u16,
-            information: u32,
-            descriptor: *mut core::ffi::c_void,
-        ) -> i32;
-    }
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    }
-
-    let sddl: Vec<u16> = "D:P(A;OICI;FA;;;OW)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"
-        .encode_utf16()
-        .chain(iter::once(0))
-        .collect();
-    let path: Vec<u16> = path
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    let mut descriptor = std::ptr::null_mut();
-    // SAFETY: the SDDL string is valid, NUL-terminated UTF-16 and the output
-    // pointer remains owned by LocalAlloc until LocalFree below.
-    if unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            sddl.as_ptr(),
-            SDDL_REVISION_1,
-            &mut descriptor,
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: both path and descriptor are valid for the duration of the call.
-    let result = unsafe { SetFileSecurityW(path.as_ptr(), DACL_SECURITY_INFORMATION, descriptor) };
-    // SAFETY: descriptor was allocated by the conversion API above.
-    unsafe { LocalFree(descriptor) };
-    if result == 0 {
-        Err(std::io::Error::last_os_error().into())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn verify_windows_directory_acl(path: &Utf8Path) -> Result<(), Error> {
-    use std::{iter, os::windows::ffi::OsStrExt};
-
-    const SDDL_REVISION_1: u32 = 1;
-    const DACL_SECURITY_INFORMATION: u32 = 0x0000_0004;
-    const SE_DACL_PROTECTED: u16 = 0x1000;
-    #[link(name = "Advapi32")]
-    unsafe extern "system" {
-        fn GetFileSecurityW(
-            file_name: *const u16,
-            information: u32,
-            descriptor: *mut core::ffi::c_void,
-            length: u32,
-            needed: *mut u32,
-        ) -> i32;
-        fn GetSecurityDescriptorControl(
-            descriptor: *const core::ffi::c_void,
-            control: *mut u16,
-            revision: *mut u32,
-        ) -> i32;
-        fn ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor: *const core::ffi::c_void,
-            revision: u32,
-            information: u32,
-            output: *mut *mut u16,
-            length: *mut u32,
-        ) -> i32;
-    }
-    #[link(name = "Kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(memory: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    }
-
-    let path_wide: Vec<u16> = path
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    let mut needed = 0_u32;
-    // SAFETY: null output with length zero is the documented size query.
-    unsafe {
-        GetFileSecurityW(
-            path_wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            std::ptr::null_mut(),
-            0,
-            &mut needed,
-        );
-    }
-    if needed == 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let words = (needed as usize).div_ceil(std::mem::size_of::<usize>());
-    let mut descriptor = vec![0_usize; words];
-    // SAFETY: descriptor has at least `needed` writable bytes and path is NUL-terminated.
-    if unsafe {
-        GetFileSecurityW(
-            path_wide.as_ptr(),
-            DACL_SECURITY_INFORMATION,
-            descriptor.as_mut_ptr().cast(),
-            needed,
-            &mut needed,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-
-    let mut control = 0_u16;
-    let mut revision = 0_u32;
-    // SAFETY: descriptor contains a security descriptor returned by GetFileSecurityW.
-    if unsafe {
-        GetSecurityDescriptorControl(descriptor.as_ptr().cast(), &mut control, &mut revision)
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    if control & SE_DACL_PROTECTED == 0 {
-        return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
-    }
-
-    let mut sddl = std::ptr::null_mut();
-    let mut sddl_len = 0_u32;
-    // SAFETY: descriptor is valid; the output is LocalAlloc-owned on success.
-    if unsafe {
-        ConvertSecurityDescriptorToStringSecurityDescriptorW(
-            descriptor.as_ptr().cast(),
-            SDDL_REVISION_1,
-            DACL_SECURITY_INFORMATION,
-            &mut sddl,
-            &mut sddl_len,
-        )
-    } == 0
-    {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    // SAFETY: conversion returned `sddl_len` initialized UTF-16 code units.
-    let text =
-        String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(sddl, sddl_len as usize) });
-    // SAFETY: sddl was allocated by the conversion API above.
-    unsafe { LocalFree(sddl.cast()) };
-    let broad_principals = [";;;WD)", ";;;AU)", ";;;BU)", ";;;IU)", ";;;AN)", ";;;NU)"];
-    if broad_principals
-        .iter()
-        .any(|principal| text.contains(principal))
-    {
-        return Err(Error::UnsafeRuntimeArtifact(path.to_owned()));
-    }
-    Ok(())
-}
-
-#[cfg(unix)]
-async fn atomic_move_new(source: &Utf8Path, target: &Utf8Path) -> std::io::Result<()> {
-    // Linking publishes the already-fsynced inode atomically and fails if the
-    // destination appeared after validation; removing the staging name does
-    // not affect readers of the committed target.
-    tokio::fs::hard_link(source, target).await?;
-    tokio::fs::remove_file(source).await
-}
-
-#[cfg(unix)]
-async fn atomic_replace(source: &Utf8Path, target: &Utf8Path) -> std::io::Result<()> {
-    tokio::fs::rename(source, target).await
-}
-
-#[cfg(windows)]
-async fn atomic_move_new(source: &Utf8Path, target: &Utf8Path) -> std::io::Result<()> {
-    windows_move_file(source, target, false)
-}
-
-#[cfg(windows)]
-async fn atomic_replace(source: &Utf8Path, target: &Utf8Path) -> std::io::Result<()> {
-    const RETRIES: usize = 20;
-    for attempt in 0..RETRIES {
-        match windows_replace_file(source, target) {
-            Ok(()) => return Ok(()),
-            Err(error)
-                if matches!(error.raw_os_error(), Some(5 | 32 | 33)) && attempt + 1 < RETRIES =>
-            {
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-    unreachable!("bounded retry loop returns on its final attempt")
-}
-
-#[cfg(windows)]
-fn windows_move_file(source: &Utf8Path, target: &Utf8Path, replace: bool) -> std::io::Result<()> {
-    use std::{iter, os::windows::ffi::OsStrExt};
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-    unsafe extern "system" {
-        fn MoveFileExW(existing: *const u16, new: *const u16, flags: u32) -> i32;
-    }
-    let source: Vec<u16> = source
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    let target: Vec<u16> = target
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    let flags = MOVEFILE_WRITE_THROUGH
-        | if replace {
-            MOVEFILE_REPLACE_EXISTING
-        } else {
-            0
-        };
-    // SAFETY: both arguments are valid, NUL-terminated UTF-16 strings for the duration of the call.
-    if unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) } == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn windows_replace_file(source: &Utf8Path, target: &Utf8Path) -> std::io::Result<()> {
-    use std::{iter, os::windows::ffi::OsStrExt};
-
-    const REPLACEFILE_WRITE_THROUGH: u32 = 0x1;
-    unsafe extern "system" {
-        fn ReplaceFileW(
-            replaced: *const u16,
-            replacement: *const u16,
-            backup: *const u16,
-            flags: u32,
-            exclude: *mut core::ffi::c_void,
-            reserved: *mut core::ffi::c_void,
-        ) -> i32;
-    }
-    let source: Vec<u16> = source
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    let target: Vec<u16> = target
-        .as_std_path()
-        .as_os_str()
-        .encode_wide()
-        .chain(iter::once(0))
-        .collect();
-    // SAFETY: path arguments are valid NUL-terminated UTF-16 strings; optional pointers are null.
-    if unsafe {
-        ReplaceFileW(
-            target.as_ptr(),
-            source.as_ptr(),
-            std::ptr::null(),
-            REPLACEFILE_WRITE_THROUGH,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        )
-    } == 0
-    {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(unix)]
-async fn sync_parent(dir: &Utf8Path) -> std::io::Result<()> {
-    let dir = dir.to_owned();
-    tokio::task::spawn_blocking(move || std::fs::File::open(dir)?.sync_all())
-        .await
-        .map_err(std::io::Error::other)?
-}
-
-#[cfg(windows)]
-async fn sync_parent(_dir: &Utf8Path) -> std::io::Result<()> {
-    // MoveFileExW requests write-through for first publication. Microsoft
-    // documents ReplaceFileW's WRITE_THROUGH flag as unsupported, and std
-    // cannot fsync a Windows directory, so replacement power-loss durability
-    // is not asserted here.
-    Ok(())
 }
 
 #[cfg(test)]
