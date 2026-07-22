@@ -1,4 +1,20 @@
 
+## [1.4.6] - 2026-07-22
+
+
+### 🐛 Bug Fixes
+
+- **ci:** Collapse inline tables to single line for cross compatibility by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.5...v1.4.6
+
+
+
+
 ## [1.4.5] - 2026-07-22
 
 
