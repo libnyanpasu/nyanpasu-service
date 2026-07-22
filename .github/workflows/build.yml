@@ -34,25 +34,14 @@ jobs:
       - name: Install coreutils for macOS
         if: contains(matrix.profile.os, 'macos')
         run: brew install coreutils
-      - name: Setup Cross
-        if: contains(matrix.profile.target, 'musl')
-        run: |
-          curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
-          cargo binstall cross -y
       - uses: goto-bus-stop/setup-zig@v2
         name: Setup Zig
-        if: contains(matrix.profile.target, 'musl') == false
       - name: Setup Cargo zigbuild
-        if: contains(matrix.profile.target, 'musl') == false
         run: |
           curl -L --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/cargo-bins/cargo-binstall/main/install-from-binstall-release.sh | bash
           cargo binstall cargo-zigbuild -y
       - name: Build
-        if: contains(matrix.profile.target, 'musl') == false
         run: cargo +nightly zigbuild --release --target ${{ matrix.profile.target }}
-      - name: Build with Cross
-        if: contains(matrix.profile.target, 'musl')
-        run: cross +nightly build --release --target ${{ matrix.profile.target }}
       - name: Archive
         run: |
           mkdir -p target/release
