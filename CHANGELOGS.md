@@ -1,4 +1,153 @@
 
+## [1.4.5] - 2026-07-22
+
+
+### ✅ Testing
+
+- **clash-api:** Add mihomo end-to-end integration tests by @greenhat616 
+
+- **clash-api:** Cover maintenance routes and queries by @greenhat616 
+
+- **nyanpasu-core-manager:** Add real-mihomo smoke tests by @greenhat616 
+
+- **nyanpasu-core-manager:** Cover graceful-switch rollback and patch fallback by @greenhat616 
+
+- **nyanpasu-core-manager:** Serve the fake core over local transports by @greenhat616 
+
+- **nyanpasu-core-manager:** Make the equivalence gate teardown deterministic by @greenhat616 
+
+- **nyanpasu-core-manager:** Add the legacy lifecycle equivalence gate by @greenhat616 
+
+- **nyanpasu-core-manager:** Cover user stop semantics by @greenhat616 
+
+- **nyanpasu-core-manager:** Cover crash recovery and budget exhaustion by @greenhat616 
+
+- **nyanpasu-core-manager:** Cover immediate-exit startup failure by @greenhat616 
+
+- **nyanpasu-core-manager:** Cover the startup-timeout kill path by @greenhat616 
+
+- **nyanpasu-core-manager:** Add the fake-core simulator and shared test utilities by @greenhat616 
+
+- **nyanpasu-ipc:** Cover every client interface over pipe and unix socket by @greenhat616 
+
+
+### ✨ Features
+
+- **clash-api:** Add specta types and ordered maps by @greenhat616 
+
+- **clash-api:** Implement typed mihomo client by @greenhat616 
+
+- **clash-api:** Add transport-aware client by @greenhat616 
+
+- **nyanpasu-core-manager:** Customizable health probes with runtime liveness by @greenhat616 
+
+- **nyanpasu-core-manager:** Write-ahead graceful switch + end-to-end orphan recovery by @greenhat616 
+
+- **nyanpasu-core-manager:** Strict diff classification + apply_config compensating saga by @greenhat616 
+
+- **nyanpasu-core-manager:** Manager-owned runtime artifacts + immutable config snapshots by @greenhat616 
+
+- **nyanpasu-core-manager:** Add graceful switching with a degradation matrix by @greenhat616 
+
+- **nyanpasu-core-manager:** Add managed controller mode with derived configs by @greenhat616 
+
+- **nyanpasu-core-manager:** Add derived-config generation with a listener restore plan by @greenhat616 
+
+- **nyanpasu-core-manager:** Add restart and hard switching by @greenhat616 
+
+- **nyanpasu-core-manager:** Add CoreManager start/stop with status publication by @greenhat616 
+
+- **nyanpasu-core-manager:** Add the health-probed single-epoch instance by @greenhat616 
+
+- **nyanpasu-core-manager:** Add the version health probe by @greenhat616 
+
+- **nyanpasu-core-manager:** Add one-shot config checking by @greenhat616 
+
+- **nyanpasu-core-manager:** Add runtime-config introspection and controller resolution by @greenhat616 
+
+- **nyanpasu-core-manager:** Add error, state, and spec types by @greenhat616 
+
+- **nyanpasu-core-manager:** Migrate parse_check_output and add error_summary by @greenhat616 
+
+- **nyanpasu-core-manager:** Add core kinds and launch profiles by @greenhat616 
+
+- **utils:** Land process module via submodule branch; backfill design doc P0-P2/O3 closure by @greenhat616 
+
+- **utils/process:** Add process feature wiring and public event/error types by @greenhat616 
+
+
+### 🐛 Bug Fixes
+
+- **ci:** Publish ci by @greenhat616 
+
+- **deps:** Update whoami to v2 by @greenhat616 
+
+- **nyanpasu-core-manager:** Avoid never-loop lint on non-Windows by @greenhat616 
+
+- **nyanpasu-core-manager:** Gate test hooks, structure durability errors, keep quarantine status by @greenhat616 
+
+- **nyanpasu-core-manager:** Retryable quarantine recovery + durability surfacing by @greenhat616 
+
+- **nyanpasu-core-manager:** Quarantine unconfirmed stops + drop-safety + durability-aware commits by @greenhat616 
+
+- **nyanpasu-core-manager:** Review fixes — runtime-dir ownership, unconfirmed-stop safety, socket cleanup, dns classification by @greenhat616 
+
+- **nyanpasu-core-manager:** Plug config leaks and stale rollback state by @greenhat616 
+
+- **nyanpasu-core-manager:** Publish terminal states on stop and switch error paths by @greenhat616 
+
+- **nyanpasu-core-manager:** Make managed pipe templates unique per test by @greenhat616 
+
+- **nyanpasu-core-manager:** Give restart/switch tests startup-timeout headroom by @greenhat616 
+
+- **nyanpasu-core-manager:** Cancel supervision when an instance is dropped by @greenhat616 
+
+- **nyanpasu-core-manager:** Restore the crate-level docs dropped in the lib.rs rewrite by @greenhat616 
+
+- **nyanpasu-ipc:** Make the default-pipe SDDL test alias-aware by @greenhat616 
+
+
+### 💅 Styling
+
+- **nyanpasu-core-manager:** Apply rustfmt to the remaining modules by @greenhat616 
+
+- **nyanpasu-core-manager:** Apply rustfmt to the config module by @greenhat616 
+
+
+### 📚 Documentation
+
+- Update README by @greenhat616 
+
+- Add README by @greenhat616 
+
+- Mark the core-manager design spec as implemented by @greenhat616 
+
+- Add the nyanpasu-core-manager implementation plan by @greenhat616 
+
+- Add the nyanpasu-core-manager design spec by @greenhat616 
+
+- Add serena dir by @greenhat616 
+
+- Add AGENT guideline by @greenhat616 
+
+- Add process module design spec and implementation plan by @greenhat616 
+
+
+### 🔨 Refactor
+
+- **core-manager:** Use atomic-fs in nyanpasu-utils by @greenhat616 
+
+- **nyanpasu-ipc:** Rewrite the client with reqwest and reqwest-websocket by @greenhat616 
+
+-----------------
+
+
+
+**Full Changelog**: https://github.com/libnyanpasu/nyanpasu-service/compare/v1.4.4...v1.4.5
+
+
+
+
 ## [1.4.4] - 2026-07-14
 
 
