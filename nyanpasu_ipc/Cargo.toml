@@ -11,14 +11,7 @@ required-features = ["client", "server"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nyanpasu-utils = {
-  path = "../crates/nyanpasu-utils",
-  default-features = false,
-  features = [
-    "core_manager",
-    "serde",
-  ]
-}
+nyanpasu-utils = { path = "../crates/nyanpasu-utils", default-features = false, features = ["core_manager", "serde"] }
 
 anyhow = { workspace = true }
 axum = { version = "0.8", features = ["ws"], optional = true }
