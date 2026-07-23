@@ -20,10 +20,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::Error,
-    health::{HealthTracker, TrackerState},
+    health::{
+        HealthTracker, TrackerState,
+        driver::{ProbeDriver, ProbeObservation},
+    },
     kind::{self, MIHOMO_SAFE_PATHS_ENV_NAME},
     probe::{ControllerVersionProbe, ProbeHandle, ProbePhase, ProbeResult},
-    probe_driver::{ProbeDriver, ProbeObservation},
     spec::{InstanceOptions, InstanceSpec, ResolvedController},
     state::{HealthState, HealthStatus, InstanceState, InstanceStatus, StopReason, now_ms},
 };

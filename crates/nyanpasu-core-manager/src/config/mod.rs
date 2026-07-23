@@ -1,5 +1,8 @@
 //! Immutable config snapshots and deterministic effective documents.
 
+pub(crate) mod diff;
+pub mod runtime_store;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use serde_yaml_ng::{Mapping, Value};
 
