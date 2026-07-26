@@ -1,7 +1,7 @@
 use crate::{
     config::{
         ConfigSnapshot,
-        diff::{self, ConfigChange},
+        mihomo::{self, ConfigChange},
     },
     error::Error,
     instance::Instance,
@@ -41,7 +41,7 @@ impl CoreManager {
         let prepared = self
             .prepare_apply(current, input.clone(), &snapshot)
             .await?;
-        let change = diff::classify(
+        let change = mihomo::classify(
             &current.source_document,
             &current.effective_document,
             &current.source_spec,
@@ -242,7 +242,7 @@ impl CoreManager {
         &self,
         instance: &Instance,
         patch: &clash_api::ConfigPatch,
-        projection: &diff::RuntimeProjection,
+        projection: &mihomo::RuntimeProjection,
     ) -> bool {
         let client = match crate::health::build_control_client(
             instance.controller(),

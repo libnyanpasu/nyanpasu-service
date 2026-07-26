@@ -15,7 +15,7 @@ use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::{
-    config::{self, ConfigSnapshot, diff},
+    config::{self, ConfigSnapshot, mihomo},
     error::Error,
     instance::Instance,
     probe::ProbeHandle,
@@ -136,7 +136,7 @@ struct PreparedLaunch {
 struct PreparedGraceful {
     launch: PreparedLaunch,
     full_staged: StagedRuntimeConfig,
-    restoration: Option<(Box<clash_api::ConfigPatch>, diff::RuntimeProjection)>,
+    restoration: Option<(Box<clash_api::ConfigPatch>, mihomo::RuntimeProjection)>,
 }
 
 struct PreparedApply {

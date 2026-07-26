@@ -1,6 +1,13 @@
 //! Immutable config snapshots and deterministic effective documents.
+//!
+//! This module owns the schema-agnostic pipeline — read, canonicalize, hash,
+//! serialize. Every rule that names a YAML key lives in a per-core module:
+//! [`clash`] for the controller vocabulary shared by all supported kinds, and
+//! [`mihomo`] for the Mihomo-only capabilities layered on top.
 
-pub(crate) mod diff;
+mod clash;
+mod diff;
+pub(crate) mod mihomo;
 pub mod runtime_store;
 
 use camino::{Utf8Path, Utf8PathBuf};
@@ -73,7 +80,7 @@ impl ConfigSnapshot {
 
     #[cfg(test)]
     pub(crate) fn info(&self) -> ConfigInfo {
-        inspect_mapping(&self.document)
+        clash::inspect(&self.document)
     }
 
     pub(crate) fn prepare_full(
@@ -104,24 +111,7 @@ impl ConfigSnapshot {
         let mut document = self.document.clone();
 
         if zero_inbounds {
-            for key in [
-                "port",
-                "socks-port",
-                "redir-port",
-                "tproxy-port",
-                "mixed-port",
-            ] {
-                zero_listener(&mut document, key);
-            }
-            if let Some(tun) = document
-                .get_mut(Value::String("tun".to_owned()))
-                .and_then(Value::as_mapping_mut)
-            {
-                let enable = Value::String("enable".to_owned());
-                if tun.get(&enable).and_then(Value::as_bool) == Some(true) {
-                    tun.insert(enable, Value::from(false));
-                }
-            }
+            mihomo::zero_inbounds(&mut document);
         }
 
         if let ControllerMode::Managed {
@@ -129,27 +119,15 @@ impl ConfigSnapshot {
             ..
         } = mode
         {
-            document.remove(Value::String("external-controller".to_owned()));
-            document.remove(Value::String("external-controller-pipe".to_owned()));
-            document.remove(Value::String("external-controller-unix".to_owned()));
             let endpoint =
                 managed_endpoint_path(runtime_dir, controller_template.as_deref(), epoch)?;
-            #[cfg(windows)]
-            document.insert(
-                Value::String("external-controller-pipe".to_owned()),
-                Value::String(endpoint),
-            );
-            #[cfg(not(windows))]
-            document.insert(
-                Value::String("external-controller-unix".to_owned()),
-                Value::String(endpoint),
-            );
+            clash::rewrite_managed_controller(&mut document, endpoint);
         }
 
         let Value::Mapping(document) = canonicalize(Value::Mapping(document))? else {
             unreachable!("canonical mapping remains a mapping")
         };
-        let info = inspect_mapping(&document);
+        let info = clash::inspect(&document);
         let controller = resolve_controller(&info)?;
         let bytes = serialize_mapping(&document)?;
         Ok(PreparedConfig {
@@ -213,20 +191,6 @@ fn str_value(doc: &Mapping, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(str::to_owned)
         .filter(|value| !value.is_empty())
-}
-
-fn inspect_mapping(doc: &Mapping) -> ConfigInfo {
-    #[cfg(windows)]
-    let local = str_value(doc, "external-controller-pipe").map(RawController::Pipe);
-    #[cfg(not(windows))]
-    let local = str_value(doc, "external-controller-unix").map(RawController::Unix);
-
-    let controller =
-        local.or_else(|| str_value(doc, "external-controller").map(RawController::Http));
-    ConfigInfo {
-        controller,
-        secret: str_value(doc, "secret"),
-    }
 }
 
 pub(crate) fn resolve_controller(info: &ConfigInfo) -> Result<ResolvedController, Error> {
@@ -310,18 +274,6 @@ fn managed_unix_endpoint(runtime_dir: &Utf8Path, endpoint: &str) -> Result<Strin
         Error::InvalidManagerOptions("managed Unix controller must name a socket file".into())
     })?;
     Ok(canonical_parent.join(file_name).to_string())
-}
-
-fn zero_listener(document: &mut Mapping, key: &str) {
-    let key = Value::String(key.to_owned());
-    if document
-        .get(&key)
-        .and_then(Value::as_i64)
-        .filter(|value| *value != 0)
-        .is_some()
-    {
-        document.insert(key, Value::from(0));
-    }
 }
 
 #[cfg(test)]

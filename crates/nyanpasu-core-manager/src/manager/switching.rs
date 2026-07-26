@@ -1,7 +1,7 @@
 use crate::{
     config::{
         ConfigSnapshot,
-        diff::{self, OverlapBlock},
+        mihomo::{self, OverlapBlock},
     },
     error::Error,
     instance::Instance,
@@ -92,7 +92,7 @@ impl CoreManager {
         match graceful_degrade_reason(
             managed,
             spec.core.kind,
-            diff::overlap_block(snapshot.document()),
+            mihomo::overlap_block(snapshot.document()),
         ) {
             Some(reason) => {
                 self.hard_switch(ctrl, spec, snapshot).await?;
@@ -436,7 +436,7 @@ impl CoreManager {
                 "full and bootstrap configs resolved different controllers".into(),
             ));
         }
-        let restoration = diff::restoration_patch(&bootstrap.document, &full.document)?;
+        let restoration = mihomo::restoration_patch(&bootstrap.document, &full.document)?;
 
         let full_staged = self.inner.store.stage(epoch, &full.bytes).await?;
         let mut check_spec = spec.clone();
