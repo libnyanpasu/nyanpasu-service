@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "crates/clash-api",
   "crates/nyanpasu-core-manager",
+  "crates/nyanpasu-core-metadata",
   "crates/nyanpasu-utils",
   "nyanpasu_ipc",
   "nyanpasu_service"
