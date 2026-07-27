@@ -8,9 +8,13 @@
 
 use super::Support;
 use enumset::{EnumSet, EnumSetType};
+use schemars::JsonSchema;
 use semver::{Version, VersionReq};
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
-#[derive(Debug, EnumSetType)]
+#[derive(Debug, EnumSetType, Type, JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Feature {
     /// Supports a Windows named pipe for IPC.
     NamedPipeIpc,

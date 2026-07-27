@@ -1,14 +1,16 @@
 use constcat::concat;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Type, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Type, JsonSchema, Serialize, Deserialize)]
+#[serde(untagged)]
 pub enum CoreKind {
     Clash(ClashCoreKind),
     SingBox,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Type, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, Type, JsonSchema, Serialize, Deserialize)]
 #[repr(u8)]
 /// Supported Clash core kinds. This is used to gate the launch arguments and api favors.
 ///
