@@ -13,10 +13,19 @@ pub enum Error {
     ConfigNotFound(Utf8PathBuf),
     #[error("core binary not found: {0}")]
     BinaryNotFound(Utf8PathBuf),
+    #[error("failed to probe version from core binary `{binary_path}`: {detail}")]
+    CoreVersionProbeFailed {
+        binary_path: Utf8PathBuf,
+        detail: String,
+    },
     #[error("no external controller configured; the version health probe needs one")]
     ControllerMissing,
     #[error("core kind `{0}` has no launch profile yet")]
     UnsupportedCore(CoreKind),
+    #[error(
+        "core `{kind}` version `{version}` does not support the required local IPC transport; use LocalIpcPolicy::Prefer or LocalIpcPolicy::Disable"
+    )]
+    RequiredLocalIpcUnsupported { kind: CoreKind, version: String },
     #[error("config check failed: {0}")]
     ConfigCheckFailed(String),
     #[error("invalid runtime config: {0}")]

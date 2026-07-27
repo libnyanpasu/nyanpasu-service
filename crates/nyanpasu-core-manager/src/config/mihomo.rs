@@ -553,7 +553,7 @@ mod tests {
                 &current,
                 &Mapping::new(),
                 &Mapping::new(),
-                &spec(CoreKind::ClashRs, "clash-rs"),
+                &spec(CoreKind::ClashRust, "clash-rs"),
             )
             .unwrap(),
             ConfigChange::Switch

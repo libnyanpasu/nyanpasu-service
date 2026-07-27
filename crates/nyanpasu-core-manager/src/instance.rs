@@ -132,9 +132,7 @@ impl Instance {
             return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
         }
         // Rejects kinds without a launch profile (`Meow`) before spawning.
-        spec.core
-            .kind
-            .run_args(&spec.working_dir, &spec.config_path)?;
+        kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
 
         let readiness_probe = match readiness_probe {
             Some(probe) => probe,
@@ -430,10 +428,7 @@ impl Drop for Instance {
 }
 
 fn build_command(spec: &InstanceSpec, epoch: u64) -> Command {
-    let args = spec
-        .core
-        .kind
-        .run_args(&spec.working_dir, &spec.config_path)
+    let args = kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)
         .expect("kind validated in Instance::spawn");
     let config_dir = spec
         .config_path

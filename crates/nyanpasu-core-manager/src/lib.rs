@@ -3,6 +3,7 @@
 //!
 //! Design: docs/superpowers/specs/2026-07-18-nyanpasu-core-manager-design.md
 
+mod capability;
 mod config;
 mod error;
 mod health;
@@ -12,6 +13,7 @@ pub mod manager;
 pub mod spec;
 pub mod state;
 
+pub use capability::Feature;
 pub use clash_api::Host;
 pub use config::runtime_store;
 pub use error::Error;
@@ -28,7 +30,8 @@ pub use runtime_store::{
     StagedRuntimeConfig,
 };
 pub use spec::{
-    ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, ManagerOptions, ResolvedController,
+    ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, LocalIpcPolicy, ManagerOptions,
+    ResolvedController,
 };
 pub use state::{
     ConfigRevision, CoreState, CoreStatus, HealthState, HealthStatus, InstanceState,

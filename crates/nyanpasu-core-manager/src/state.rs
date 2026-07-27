@@ -2,7 +2,7 @@
 
 use camino::Utf8PathBuf;
 
-use crate::kind::CoreKind;
+use crate::{Feature, kind::CoreKind};
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +134,8 @@ pub enum CoreState {
 pub struct SpecSummary {
     pub kind: CoreKind,
     pub config_path: Utf8PathBuf,
+    /// Capabilities resolved as supported for the active epoch.
+    pub features: Vec<Feature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -180,7 +182,7 @@ pub struct CoreStatus {
     pub changed_at: i64,
     pub health: Option<HealthStatus>,
     pub spec: Option<SpecSummary>,
-    /// The controller endpoint owned by the active epoch in either mode.
+    /// The primary controller channel used by the current active instance.
     pub controller: Option<clash_api::Host>,
     pub revision: Option<ConfigRevision>,
 }

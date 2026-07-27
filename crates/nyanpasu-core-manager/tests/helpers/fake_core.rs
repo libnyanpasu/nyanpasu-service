@@ -118,6 +118,23 @@ struct Ctx {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|arg| arg == "-v") {
+        if let Ok(binary) = std::env::current_exe()
+            && binary
+                .file_stem()
+                .is_some_and(|name| name.to_string_lossy().starts_with("nyanpasu-version-probe"))
+        {
+            let counter = binary.with_extension("version-probes");
+            let count = std::fs::read_to_string(&counter)
+                .ok()
+                .and_then(|value| value.trim().parse::<u64>().ok())
+                .unwrap_or(0)
+                + 1;
+            std::fs::write(counter, count.to_string()).expect("write version probe counter");
+        }
+        println!("Mihomo Meta v1.18.9 linux test");
+        return;
+    }
     let check_mode = args.iter().any(|a| a == "-t");
     let config_path = args
         .iter()

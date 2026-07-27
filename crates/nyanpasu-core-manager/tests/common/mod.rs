@@ -52,7 +52,7 @@ pub fn mihomo_spec(dir: &Utf8Path, config_path: Utf8PathBuf) -> InstanceSpec {
         core: CoreSpec {
             kind: CoreKind::Mihomo,
             binary_path: fake_core_bin(),
-            version: None,
+            version: Some("v1.18.9".into()),
             features: Vec::new(),
         },
         config_path,

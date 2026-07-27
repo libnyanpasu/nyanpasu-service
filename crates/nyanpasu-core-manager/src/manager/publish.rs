@@ -1,4 +1,5 @@
 use crate::{
+    Feature,
     error::Error,
     instance::Instance,
     spec::InstanceSpec,
@@ -38,6 +39,7 @@ impl Inner {
             state,
             &active.source_spec,
             &active.revision,
+            &active.features,
         );
     }
 
@@ -47,13 +49,14 @@ impl Inner {
         state: CoreState,
         source_spec: &InstanceSpec,
         revision: &ConfigRevision,
+        features: &enumset::EnumSet<Feature>,
     ) {
         let health = instance.state().borrow().health.clone();
         self.status_tx.send_modify(|status| {
             let lifecycle_changed = status.state != state;
             status.state = state;
             status.health = health;
-            status.spec = Some(spec_summary(source_spec));
+            status.spec = Some(spec_summary(source_spec, features));
             status.controller = Some(instance.controller().host.clone());
             status.revision = Some(revision.clone());
             if lifecycle_changed {
@@ -108,10 +111,14 @@ fn apply_epoch_status(status: &mut CoreStatus, epoch: u64, instance: &InstanceSt
     true
 }
 
-pub(super) fn spec_summary(spec: &InstanceSpec) -> SpecSummary {
+pub(super) fn spec_summary(
+    spec: &InstanceSpec,
+    features: &enumset::EnumSet<Feature>,
+) -> SpecSummary {
     SpecSummary {
         kind: spec.core.kind,
         config_path: spec.config_path.clone(),
+        features: features.iter().collect(),
     }
 }
 

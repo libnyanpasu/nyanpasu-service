@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use nyanpasu_core_manager::{
     ControllerMode, ControllerVersionProbe, CoreKind, CoreState, DegradeReason, Error, HealthProbe,
-    ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
+    LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 fn unique_template() -> Option<String> {
@@ -29,6 +29,7 @@ async fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
         controller_mode: ControllerMode::Managed {
             derived_dir,
             controller_template: unique_template(),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         ..Default::default()
     })
@@ -435,6 +436,7 @@ async fn graceful_patch_timeout_with_matching_get_is_success() {
         controller_mode: ControllerMode::Managed {
             derived_dir,
             controller_template: unique_template(),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         control_timeout: Duration::from_millis(50),
         reconcile_timeout: Duration::from_secs(3),
@@ -530,6 +532,83 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
 }
 
 #[tokio::test]
+async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let mixed = common::free_port();
+    let controller = common::free_port();
+    let shared_controller = format!("127.0.0.1:{controller}");
+    let config_a = common::write_config(
+        &dir,
+        &format!("mixed-port: {mixed}\nexternal-controller: {shared_controller}\nsecret: shared\n"),
+    );
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!(
+            "mixed-port: {mixed}\nexternal-controller: {shared_controller}\nsecret: shared\nx-fake-core:\n  ready-delay-ms: 2000\n"
+        ),
+    )
+    .unwrap();
+    let manager = Arc::new(managed_manager(derived_dir.clone()).await);
+    manager
+        .start(common::mihomo_spec(&dir, config_a))
+        .await
+        .expect("start old core");
+
+    let switching = {
+        let manager = manager.clone();
+        let mut spec_b = common::mihomo_spec(&dir, config_b);
+        spec_b.options.startup_timeout = Duration::from_secs(15);
+        tokio::spawn(async move { manager.switch(spec_b).await })
+    };
+    let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let old = nyanpasu_utils::process::read_epoch_pid_file(
+                derived_dir.join("core-1.pid").as_std_path(),
+            )
+            .await
+            .ok()
+            .flatten();
+            let new = nyanpasu_utils::process::read_epoch_pid_file(
+                derived_dir.join("core-2.pid").as_std_path(),
+            )
+            .await
+            .ok()
+            .flatten();
+            if let (Some(old), Some(new)) = (old, new) {
+                break (old, new);
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("epoch pid files never overlapped");
+    assert_ne!(old_record.pid, new_record.pid);
+
+    for epoch in [1, 2] {
+        let runtime = std::fs::read_to_string(derived_dir.join(format!("config-{epoch}.yaml")))
+            .expect("read overlapping effective config");
+        let document: serde_yaml_ng::Mapping =
+            serde_yaml_ng::from_str(&runtime).expect("parse effective config");
+        assert!(
+            !document.contains_key(serde_yaml_ng::Value::String("external-controller".into())),
+            "epoch {epoch} retained the shared HTTP controller"
+        );
+        assert_eq!(
+            document
+                .get(serde_yaml_ng::Value::String("secret".into()))
+                .and_then(serde_yaml_ng::Value::as_str),
+            Some("shared"),
+            "epoch {epoch} did not retain the source secret"
+        );
+    }
+
+    assert_eq!(switching.await.unwrap().unwrap(), SwitchOutcome::Graceful);
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
 async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
     let (_guard, dir) = common::utf8_tempdir();
     let derived_dir = dir.join("derived");
@@ -545,6 +624,7 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
             controller_mode: ControllerMode::Managed {
                 derived_dir: derived_dir.clone(),
                 controller_template: unique_template(),
+                local_ipc_policy: LocalIpcPolicy::Force,
             },
             stop_timeout: Duration::from_secs(1),
             ..Default::default()
@@ -636,6 +716,57 @@ async fn managed_hard_switch_removes_old_derived_config() {
 }
 
 #[tokio::test]
+async fn prefer_http_fallback_degrades_switch_to_hard() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let derived_dir = dir.join("derived");
+    let port = common::free_port();
+    let config_a = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
+    let config_b = dir.join("config-b.yaml");
+    std::fs::write(
+        &config_b,
+        format!("external-controller: 127.0.0.1:{port}\nmode: direct\n"),
+    )
+    .unwrap();
+    let manager = CoreManager::new(ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir,
+            controller_template: unique_template(),
+            local_ipc_policy: LocalIpcPolicy::Prefer,
+        },
+        ..ManagerOptions::default()
+    })
+    .await
+    .unwrap();
+    let mut spec_a = common::mihomo_spec(&dir, config_a);
+    let mut spec_b = common::mihomo_spec(&dir, config_b);
+    #[cfg(windows)]
+    let unsupported = "1.18.8";
+    #[cfg(not(windows))]
+    let unsupported = "1.18.3";
+    spec_a.core.version = Some(unsupported.into());
+    spec_b.core.version = Some(unsupported.into());
+    manager.start(spec_a).await.unwrap();
+
+    let outcome = manager.switch(spec_b).await.unwrap();
+
+    assert_eq!(
+        outcome,
+        SwitchOutcome::Hard {
+            reason: DegradeReason::HttpController
+        }
+    );
+    assert!(matches!(
+        manager.status().state,
+        CoreState::Running { epoch: 2, .. }
+    ));
+    assert!(matches!(
+        manager.status().controller,
+        Some(nyanpasu_core_manager::Host::Http(_))
+    ));
+    manager.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn derive_failure_republishes_old_running_state() {
     let (_guard, dir) = common::utf8_tempdir();
     let derived_dir = dir.join("derived");
@@ -693,6 +824,7 @@ async fn failed_new_core_while_old_restarting_republishes_actual_state() {
         controller_mode: ControllerMode::Managed {
             derived_dir,
             controller_template: unique_template(),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         cancel_token: cancel_token.clone(),
         ..Default::default()
@@ -823,6 +955,7 @@ async fn rejected_patch_falls_back_to_a_hard_restart() {
         controller_mode: ControllerMode::Managed {
             derived_dir: dir.join("derived"),
             controller_template: unique_template(),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         ..ManagerOptions::default()
     })

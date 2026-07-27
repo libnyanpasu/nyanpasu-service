@@ -11,16 +11,21 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use enumset::EnumSet;
 use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::{
+    Feature,
+    capability::{ResolvedFeatures, VersionCache},
     config::{self, ConfigSnapshot, mihomo},
     error::Error,
     instance::Instance,
     probe::ProbeHandle,
     runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
-    spec::{ControllerMode, InstanceSpec, ManagerOptions, ResolvedController},
+    spec::{
+        ControllerMode, CoreSpec, InstanceSpec, LocalIpcPolicy, ManagerOptions, ResolvedController,
+    },
     state::{ConfigRevision, CoreState, CoreStatus, InstanceStatus, StopReason},
 };
 
@@ -35,6 +40,7 @@ pub enum DegradeReason {
     DnsListen,
     InboundConflict,
     PatchFailed,
+    HttpController,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +102,7 @@ struct Inner {
     ctrl: tokio::sync::Mutex<Ctrl>,
     status_tx: watch::Sender<CoreStatus>,
     epoch: AtomicU64,
+    version_cache: VersionCache,
     // Declared last so ordinary Inner destruction drops instances/tasks before
     // releasing directory ownership.
     _runtime_lock: RuntimeDirectoryLock,
@@ -120,6 +127,7 @@ struct Active {
     forwarder: tokio::task::JoinHandle<()>,
     source_spec: InstanceSpec,
     revision: ConfigRevision,
+    features: EnumSet<Feature>,
     source_document: Mapping,
     effective_document: Mapping,
 }
@@ -129,6 +137,7 @@ struct PreparedLaunch {
     effective_spec: InstanceSpec,
     controller: ResolvedController,
     revision: ConfigRevision,
+    features: EnumSet<Feature>,
     source_document: Mapping,
     effective_document: Mapping,
 }
@@ -144,6 +153,7 @@ struct PreparedApply {
     effective_spec: InstanceSpec,
     controller: ResolvedController,
     revision: ConfigRevision,
+    features: EnumSet<Feature>,
     source_document: Mapping,
     effective_document: Mapping,
     staged: StagedRuntimeConfig,
@@ -226,6 +236,7 @@ impl CoreManager {
                 ctrl: tokio::sync::Mutex::default(),
                 status_tx,
                 epoch: AtomicU64::new(max_epoch),
+                version_cache: VersionCache::default(),
                 _runtime_lock: runtime_lock,
             }),
         })
@@ -298,7 +309,7 @@ impl CoreManager {
         let epoch = prepared.revision.epoch;
         self.inner.publish(
             CoreState::Starting { epoch },
-            Some(spec_summary(&prepared.source_spec)),
+            Some(spec_summary(&prepared.source_spec, &prepared.features)),
             Some(prepared.controller.host.clone()),
             Some(prepared.revision.clone()),
         );
@@ -339,6 +350,7 @@ impl CoreManager {
             CoreState::Running { epoch, pid },
             &prepared.source_spec,
             &prepared.revision,
+            &prepared.features,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -347,6 +359,7 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
+            features: prepared.features,
             source_document: prepared.source_document,
             effective_document: prepared.effective_document,
         });
@@ -367,6 +380,7 @@ impl CoreManager {
             forwarder,
             source_spec,
             revision,
+            features,
             ..
         } = active;
         let captured_status = instance.state().borrow().clone();
@@ -375,7 +389,7 @@ impl CoreManager {
             let epoch = instance.epoch();
             self.inner.publish(
                 instance_core_state(epoch, &captured_status.state),
-                Some(spec_summary(&source_spec)),
+                Some(spec_summary(&source_spec, &features)),
                 Some(instance.controller().host.clone()),
                 Some(revision),
             );
@@ -397,7 +411,7 @@ impl CoreManager {
         let epoch = instance.epoch();
         self.inner.publish(
             CoreState::Stopping { epoch },
-            Some(spec_summary(&source_spec)),
+            Some(spec_summary(&source_spec, &features)),
             Some(instance.controller().host.clone()),
             Some(revision),
         );
@@ -430,6 +444,31 @@ impl CoreManager {
         crate::kind::check_config(spec).await
     }
 
+    async fn resolve_features(&self, core: &CoreSpec) -> Result<ResolvedFeatures, Error> {
+        crate::capability::resolve_features(&self.inner.version_cache, core).await
+    }
+
+    fn warn_http_fallback(
+        &self,
+        core: &CoreSpec,
+        resolved_version: Option<&str>,
+        rewrote_controller: bool,
+    ) {
+        let ControllerMode::Managed {
+            local_ipc_policy, ..
+        } = &self.inner.options.controller_mode
+        else {
+            return;
+        };
+        if *local_ipc_policy == LocalIpcPolicy::Prefer && !rewrote_controller {
+            tracing::warn!(
+                kind = %core.kind,
+                version = resolved_version.or(core.version.as_deref()).unwrap_or("unknown"),
+                "local IPC is unsupported; falling back to the configured HTTP controller"
+            );
+        }
+    }
+
     /// Stops the active instance even while another epoch is quarantined.
     ///
     /// Like [`Self::stop`], shutdown intentionally bypasses the quarantine
@@ -442,13 +481,14 @@ impl CoreManager {
                 forwarder,
                 source_spec,
                 revision,
+                features,
                 ..
             } = active;
             abort_and_await(forwarder).await;
             let epoch = instance.epoch();
             self.inner.publish(
                 CoreState::Stopping { epoch },
-                Some(spec_summary(&source_spec)),
+                Some(spec_summary(&source_spec, &features)),
                 Some(instance.controller().host.clone()),
                 Some(revision),
             );
