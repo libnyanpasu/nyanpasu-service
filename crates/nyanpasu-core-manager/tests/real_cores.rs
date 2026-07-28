@@ -75,33 +75,54 @@ async fn start_bed(core: &RealCore, policy: LocalIpcPolicy) -> (TestBed, CoreMan
 /// Drives traffic through the core's inbound and asserts it comes back via
 /// the socks5 outbound node: client → core mixed-port → `out` proxy →
 /// socks5 server → echo target.
+///
+/// The whole exchange is retried, not just the connect: on a busy runner the
+/// core can accept the inbound connection before its outbound dial is ready
+/// and drop the client mid-stream.
 async fn assert_proxy_chain(bed: &TestBed) {
-    let payload = b"nyanpasu-probe";
+    let payload: &[u8; 14] = b"nyanpasu-probe";
     let before = bed.socks5.connection_count();
-    // The inbound listener can lag the readiness probe briefly; retry.
-    let mut stream = {
-        let mut attempt = tokio::time::interval(Duration::from_millis(100));
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        loop {
-            attempt.tick().await;
-            match socks5::connect_via(bed.mixed_port, "127.0.0.1", bed.echo_port).await {
-                Ok(stream) => break stream,
-                Err(_) if tokio::time::Instant::now() < deadline => continue,
-                Err(error) => panic!("cannot connect through the core: {error}"),
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut last_error: Option<std::io::Error> = None;
+    while tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            roundtrip(bed.mixed_port, bed.echo_port, payload),
+        )
+        .await
+        {
+            Ok(Ok(())) => {
+                assert!(
+                    bed.socks5.connection_count() > before,
+                    "traffic must flow through the socks5 outbound node"
+                );
+                return;
+            }
+            Ok(Err(error)) => last_error = Some(error),
+            Err(_) => {
+                last_error = Some(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "echo timed out",
+                ));
             }
         }
-    };
-    stream.write_all(payload).await.expect("write payload");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("proxy chain never came up: {last_error:?}");
+}
+
+async fn roundtrip(mixed_port: u16, echo_port: u16, payload: &[u8; 14]) -> std::io::Result<()> {
+    let mut stream = socks5::connect_via(mixed_port, "127.0.0.1", echo_port).await?;
+    stream.write_all(payload).await?;
     let mut buf = [0u8; 14];
-    tokio::time::timeout(Duration::from_secs(5), stream.read_exact(&mut buf))
-        .await
-        .expect("echo timed out")
-        .expect("read echo");
-    assert_eq!(&buf, payload, "echo payload mismatch");
-    assert!(
-        bed.socks5.connection_count() > before,
-        "traffic must flow through the socks5 outbound node"
-    );
+    stream.read_exact(&mut buf).await?;
+    if &buf != payload {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "echo payload mismatch",
+        ));
+    }
+    Ok(())
 }
 
 fn assert_transport(host: &Host, expect_local: bool, context: &str) {
