@@ -115,7 +115,7 @@ const args = parseArgs(Deno.args, {
 
 for (const core of CORES) {
   const override = args[`${core.name}-version`];
-  if (override) core.version = override;
+  if (typeof override === "string") core.version = override;
 }
 
 const selected = args.only
@@ -229,13 +229,13 @@ async function extractTarGz(
   // meow tarballs ship a single `meow` binary, possibly inside a directory.
   for (const entry of Deno.readDirSync(destDir)) {
     const full = path.join(destDir, entry.name);
-    if (entry.isFile() && entry.name.startsWith("meow")) {
+    if (entry.isFile && entry.name.startsWith("meow")) {
       await Deno.rename(full, targetPath);
       return;
     }
     if (entry.isDirectory) {
       for (const nested of Deno.readDirSync(full)) {
-        if (nested.isFile() && nested.name.startsWith("meow")) {
+        if (nested.isFile && nested.name.startsWith("meow")) {
           await Deno.rename(path.join(full, nested.name), targetPath);
           return;
         }
