@@ -30,7 +30,7 @@
 | 内核建模 | kind 与元数据分离(alpha 变体降为 binary/metadata 差异);service 边界做旧 IPC `CoreType` 映射,wire 不变 |
 | 并发模型 | 混合:控制面 async Mutex 串行 + 每 Instance 一个监视 task + watch 发布 |
 | 无 controller 配置 | `start` 严格报错(不降级为存活即成功) |
-| Meow | 保留 kind 声明位,launch profile 未定义前 spawn 返回 `UnsupportedCore` |
+| Meow | 与 Mihomo 共用 launch profile(`-m -d -f`,meow 兼容 mihomo CLI) |
 
 ## 2. 目标与非目标
 
@@ -91,7 +91,7 @@ pub enum CoreKind { Mihomo, ClashPremium, ClashRs, Meow }
   - `Mihomo`:`-m -d <working_dir> -f <config>`
   - `ClashRs`:`-d <working_dir> -c <config>`
   - `ClashPremium`:`-d <working_dir> -f <config>`
-  - `Meow`:未定义,spawn 返回 `Error::UnsupportedCore`(保留声明位)
+  - `Meow`:与 `Mihomo` 相同(meow 兼容 mihomo CLI)
 - alpha 变体不是独立 kind:`kind = Mihomo` + 不同 `binary_path` + `CoreSpec.version/features` 元数据。
 - `check_config`:迁移旧 `CoreInstance::check_config_`,用 `process::Command::output()` 一次性执行(`mihomo -t` 等),mihomo 系错误输出经 `parse_check_output` 提炼。
 
