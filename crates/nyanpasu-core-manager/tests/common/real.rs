@@ -51,6 +51,16 @@ pub fn workspace_root() -> Utf8PathBuf {
         .to_owned()
 }
 
+/// Serializes the real-core tests: parallel runs contend on CPU and on
+/// ephemeral ports (a free port can be grabbed by another test's core before
+/// this one binds it), which made startup and proxy-chain checks flaky.
+pub async fn serial_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 /// Locates the core binary in `tests/bin`; `<NAME>_BIN` (e.g. `MIHOMO_BIN`,
 /// `CLASH_RS_BIN`) overrides the path.
 pub fn real_core_bin(core: &RealCore) -> Utf8PathBuf {

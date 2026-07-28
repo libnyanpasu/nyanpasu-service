@@ -122,6 +122,7 @@ fn assert_transport(host: &Host, expect_local: bool, context: &str) {
 // === start / stop ===
 
 async fn start_stop(core: RealCore) {
+    let _serial = real::serial_lock().await;
     let (bed, manager) = start_bed(&core, LocalIpcPolicy::Prefer).await;
     let controller = manager.status().controller.expect("controller advertised");
     assert_transport(&controller, core.system_ipc, core.name);
@@ -159,6 +160,7 @@ async fn meow_starts_proxies_and_stops() {
 // === config update ===
 
 async fn config_update(core: RealCore) {
+    let _serial = real::serial_lock().await;
     let (mut bed, manager) = start_bed(&core, LocalIpcPolicy::Prefer).await;
     let spec = || real::real_spec(&core, &bed.dir, bed.dir.join("config.yaml"));
     let mut extra = String::new();
@@ -282,6 +284,7 @@ async fn meow_config_update() {
 /// Starts the core in the given IPC mode, asserts the resolved transport, and
 /// proves the control channel works over it with a config patch.
 async fn ipc_mode_start(core: RealCore, policy: LocalIpcPolicy, expect_local: bool) {
+    let _serial = real::serial_lock().await;
     let (bed, manager) = start_bed(&core, policy).await;
     let controller = manager.status().controller.expect("controller advertised");
     assert_transport(&controller, expect_local, core.name);
@@ -312,6 +315,7 @@ async fn ipc_mode_start(core: RealCore, policy: LocalIpcPolicy, expect_local: bo
 
 /// Force on an HTTP-only core must fail the start with `RequiredLocalIpcUnsupported`.
 async fn ipc_mode_force_rejected(core: RealCore) {
+    let _serial = real::serial_lock().await;
     let bed = bed().await;
     let config = write_proxy_config(&bed, "");
     let manager = real::managed_manager(&bed.dir, LocalIpcPolicy::Force).await;
