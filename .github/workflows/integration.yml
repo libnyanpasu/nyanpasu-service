@@ -16,12 +16,12 @@ permissions:
   contents: read
 
 jobs:
-  real-mihomo:
+  real-cores:
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    name: Real mihomo tests (${{ matrix.os }})
+    name: Real core tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -46,12 +46,14 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Download mihomo core
-        run: deno run -A scripts/prepare-mihomo.ts
+      - name: Download cores
+        run: deno run -A scripts/prepare-cores.ts
       - name: Run integration tests
         run: cargo test -p clash-api --test mihomo -- --ignored --nocapture
       - name: Run core-manager smoke tests
         run: cargo test -p nyanpasu-core-manager --test real_mihomo_smoke -- --ignored --nocapture
+      - name: Run core-manager real-core tests
+        run: cargo test -p nyanpasu-core-manager --test real_cores -- --ignored --nocapture
 
   nyanpasu-ipc:
     strategy:
