@@ -321,7 +321,8 @@ for (const core of selected) {
         await extractTarGz(tmpFile, tmpDir, targetPath);
         break;
       case "raw":
-        await Deno.rename(tmpFile, targetPath);
+        // copyFile overwrites an existing target; rename cannot on Windows.
+        await Deno.copyFile(tmpFile, targetPath);
         break;
     }
 
