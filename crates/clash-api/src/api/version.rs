@@ -2,9 +2,11 @@ use reqwest::Method;
 
 use crate::{Client, Result, retry::RequestMetadata};
 
-/// Mihomo core version information.
+/// Core version information. Clash Premium omits `meta`, so it defaults to
+/// `false` for non-mihomo cores.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize, specta::Type)]
 pub struct Version {
+    #[serde(default)]
     pub meta: bool,
     pub version: String,
 }

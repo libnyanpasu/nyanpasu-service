@@ -1,6 +1,9 @@
 //! Shared utilities for nyanpasu-core-manager integration tests.
 #![allow(dead_code)]
 
+pub mod real;
+pub mod socks5;
+
 use std::{sync::Arc, time::Duration};
 
 use camino::{Utf8Path, Utf8PathBuf};

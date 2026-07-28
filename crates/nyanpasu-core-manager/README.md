@@ -365,6 +365,12 @@ directory. Managed mode may use `derived_dir` as the compatibility runtime-dir
 alias; Passthrough requires `runtime_dir` explicitly. The advertised endpoint
 is available as `CoreStatus.controller` in both modes.
 
+Managed endpoints are per-kind: mihomo and clash-rs (new enough versions) take
+a named pipe / unix socket, clash premium and meow are HTTP-only. clash-rs is
+a special case — its CLI unconditionally overrides the config's IPC key, so
+the manager passes the endpoint as `--controller-ipc` instead of
+`external-controller-pipe` in YAML.
+
 ### Apply config with revision CAS
 
 ```rust
@@ -530,6 +536,19 @@ it first, or point `MIHOMO_BIN` at one):
 deno run -A scripts/prepare-mihomo.ts
 cargo test -p nyanpasu-core-manager --test real_mihomo_smoke -- --ignored --nocapture
 ```
+
+A broader suite covers all four real cores — mihomo, clash-rs, clash premium
+and meow: start/stop, proxied traffic through a test socks5 outbound, config
+updates (noop/patch/reload/restart per kind), and the Force/Prefer/Disable
+local IPC policies:
+
+```sh
+deno run -A scripts/prepare-cores.ts
+cargo test -p nyanpasu-core-manager --test real_cores -- --ignored --nocapture
+```
+
+Each binary can be overridden with `<NAME>_BIN` (`MIHOMO_BIN`, `CLASH_RS_BIN`,
+`CLASH_BIN`, `MEOW_BIN`).
 
 ## Design
 
