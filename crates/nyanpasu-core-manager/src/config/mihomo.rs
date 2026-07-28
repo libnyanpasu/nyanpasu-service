@@ -217,9 +217,14 @@ pub(crate) fn classify(
 
     let source_diff = diff(current_source, desired_source);
     if desired_spec.core.kind != CoreKind::Mihomo {
-        // Non-mihomo kinds degrade to Switch — but an identical config is
-        // still a Noop; there is nothing to deny.
-        return Ok(if source_diff.is_empty() {
+        // Non-mihomo kinds degrade to Switch. An identical config is still a
+        // Noop — but only when the *effective* documents also match: a
+        // capability change (e.g. the binary was replaced in place and now
+        // resolves a different version) can alter the derived config and the
+        // resolved controller without any source edit, and that must restart.
+        let unchanged =
+            source_diff.is_empty() && diff(current_effective, desired_effective).is_empty();
+        return Ok(if unchanged {
             ConfigChange::Noop
         } else {
             ConfigChange::Switch
@@ -550,6 +555,25 @@ mod tests {
                 "{kind:?} should noop on an identical config"
             );
         }
+    }
+
+    #[test]
+    fn non_mihomo_noop_requires_unchanged_effective_config() {
+        // Same source, but capability resolution rewrote the controller:
+        // the derived config changed, so this must restart, not noop.
+        let spec = spec(CoreKind::ClashRust, "clash-rs");
+        assert!(matches!(
+            classify(
+                &mapping("mixed-port: 7890"),
+                &mapping("external-controller: 127.0.0.1:9090"),
+                &spec,
+                &mapping("mixed-port: 7890"),
+                &mapping("external-controller-pipe: /tmp/core-1.sock"),
+                &spec,
+            )
+            .unwrap(),
+            ConfigChange::Switch
+        ));
     }
 
     #[test]
