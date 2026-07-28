@@ -2,7 +2,7 @@
 
 use camino::Utf8PathBuf;
 
-use crate::{Feature, kind::CoreKind};
+use crate::{Feature, RuntimeFeature, kind::CoreKind};
 
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,8 +134,10 @@ pub enum CoreState {
 pub struct SpecSummary {
     pub kind: CoreKind,
     pub config_path: Utf8PathBuf,
-    /// Capabilities resolved as supported for the active epoch.
-    pub features: Vec<Feature>,
+    /// Capabilities the active core build supports, resolved from its version.
+    pub capabilities: Vec<Feature>,
+    /// Functionality the manager actually enabled for the active epoch.
+    pub runtime_features: Vec<RuntimeFeature>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

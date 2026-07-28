@@ -416,12 +416,15 @@ tokio::spawn(async move {
 
 `CoreStatus` also carries `changed_at` (unix ms of the last lifecycle
 transition), `health`, `spec`, `controller`, and the active `ConfigRevision`.
-`SpecSummary.features` contains only capabilities resolved as supported for
-that epoch, while `controller` identifies the primary channel actually in use.
-These fields are published together, so a new epoch is never paired with the
-previous epoch's controller, features, or health. A caller can infer a
-`Prefer` fallback when the selected policy is `Prefer` and the controller is
-HTTP.
+`SpecSummary` separates the two feature dimensions: `capabilities` lists what
+the core build supports (`Feature`, resolved from its version), while
+`runtime_features` lists what the manager actually enabled for that epoch
+(`RuntimeFeature`, derived from capabilities and policy). The two disagree
+exactly where policy overrides ability — under `Disable` the capability stays
+listed while `local-ipc` is absent, and a `Prefer` fallback is visible directly
+as `runtime_features` without `local-ipc` rather than inferred from policy plus
+controller host. These fields are published together, so a new epoch is never
+paired with the previous epoch's controller, features, or health.
 
 ## Runtime directory security and recovery
 

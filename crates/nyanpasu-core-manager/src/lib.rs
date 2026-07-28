@@ -13,7 +13,7 @@ pub mod manager;
 pub mod spec;
 pub mod state;
 
-pub use capability::Feature;
+pub use capability::{Feature, RuntimeFeature};
 pub use clash_api::Host;
 pub use config::runtime_store;
 pub use error::Error;

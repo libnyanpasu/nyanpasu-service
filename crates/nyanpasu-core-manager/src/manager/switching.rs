@@ -1,7 +1,8 @@
 use crate::{
+    RuntimeFeature,
     capability::ResolvedFeatures,
     config::{
-        self, ConfigSnapshot,
+        ConfigSnapshot,
         mihomo::{self, OverlapBlock},
     },
     error::Error,
@@ -94,13 +95,9 @@ impl CoreManager {
             self.inner.options.controller_mode,
             ControllerMode::Managed { .. }
         );
+        self.validate_launchable(&spec).await?;
         let resolved = self.resolve_features(&spec.core).await?;
-        let local_controller = config::should_rewrite_controller(
-            &self.inner.options.controller_mode,
-            &spec.core,
-            managed.then_some(&resolved.features),
-            resolved.version.as_deref(),
-        )?;
+        let local_controller = resolved.runtime.contains(RuntimeFeature::LocalIpc);
         match graceful_degrade_reason(
             managed,
             local_controller,
@@ -140,7 +137,11 @@ impl CoreManager {
                 from: old_epoch,
                 to: epoch,
             },
-            Some(spec_summary(&prepared.source_spec, &prepared.features)),
+            Some(spec_summary(
+                &prepared.source_spec,
+                prepared.capabilities,
+                prepared.runtime_features,
+            )),
             Some(prepared.controller.host.clone()),
             Some(prepared.revision.clone()),
         );
@@ -197,7 +198,11 @@ impl CoreManager {
                 from: old_epoch,
                 to: epoch,
             },
-            Some(spec_summary(&launch.source_spec, &launch.features)),
+            Some(spec_summary(
+                &launch.source_spec,
+                launch.capabilities,
+                launch.runtime_features,
+            )),
             Some(launch.controller.host.clone()),
             Some(launch.revision.clone()),
         );
@@ -370,7 +375,8 @@ impl CoreManager {
             CoreState::Running { epoch, pid },
             &prepared.source_spec,
             &prepared.revision,
-            &prepared.features,
+            prepared.capabilities,
+            prepared.runtime_features,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -379,10 +385,21 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
-            features: prepared.features,
+            capabilities: prepared.capabilities,
+            runtime_features: prepared.runtime_features,
             source_document: prepared.source_document,
             effective_document: prepared.effective_document,
         });
+    }
+
+    /// Launchability comes before capability: an unlaunchable kind or missing
+    /// binary must fail as such, never as a missing local transport.
+    pub(super) async fn validate_launchable(&self, spec: &InstanceSpec) -> Result<(), Error> {
+        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
+            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
+        }
+        crate::kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
+        Ok(())
     }
 
     pub(super) async fn prepare_launch(
@@ -391,6 +408,7 @@ impl CoreManager {
         epoch: u64,
         snapshot: &ConfigSnapshot,
     ) -> Result<PreparedLaunch, Error> {
+        self.validate_launchable(spec).await?;
         let resolved = self.resolve_features(&spec.core).await?;
         self.prepare_launch_with_features(spec, epoch, snapshot, resolved)
             .await
@@ -404,21 +422,11 @@ impl CoreManager {
         resolved: ResolvedFeatures,
     ) -> Result<PreparedLaunch, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
-        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
-            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
-        }
-        crate::kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
-        let managed = matches!(
-            self.inner.options.controller_mode,
-            ControllerMode::Managed { .. }
-        );
         let prepared = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
-            &spec.core,
-            managed.then_some(&resolved.features),
-            resolved.version.as_deref(),
+            resolved.runtime,
         )?;
         self.warn_http_fallback(
             &spec.core,
@@ -446,7 +454,8 @@ impl CoreManager {
                 effective_hash: prepared.effective_hash,
                 runtime_path,
             },
-            features: resolved.features,
+            capabilities: resolved.capabilities,
+            runtime_features: resolved.runtime,
             source_document: snapshot.document().clone(),
             effective_document: prepared.document,
         })
@@ -460,30 +469,17 @@ impl CoreManager {
         resolved: ResolvedFeatures,
     ) -> Result<PreparedGraceful, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
-        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
-            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
-        }
-        crate::kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
-        let managed = matches!(
-            self.inner.options.controller_mode,
-            ControllerMode::Managed { .. }
-        );
-        let config_features = managed.then_some(&resolved.features);
         let full = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
-            &spec.core,
-            config_features,
-            resolved.version.as_deref(),
+            resolved.runtime,
         )?;
         let bootstrap = snapshot.prepare_bootstrap(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
-            &spec.core,
-            config_features,
-            resolved.version.as_deref(),
+            resolved.runtime,
         )?;
         self.warn_http_fallback(
             &spec.core,
@@ -524,7 +520,8 @@ impl CoreManager {
                     effective_hash: full.effective_hash,
                     runtime_path,
                 },
-                features: resolved.features,
+                capabilities: resolved.capabilities,
+                runtime_features: resolved.runtime,
                 source_document: snapshot.document().clone(),
                 effective_document: full.document,
             },

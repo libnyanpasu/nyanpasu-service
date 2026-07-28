@@ -10,7 +10,7 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
     ControllerMode, CoreKind, CoreManager, CoreState, Error, Feature, Host, LocalIpcPolicy,
-    ManagerOptions,
+    ManagerOptions, RuntimeFeature,
 };
 
 fn unique_template() -> Option<String> {
@@ -189,14 +189,9 @@ async fn prefer_falls_back_to_the_upstream_http_controller_and_secret() {
         status.controller.as_ref(),
         Some(Host::Http(url)) if url.as_str() == format!("http://127.0.0.1:{port}/")
     ));
-    assert!(
-        !status
-            .spec
-            .as_ref()
-            .expect("spec summary")
-            .features
-            .contains(&platform_local_feature())
-    );
+    let summary = status.spec.as_ref().expect("spec summary");
+    assert!(!summary.capabilities.contains(&platform_local_feature()));
+    assert!(!summary.runtime_features.contains(&RuntimeFeature::LocalIpc));
     let runtime = std::fs::read_to_string(&status.revision.as_ref().unwrap().runtime_path).unwrap();
     assert!(runtime.contains(&format!("external-controller: 127.0.0.1:{port}")));
     assert!(runtime.contains("secret: upstream-secret"));
@@ -224,14 +219,10 @@ async fn disable_uses_http_even_when_local_ipc_is_supported() {
 
     let status = manager.status();
     assert!(matches!(status.controller, Some(Host::Http(_))));
-    assert!(
-        status
-            .spec
-            .as_ref()
-            .unwrap()
-            .features
-            .contains(&platform_local_feature())
-    );
+    let summary = status.spec.as_ref().unwrap();
+    // The capability is still reported even though policy keeps it off.
+    assert!(summary.capabilities.contains(&platform_local_feature()));
+    assert!(!summary.runtime_features.contains(&RuntimeFeature::LocalIpc));
     manager.shutdown().await.unwrap();
 }
 
@@ -255,9 +246,14 @@ async fn force_uses_only_local_ipc_and_retains_the_secret() {
     assert!(matches!(status.controller, Some(Host::NamedPipe(_))));
     #[cfg(not(windows))]
     assert!(matches!(status.controller, Some(Host::UnixSocket(_))));
-    let features = &status.spec.as_ref().unwrap().features;
-    assert!(features.contains(&platform_local_feature()));
-    assert!(!features.contains(&Feature::DisableTcpController));
+    let summary = status.spec.as_ref().unwrap();
+    assert!(summary.capabilities.contains(&platform_local_feature()));
+    assert!(
+        !summary
+            .capabilities
+            .contains(&Feature::DisableTcpController)
+    );
+    assert!(summary.runtime_features.contains(&RuntimeFeature::LocalIpc));
     let runtime = std::fs::read_to_string(status.revision.unwrap().runtime_path).unwrap();
     assert!(!runtime.contains(&format!("external-controller: 127.0.0.1:{port}")));
     assert!(runtime.contains("secret: retained-secret"));

@@ -14,10 +14,12 @@ use camino::{Utf8Path, Utf8PathBuf};
 use enumset::EnumSet;
 use serde_yaml_ng::{Mapping, Value};
 
+pub(crate) use clash::LOCAL_TRANSPORT_FEATURE;
+
 use crate::{
-    Feature,
+    capability::RuntimeFeature,
     error::Error,
-    spec::{ControllerMode, CoreSpec, LocalIpcPolicy, ResolvedController},
+    spec::{ControllerMode, ResolvedController},
 };
 
 #[derive(Debug, Clone)]
@@ -91,19 +93,9 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
-        core: &CoreSpec,
-        features: Option<&EnumSet<Feature>>,
-        resolved_version: Option<&str>,
+        runtime: EnumSet<RuntimeFeature>,
     ) -> Result<PreparedConfig, Error> {
-        self.prepare(
-            mode,
-            runtime_dir,
-            epoch,
-            core,
-            features,
-            resolved_version,
-            false,
-        )
+        self.prepare(mode, runtime_dir, epoch, runtime, false)
     }
 
     pub(crate) fn prepare_bootstrap(
@@ -111,19 +103,9 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
-        core: &CoreSpec,
-        features: Option<&EnumSet<Feature>>,
-        resolved_version: Option<&str>,
+        runtime: EnumSet<RuntimeFeature>,
     ) -> Result<PreparedConfig, Error> {
-        self.prepare(
-            mode,
-            runtime_dir,
-            epoch,
-            core,
-            features,
-            resolved_version,
-            true,
-        )
+        self.prepare(mode, runtime_dir, epoch, runtime, true)
     }
 
     fn prepare(
@@ -131,9 +113,7 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
-        core: &CoreSpec,
-        features: Option<&EnumSet<Feature>>,
-        resolved_version: Option<&str>,
+        runtime: EnumSet<RuntimeFeature>,
         zero_inbounds: bool,
     ) -> Result<PreparedConfig, Error> {
         let mut document = self.document.clone();
@@ -146,20 +126,9 @@ impl ConfigSnapshot {
             ControllerMode::Passthrough => (false, false),
             ControllerMode::Managed {
                 controller_template,
-                local_ipc_policy,
                 ..
             } => {
-                let features = features.ok_or_else(|| {
-                    Error::InvalidConfig(
-                        "managed controller preparation requires resolved features".into(),
-                    )
-                })?;
-                let rewrite = should_rewrite_managed_controller(
-                    *local_ipc_policy,
-                    core,
-                    features,
-                    resolved_version,
-                )?;
+                let rewrite = runtime.contains(RuntimeFeature::LocalIpc);
                 if rewrite {
                     let endpoint =
                         managed_endpoint_path(runtime_dir, controller_template.as_deref(), epoch)?;
@@ -187,47 +156,6 @@ impl ConfigSnapshot {
             controller,
             rewrote_controller,
         })
-    }
-}
-
-pub(crate) fn should_rewrite_controller(
-    mode: &ControllerMode,
-    core: &CoreSpec,
-    features: Option<&EnumSet<Feature>>,
-    resolved_version: Option<&str>,
-) -> Result<bool, Error> {
-    match mode {
-        ControllerMode::Passthrough => Ok(false),
-        ControllerMode::Managed {
-            local_ipc_policy, ..
-        } => {
-            let features = features.ok_or_else(|| {
-                Error::InvalidConfig(
-                    "managed controller preparation requires resolved features".into(),
-                )
-            })?;
-            should_rewrite_managed_controller(*local_ipc_policy, core, features, resolved_version)
-        }
-    }
-}
-
-fn should_rewrite_managed_controller(
-    local_ipc_policy: LocalIpcPolicy,
-    core: &CoreSpec,
-    features: &EnumSet<Feature>,
-    resolved_version: Option<&str>,
-) -> Result<bool, Error> {
-    let local_supported = features.contains(clash::LOCAL_TRANSPORT_FEATURE);
-    match (local_ipc_policy, local_supported) {
-        (LocalIpcPolicy::Force, false) => Err(Error::RequiredLocalIpcUnsupported {
-            kind: core.kind,
-            version: resolved_version
-                .or(core.version.as_deref())
-                .unwrap_or("unknown")
-                .to_owned(),
-        }),
-        (LocalIpcPolicy::Force | LocalIpcPolicy::Prefer, true) => Ok(true),
-        (LocalIpcPolicy::Prefer, false) | (LocalIpcPolicy::Disable, _) => Ok(false),
     }
 }
 
@@ -394,25 +322,11 @@ mod tests {
         let mode = ControllerMode::Managed {
             derived_dir: Utf8PathBuf::from("runtime"),
             controller_template: None,
-            local_ipc_policy: LocalIpcPolicy::Disable,
+            local_ipc_policy: crate::LocalIpcPolicy::Disable,
         };
-        let core = CoreSpec {
-            kind: crate::CoreKind::Mihomo,
-            binary_path: "mihomo".into(),
-            version: Some("v1.18.9".into()),
-            features: Vec::new(),
-        };
-        let features = EnumSet::only(clash::LOCAL_TRANSPORT_FEATURE);
 
         let error = source
-            .prepare_full(
-                &mode,
-                Utf8Path::new("runtime"),
-                1,
-                &core,
-                Some(&features),
-                core.version.as_deref(),
-            )
+            .prepare_full(&mode, Utf8Path::new("runtime"), 1, EnumSet::new())
             .unwrap_err();
 
         assert!(matches!(error, Error::ControllerMissing));
@@ -443,23 +357,14 @@ mod tests {
         let mode = ControllerMode::Managed {
             derived_dir: Utf8PathBuf::from("runtime"),
             controller_template: Some(r"\\.\pipe\ny-{epoch}".into()),
-            local_ipc_policy: LocalIpcPolicy::Force,
+            local_ipc_policy: crate::LocalIpcPolicy::Force,
         };
-        let core = CoreSpec {
-            kind: crate::CoreKind::Mihomo,
-            binary_path: "mihomo".into(),
-            version: Some("v1.18.9".into()),
-            features: Vec::new(),
-        };
-        let features = EnumSet::only(clash::LOCAL_TRANSPORT_FEATURE);
         let prepared = source
             .prepare_bootstrap(
                 &mode,
                 Utf8Path::new("runtime"),
                 7,
-                &core,
-                Some(&features),
-                core.version.as_deref(),
+                EnumSet::only(RuntimeFeature::LocalIpc),
             )
             .unwrap();
         assert_eq!(

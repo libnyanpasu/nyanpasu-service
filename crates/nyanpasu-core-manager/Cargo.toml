@@ -30,7 +30,10 @@ nyanpasu-utils = {
   features = ["process"]
 }
 parking_lot.workspace = true
+schemars = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 serde_yaml_ng = "0.10"
+specta = { version = "^2.0.0-rc.25", features = ["derive"] }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

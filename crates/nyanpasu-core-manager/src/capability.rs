@@ -4,11 +4,32 @@ use std::{
 };
 
 use camino::Utf8PathBuf;
-use enumset::EnumSet;
+use enumset::{EnumSet, EnumSetType};
 pub use nyanpasu_core_metadata::Feature;
 use nyanpasu_core_metadata::{CoreVersion, FeatureSupport};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use specta::Type;
 
-use crate::{Error, spec::CoreSpec};
+use crate::{
+    Error,
+    spec::{ControllerMode, CoreSpec, LocalIpcPolicy},
+};
+
+/// Functionality the manager actually enabled for an epoch.
+///
+/// [`Feature`] answers "does this core build implement a capability"; this set
+/// answers "did the manager turn it on". The two disagree exactly where policy
+/// overrides ability: a core that supports local IPC runs without it under
+/// [`LocalIpcPolicy::Disable`], and a `Prefer` fallback shows up here as a
+/// missing [`RuntimeFeature::LocalIpc`] rather than as an inference from
+/// policy plus controller host.
+#[derive(Debug, EnumSetType, Type, JsonSchema, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RuntimeFeature {
+    /// The epoch's control channel is a manager-owned local IPC endpoint.
+    LocalIpc,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct VersionCacheKey {
@@ -22,7 +43,10 @@ pub(crate) struct VersionCache {
 }
 
 pub(crate) struct ResolvedFeatures {
-    pub features: EnumSet<Feature>,
+    /// Capabilities the core build supports, per `nyanpasu-core-metadata`.
+    pub capabilities: EnumSet<Feature>,
+    /// What the manager enabled after weighing capabilities against policy.
+    pub runtime: EnumSet<RuntimeFeature>,
     pub version: Option<String>,
 }
 
@@ -99,16 +123,52 @@ async fn probe_version(binary_path: &camino::Utf8Path) -> Result<String, Error> 
 pub(crate) async fn resolve_features(
     cache: &VersionCache,
     core: &CoreSpec,
+    mode: &ControllerMode,
 ) -> Result<ResolvedFeatures, Error> {
-    if core.kind.potential_features().is_empty() {
-        return Ok(ResolvedFeatures {
-            features: EnumSet::new(),
-            version: core.version.clone(),
-        });
-    }
-    let version = cache.resolve(core).await?;
+    let (capabilities, version) = if core.kind.potential_features().is_empty() {
+        (EnumSet::new(), core.version.clone())
+    } else {
+        let version = cache.resolve(core).await?;
+        (
+            core.kind.features(Some(&CoreVersion::parse(&version))),
+            Some(version),
+        )
+    };
+    let runtime = resolve_runtime(mode, core, capabilities, version.as_deref())?;
     Ok(ResolvedFeatures {
-        features: core.kind.features(Some(&CoreVersion::parse(&version))),
-        version: Some(version),
+        capabilities,
+        runtime,
+        version,
     })
+}
+
+/// Decides the runtime set from capabilities and policy, so `Force` fails here
+/// — before any config is staged, checked, or spawned — when the core cannot
+/// satisfy the platform transport.
+fn resolve_runtime(
+    mode: &ControllerMode,
+    core: &CoreSpec,
+    capabilities: EnumSet<Feature>,
+    resolved_version: Option<&str>,
+) -> Result<EnumSet<RuntimeFeature>, Error> {
+    let ControllerMode::Managed {
+        local_ipc_policy, ..
+    } = mode
+    else {
+        return Ok(EnumSet::new());
+    };
+    let local_supported = capabilities.contains(crate::config::LOCAL_TRANSPORT_FEATURE);
+    match (*local_ipc_policy, local_supported) {
+        (LocalIpcPolicy::Force, false) => Err(Error::RequiredLocalIpcUnsupported {
+            kind: core.kind,
+            version: resolved_version
+                .or(core.version.as_deref())
+                .unwrap_or("unknown")
+                .to_owned(),
+        }),
+        (LocalIpcPolicy::Force | LocalIpcPolicy::Prefer, true) => {
+            Ok(EnumSet::only(RuntimeFeature::LocalIpc))
+        }
+        (LocalIpcPolicy::Prefer, false) | (LocalIpcPolicy::Disable, _) => Ok(EnumSet::new()),
+    }
 }

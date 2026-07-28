@@ -16,7 +16,7 @@ use serde_yaml_ng::Mapping;
 use tokio::sync::watch;
 
 use crate::{
-    Feature,
+    Feature, RuntimeFeature,
     capability::{ResolvedFeatures, VersionCache},
     config::{self, ConfigSnapshot, mihomo},
     error::Error,
@@ -127,7 +127,8 @@ struct Active {
     forwarder: tokio::task::JoinHandle<()>,
     source_spec: InstanceSpec,
     revision: ConfigRevision,
-    features: EnumSet<Feature>,
+    capabilities: EnumSet<Feature>,
+    runtime_features: EnumSet<RuntimeFeature>,
     source_document: Mapping,
     effective_document: Mapping,
 }
@@ -137,7 +138,8 @@ struct PreparedLaunch {
     effective_spec: InstanceSpec,
     controller: ResolvedController,
     revision: ConfigRevision,
-    features: EnumSet<Feature>,
+    capabilities: EnumSet<Feature>,
+    runtime_features: EnumSet<RuntimeFeature>,
     source_document: Mapping,
     effective_document: Mapping,
 }
@@ -153,7 +155,8 @@ struct PreparedApply {
     effective_spec: InstanceSpec,
     controller: ResolvedController,
     revision: ConfigRevision,
-    features: EnumSet<Feature>,
+    capabilities: EnumSet<Feature>,
+    runtime_features: EnumSet<RuntimeFeature>,
     source_document: Mapping,
     effective_document: Mapping,
     staged: StagedRuntimeConfig,
@@ -309,7 +312,11 @@ impl CoreManager {
         let epoch = prepared.revision.epoch;
         self.inner.publish(
             CoreState::Starting { epoch },
-            Some(spec_summary(&prepared.source_spec, &prepared.features)),
+            Some(spec_summary(
+                &prepared.source_spec,
+                prepared.capabilities,
+                prepared.runtime_features,
+            )),
             Some(prepared.controller.host.clone()),
             Some(prepared.revision.clone()),
         );
@@ -350,7 +357,8 @@ impl CoreManager {
             CoreState::Running { epoch, pid },
             &prepared.source_spec,
             &prepared.revision,
-            &prepared.features,
+            prepared.capabilities,
+            prepared.runtime_features,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -359,7 +367,8 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
-            features: prepared.features,
+            capabilities: prepared.capabilities,
+            runtime_features: prepared.runtime_features,
             source_document: prepared.source_document,
             effective_document: prepared.effective_document,
         });
@@ -380,7 +389,8 @@ impl CoreManager {
             forwarder,
             source_spec,
             revision,
-            features,
+            capabilities,
+            runtime_features,
             ..
         } = active;
         let captured_status = instance.state().borrow().clone();
@@ -389,7 +399,7 @@ impl CoreManager {
             let epoch = instance.epoch();
             self.inner.publish(
                 instance_core_state(epoch, &captured_status.state),
-                Some(spec_summary(&source_spec, &features)),
+                Some(spec_summary(&source_spec, capabilities, runtime_features)),
                 Some(instance.controller().host.clone()),
                 Some(revision),
             );
@@ -411,7 +421,7 @@ impl CoreManager {
         let epoch = instance.epoch();
         self.inner.publish(
             CoreState::Stopping { epoch },
-            Some(spec_summary(&source_spec, &features)),
+            Some(spec_summary(&source_spec, capabilities, runtime_features)),
             Some(instance.controller().host.clone()),
             Some(revision),
         );
@@ -445,7 +455,12 @@ impl CoreManager {
     }
 
     async fn resolve_features(&self, core: &CoreSpec) -> Result<ResolvedFeatures, Error> {
-        crate::capability::resolve_features(&self.inner.version_cache, core).await
+        crate::capability::resolve_features(
+            &self.inner.version_cache,
+            core,
+            &self.inner.options.controller_mode,
+        )
+        .await
     }
 
     fn warn_http_fallback(
@@ -481,14 +496,15 @@ impl CoreManager {
                 forwarder,
                 source_spec,
                 revision,
-                features,
+                capabilities,
+                runtime_features,
                 ..
             } = active;
             abort_and_await(forwarder).await;
             let epoch = instance.epoch();
             self.inner.publish(
                 CoreState::Stopping { epoch },
-                Some(spec_summary(&source_spec, &features)),
+                Some(spec_summary(&source_spec, capabilities, runtime_features)),
                 Some(instance.controller().host.clone()),
                 Some(revision),
             );
