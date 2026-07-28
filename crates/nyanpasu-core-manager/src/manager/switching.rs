@@ -1,4 +1,6 @@
 use crate::{
+    RuntimeFeature,
+    capability::ResolvedFeatures,
     config::{
         ConfigSnapshot,
         mihomo::{self, OverlapBlock},
@@ -21,11 +23,15 @@ use super::{
 
 fn graceful_degrade_reason(
     managed: bool,
+    local_controller: bool,
     kind: CoreKind,
     overlap_block: Option<OverlapBlock>,
 ) -> Option<DegradeReason> {
     if !managed {
         return Some(DegradeReason::PassthroughMode);
+    }
+    if !local_controller {
+        return Some(DegradeReason::HttpController);
     }
     if !matches!(kind, CoreKind::Mihomo) {
         return Some(DegradeReason::UnsupportedKind);
@@ -89,16 +95,20 @@ impl CoreManager {
             self.inner.options.controller_mode,
             ControllerMode::Managed { .. }
         );
+        self.validate_launchable(&spec).await?;
+        let resolved = self.resolve_features(&spec.core).await?;
+        let local_controller = resolved.runtime.contains(RuntimeFeature::LocalIpc);
         match graceful_degrade_reason(
             managed,
+            local_controller,
             spec.core.kind,
             mihomo::overlap_block(snapshot.document()),
         ) {
             Some(reason) => {
-                self.hard_switch(ctrl, spec, snapshot).await?;
+                self.hard_switch(ctrl, spec, snapshot, resolved).await?;
                 Ok(SwitchOutcome::Hard { reason })
             }
-            None => self.graceful_switch(ctrl, spec, snapshot).await,
+            None => self.graceful_switch(ctrl, spec, snapshot, resolved).await,
         }
     }
 
@@ -107,9 +117,13 @@ impl CoreManager {
         ctrl: &mut Ctrl,
         spec: InstanceSpec,
         snapshot: ConfigSnapshot,
+        resolved: ResolvedFeatures,
     ) -> Result<(), Error> {
         let epoch = self.next_epoch();
-        let prepared = match self.prepare_launch(&spec, epoch, &snapshot).await {
+        let prepared = match self
+            .prepare_launch_with_features(&spec, epoch, &snapshot, resolved)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -123,7 +137,11 @@ impl CoreManager {
                 from: old_epoch,
                 to: epoch,
             },
-            Some(spec_summary(&prepared.source_spec)),
+            Some(spec_summary(
+                &prepared.source_spec,
+                prepared.capabilities,
+                prepared.runtime_features,
+            )),
             Some(prepared.controller.host.clone()),
             Some(prepared.revision.clone()),
         );
@@ -155,10 +173,14 @@ impl CoreManager {
         ctrl: &mut Ctrl,
         spec: InstanceSpec,
         snapshot: ConfigSnapshot,
+        resolved: ResolvedFeatures,
     ) -> Result<SwitchOutcome, Error> {
         let old_epoch = ctrl.current.as_ref().map(|active| active.instance.epoch());
         let epoch = self.next_epoch();
-        let prepared = match self.prepare_graceful(&spec, epoch, &snapshot).await {
+        let prepared = match self
+            .prepare_graceful(&spec, epoch, &snapshot, resolved)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(error) => {
                 let _ = self.inner.store.cleanup_epoch(epoch).await;
@@ -176,7 +198,11 @@ impl CoreManager {
                 from: old_epoch,
                 to: epoch,
             },
-            Some(spec_summary(&launch.source_spec)),
+            Some(spec_summary(
+                &launch.source_spec,
+                launch.capabilities,
+                launch.runtime_features,
+            )),
             Some(launch.controller.host.clone()),
             Some(launch.revision.clone()),
         );
@@ -349,6 +375,8 @@ impl CoreManager {
             CoreState::Running { epoch, pid },
             &prepared.source_spec,
             &prepared.revision,
+            prepared.capabilities,
+            prepared.runtime_features,
         );
         let forwarder = spawn_forwarder(&self.inner, instance.state(), epoch);
         ctrl.last_spec = Some(prepared.source_spec.clone());
@@ -357,9 +385,21 @@ impl CoreManager {
             forwarder,
             source_spec: prepared.source_spec,
             revision: prepared.revision,
+            capabilities: prepared.capabilities,
+            runtime_features: prepared.runtime_features,
             source_document: prepared.source_document,
             effective_document: prepared.effective_document,
         });
+    }
+
+    /// Launchability comes before capability: an unlaunchable kind or missing
+    /// binary must fail as such, never as a missing local transport.
+    pub(super) async fn validate_launchable(&self, spec: &InstanceSpec) -> Result<(), Error> {
+        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
+            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
+        }
+        crate::kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
+        Ok(())
     }
 
     pub(super) async fn prepare_launch(
@@ -368,18 +408,31 @@ impl CoreManager {
         epoch: u64,
         snapshot: &ConfigSnapshot,
     ) -> Result<PreparedLaunch, Error> {
+        self.validate_launchable(spec).await?;
+        let resolved = self.resolve_features(&spec.core).await?;
+        self.prepare_launch_with_features(spec, epoch, snapshot, resolved)
+            .await
+    }
+
+    async fn prepare_launch_with_features(
+        &self,
+        spec: &InstanceSpec,
+        epoch: u64,
+        snapshot: &ConfigSnapshot,
+        resolved: ResolvedFeatures,
+    ) -> Result<PreparedLaunch, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
-        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
-            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
-        }
-        spec.core
-            .kind
-            .run_args(&spec.working_dir, &spec.config_path)?;
         let prepared = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
+            resolved.runtime,
         )?;
+        self.warn_http_fallback(
+            &spec.core,
+            resolved.version.as_deref(),
+            prepared.rewrote_controller,
+        );
         let staged = self.inner.store.stage(epoch, &prepared.bytes).await?;
 
         let mut check_spec = spec.clone();
@@ -401,6 +454,8 @@ impl CoreManager {
                 effective_hash: prepared.effective_hash,
                 runtime_path,
             },
+            capabilities: resolved.capabilities,
+            runtime_features: resolved.runtime,
             source_document: snapshot.document().clone(),
             effective_document: prepared.document,
         })
@@ -411,24 +466,26 @@ impl CoreManager {
         spec: &InstanceSpec,
         epoch: u64,
         snapshot: &ConfigSnapshot,
+        resolved: ResolvedFeatures,
     ) -> Result<PreparedGraceful, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
-        if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
-            return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
-        }
-        spec.core
-            .kind
-            .run_args(&spec.working_dir, &spec.config_path)?;
         let full = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
+            resolved.runtime,
         )?;
         let bootstrap = snapshot.prepare_bootstrap(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
+            resolved.runtime,
         )?;
+        self.warn_http_fallback(
+            &spec.core,
+            resolved.version.as_deref(),
+            full.rewrote_controller,
+        );
         if full.controller.host != bootstrap.controller.host
             || full.controller.secret != bootstrap.controller.secret
         {
@@ -463,6 +520,8 @@ impl CoreManager {
                     effective_hash: full.effective_hash,
                     runtime_path,
                 },
+                capabilities: resolved.capabilities,
+                runtime_features: resolved.runtime,
                 source_document: snapshot.document().clone(),
                 effective_document: full.document,
             },
@@ -529,17 +588,24 @@ mod tests {
     #[test]
     fn switch_matrix_matches_the_spec() {
         assert_eq!(
-            graceful_degrade_reason(false, CoreKind::Mihomo, None),
+            graceful_degrade_reason(false, false, CoreKind::Mihomo, None),
             Some(DegradeReason::PassthroughMode)
         );
         assert_eq!(
-            graceful_degrade_reason(true, CoreKind::ClashRs, None),
+            graceful_degrade_reason(true, true, CoreKind::ClashRust, None),
             Some(DegradeReason::UnsupportedKind)
         );
         assert_eq!(
-            graceful_degrade_reason(true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
+            graceful_degrade_reason(true, true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
             Some(DegradeReason::DnsListen)
         );
-        assert_eq!(graceful_degrade_reason(true, CoreKind::Mihomo, None), None);
+        assert_eq!(
+            graceful_degrade_reason(true, false, CoreKind::Mihomo, None),
+            Some(DegradeReason::HttpController)
+        );
+        assert_eq!(
+            graceful_degrade_reason(true, true, CoreKind::Mihomo, None),
+            None
+        );
     }
 }

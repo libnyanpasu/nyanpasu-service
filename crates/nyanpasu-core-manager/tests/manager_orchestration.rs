@@ -10,8 +10,8 @@ use std::{
 };
 
 use nyanpasu_core_manager::{
-    ControllerMode, CoreState, Error, HealthPolicy, HealthState, ManagerOptions, ProbeHandle,
-    ProbeResult, StopReason, manager::CoreManager,
+    ControllerMode, CoreState, Error, HealthPolicy, HealthState, LocalIpcPolicy, ManagerOptions,
+    ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
@@ -116,6 +116,7 @@ async fn managed_controller_template_without_epoch_is_rejected_at_construction()
         controller_mode: ControllerMode::Managed {
             derived_dir: dir,
             controller_template: Some(r"\\.\pipe\nyanpasu\fixed".to_owned()),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         ..ManagerOptions::default()
     };
@@ -134,6 +135,7 @@ async fn managed_unix_controller_template_cannot_escape_runtime_directory() {
         controller_mode: ControllerMode::Managed {
             derived_dir: runtime,
             controller_template: Some(escaped),
+            local_ipc_policy: LocalIpcPolicy::Force,
         },
         ..ManagerOptions::default()
     })

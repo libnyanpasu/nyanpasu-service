@@ -1,5 +1,8 @@
 mod feature;
 mod kind;
 
-pub use feature::*;
+pub use feature::{
+    clash::{Feature, FeatureSupport},
+    *,
+};
 pub use kind::*;

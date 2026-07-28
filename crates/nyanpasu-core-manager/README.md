@@ -3,7 +3,7 @@
 Clash core lifecycle management: epoch-based instances, health-probed startup,
 crash recovery, and hitless core switching.
 
-The crate manages a proxy core process (mihomo, clash-rs, …) as an immutable,
+The crate manages a proxy core process (mihomo, `CoreKind::ClashRust`, …) as an immutable,
 single-epoch `Instance`, and layers a `CoreManager` on top that owns
 start/stop/switch orchestration and publishes a unified `CoreStatus` snapshot
 over a `watch` channel.
@@ -26,16 +26,24 @@ Key concepts:
   `RestartPolicy`/`Backoff` from `nyanpasu-utils`. Dropping an `Instance`
   without `stop()` kills the whole process tree.
 - **Controller modes** — `Passthrough` preserves the endpoint written in the
-  snapshot; `Managed` rewrites it to a per-epoch local transport (named pipe on
-  Windows, unix socket elsewhere), which is required for graceful switching.
+  snapshot. `Managed` selects local IPC according to `LocalIpcPolicy`: `Force`
+  requires it, `Prefer` falls back to the upstream-prepared HTTP controller
+  when unsupported, and `Disable` always uses that HTTP controller. Selecting
+  local IPC removes all configured controller addresses and inserts only the
+  epoch-specific platform-local key. It retains `secret` for effective-config
+  compatibility, but local clients do not use it for authentication. The HTTP
+  paths leave the config's controller fields untouched.
 
 ## Requirements on the config
 
-The config must declare an external controller — it is the probe/control
-channel. `external-controller-pipe` (Windows) / `external-controller-unix`
-(Unix) take priority over `external-controller` (HTTP). Wildcard HTTP binds
-(`0.0.0.0`, `::`, `:port`) are probed via loopback. For mihomo, the manager
-sets `SAFE_PATHS` to the working dir plus the config dir.
+The config must declare an external controller whenever Passthrough or a
+Managed HTTP path (`Prefer` fallback or `Disable`) can be selected; the
+upstream caller owns that HTTP address and secret. `external-controller-pipe`
+(Windows) / `external-controller-unix` (Unix) take priority in Passthrough.
+Managed HTTP paths inspect only `external-controller`; a config with only a
+local key is rejected as missing its required HTTP controller. Wildcard HTTP
+binds (`0.0.0.0`, `::`, `:port`) are probed via loopback. For mihomo, the
+manager sets `SAFE_PATHS` to the working dir plus the config dir.
 
 ## Instance state machine
 
@@ -159,10 +167,12 @@ kill/restart an epoch directly from the probe driver.
 
 ### Graceful switch
 
-Selected only in `Managed` mode when every inbound is provably zeroable and
-restorable. The old core keeps serving while the new one starts from a
-zero-inbound bootstrap. Both the bootstrap and full desired config pass the
-core's config check before overlap begins.
+Selected only when Managed mode resolves to a per-epoch local controller and
+every inbound is provably zeroable and restorable. A `Prefer` HTTP fallback or
+`Disable` uses a hard switch because both epochs would otherwise bind the same
+upstream HTTP controller. The old core keeps serving while the new one starts
+from a zero-inbound bootstrap. Both the bootstrap and full desired config pass
+the core's config check before overlap begins.
 
 ```mermaid
 sequenceDiagram
@@ -198,6 +208,7 @@ cleanly: the old core is untouched and `Running` is re-published.
 | --- | --- |
 | No core currently running | plain start, `Hard { NotRunning }` |
 | `ControllerMode::Passthrough` | `Hard { PassthroughMode }` |
+| Managed mode resolves to the upstream HTTP controller | `Hard { HttpController }` |
 | Core kind is not mihomo | `Hard { UnsupportedKind }` |
 | Config sets `dns.listen` | `Hard { DnsListen }` |
 | Another inbound cannot be proven safe for overlap | `Hard { InboundConflict }` |
@@ -223,7 +234,8 @@ let spec = InstanceSpec {
     core: CoreSpec {
         kind: CoreKind::Mihomo,
         binary_path: Utf8PathBuf::from("/opt/nyanpasu/mihomo"),
-        version: None, // display metadata only
+        // Authoritative capability input. When absent, the manager runs `-v`.
+        version: Some("v1.18.9".into()),
         features: Vec::new(),
     },
     config_path: Utf8PathBuf::from("/opt/nyanpasu/config.yaml"),
@@ -239,6 +251,11 @@ let manager = CoreManager::new(ManagerOptions {
 manager.start(spec).await?; // resolves once the version probe passes
 manager.stop().await?;
 ```
+
+An absent `CoreSpec.version` is resolved by invoking the binary directly with
+`-v` under a fixed five-second process-tree timeout. Results are cached per
+manager by binary path and modification time. A supplied version is
+authoritative and never probes the binary.
 
 ### Custom readiness and liveness
 
@@ -302,7 +319,9 @@ the same three methods before `.spawn()`.
 
 ```rust
 use camino::Utf8PathBuf;
-use nyanpasu_core_manager::{ControllerMode, CoreManager, ManagerOptions, SwitchOutcome};
+use nyanpasu_core_manager::{
+    ControllerMode, CoreManager, LocalIpcPolicy, ManagerOptions, SwitchOutcome,
+};
 use tokio_util::sync::CancellationToken;
 
 let manager = CoreManager::new(ManagerOptions {
@@ -311,6 +330,7 @@ let manager = CoreManager::new(ManagerOptions {
         // None → \\.\pipe\nyanpasu\core-{epoch} on Windows,
         //        <derived_dir>/core-{epoch}.sock elsewhere
         controller_template: None,
+        local_ipc_policy: LocalIpcPolicy::Force,
     },
     cancel_token: CancellationToken::new(),
     ..ManagerOptions::default()
@@ -325,6 +345,20 @@ match manager.switch(spec_b).await? {
     }
 }
 ```
+
+Use `LocalIpcPolicy::Prefer` to select local IPC only when the resolved core
+features support the platform transport, or `LocalIpcPolicy::Disable` to
+always retain the upstream-prepared HTTP controller. `Force` fails before
+staging or starting when support cannot be established.
+
+Falling back under `Prefer` is a security downgrade: loopback TCP is reachable
+by any local process, while local IPC is protected by the runtime directory's
+permissions or the named-pipe ACL. HTTP access therefore relies on the
+upstream-owned secret stored in the runtime config. Named-pipe and Unix-socket
+clients send no authorization header, so the retained `secret` is inert on
+local transports and is kept only for effective-config compatibility with the
+pre-policy behavior. The manager warns without exposing that secret, and
+callers can observe the selected channel through `CoreStatus`.
 
 The manager writes `config-{N}.yaml` and `core-{N}.pid` in its runtime
 directory. Managed mode may use `derived_dir` as the compatibility runtime-dir
@@ -382,8 +416,15 @@ tokio::spawn(async move {
 
 `CoreStatus` also carries `changed_at` (unix ms of the last lifecycle
 transition), `health`, `spec`, `controller`, and the active `ConfigRevision`.
-These fields are published together, so a new epoch is never paired with the
-previous epoch's controller or health.
+`SpecSummary` separates the two feature dimensions: `capabilities` lists what
+the core build supports (`Feature`, resolved from its version), while
+`runtime_features` lists what the manager actually enabled for that epoch
+(`RuntimeFeature`, derived from capabilities and policy). The two disagree
+exactly where policy overrides ability — under `Disable` the capability stays
+listed while `local-ipc` is absent, and a `Prefer` fallback is visible directly
+as `runtime_features` without `local-ipc` rather than inferred from policy plus
+controller host. These fields are published together, so a new epoch is never
+paired with the previous epoch's controller, features, or health.
 
 ## Runtime directory security and recovery
 

@@ -13,7 +13,7 @@ pub struct CoreSpec {
     pub kind: CoreKind,
     /// Resolved by the caller (the service keeps `find_binary_path`).
     pub binary_path: Utf8PathBuf,
-    /// Display metadata provided by the caller; not interpreted here.
+    /// Authoritative capability version. The manager probes `-v` when absent.
     pub version: Option<String>,
     pub features: Vec<String>,
 }
@@ -56,6 +56,22 @@ pub struct ResolvedController {
     pub secret: Option<String>,
 }
 
+/// How managed mode selects the core's primary controller transport.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LocalIpcPolicy {
+    /// Require local IPC and fail startup or switching when the core does not
+    /// support the platform transport.
+    #[default]
+    Force,
+    /// Use local IPC when supported; otherwise use the HTTP controller from
+    /// the source config.
+    Prefer,
+    /// Always use the HTTP controller from the source config and never rewrite
+    /// it to a local transport.
+    Disable,
+}
+
 /// How the manager learns and controls the core's external controller.
 #[non_exhaustive]
 #[derive(Debug, Clone, Default)]
@@ -63,13 +79,15 @@ pub enum ControllerMode {
     /// Start the config as-is; extract the probe endpoint from it.
     #[default]
     Passthrough,
-    /// Rewrite the config to a manager-owned, epoch-parameterized local
-    /// transport endpoint. Prerequisite for graceful switching.
+    /// Use a manager-owned, epoch-parameterized local transport when selected
+    /// by policy; otherwise retain the config's HTTP controller.
     Managed {
         /// Where derived configs (and default unix sockets) live.
         derived_dir: camino::Utf8PathBuf,
         /// Endpoint template containing `{epoch}`; platform default when `None`.
         controller_template: Option<String>,
+        /// Whether local IPC is required, preferred, or disabled.
+        local_ipc_policy: LocalIpcPolicy,
     },
 }
 

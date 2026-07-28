@@ -71,6 +71,8 @@ impl CoreManager {
             effective_spec,
             controller,
             revision,
+            capabilities,
+            runtime_features,
             source_document,
             effective_document,
             staged,
@@ -93,6 +95,8 @@ impl CoreManager {
             effective_spec,
             controller,
             revision,
+            capabilities,
+            runtime_features,
             source_document,
             effective_document,
         };
@@ -118,6 +122,8 @@ impl CoreManager {
                 let active = ctrl.current.as_mut().expect("current held by control lock");
                 active.source_spec = desired.source_spec;
                 active.revision = desired.revision;
+                active.capabilities = desired.capabilities;
+                active.runtime_features = desired.runtime_features;
                 active.source_document = desired.source_document;
                 active.effective_document = desired.effective_document;
                 self.inner.publish_active(
@@ -148,19 +154,20 @@ impl CoreManager {
         input: InstanceSpec,
         snapshot: &ConfigSnapshot,
     ) -> Result<PreparedApply, Error> {
-        if tokio::fs::metadata(&input.core.binary_path).await.is_err() {
-            return Err(Error::BinaryNotFound(input.core.binary_path.clone()));
-        }
-        input
-            .core
-            .kind
-            .run_args(&input.working_dir, &input.config_path)?;
+        self.validate_launchable(&input).await?;
+        let resolved = self.resolve_features(&input.core).await?;
         let epoch = current.revision.epoch;
         let prepared = snapshot.prepare_full(
             &self.inner.options.controller_mode,
             self.inner.store.dir(),
             epoch,
+            resolved.runtime,
         )?;
+        self.warn_http_fallback(
+            &input.core,
+            resolved.version.as_deref(),
+            prepared.rewrote_controller,
+        );
         let staged = self.inner.store.stage(epoch, &prepared.bytes).await?;
         let mut check_spec = input.clone();
         check_spec.config_path = staged.path().to_owned();
@@ -181,6 +188,8 @@ impl CoreManager {
                 effective_hash: prepared.effective_hash,
                 runtime_path,
             },
+            capabilities: resolved.capabilities,
+            runtime_features: resolved.runtime,
             source_document: snapshot.document().clone(),
             effective_document: prepared.document,
             staged,
@@ -285,6 +294,8 @@ impl CoreManager {
         let old_controller = old.instance.controller().clone();
         let old_source_spec = old.source_spec.clone();
         let old_revision = old.revision.clone();
+        let old_capabilities = old.capabilities;
+        let old_runtime_features = old.runtime_features;
         let old_source_document = old.source_document.clone();
         let old_effective_document = old.effective_document.clone();
         abort_and_await(old.forwarder).await;
@@ -306,7 +317,11 @@ impl CoreManager {
                 epoch: desired.revision.epoch,
                 attempt: 0,
             },
-            Some(spec_summary(&desired.source_spec)),
+            Some(spec_summary(
+                &desired.source_spec,
+                desired.capabilities,
+                desired.runtime_features,
+            )),
             Some(desired.controller.host.clone()),
             Some(desired.revision.clone()),
         );
@@ -329,6 +344,8 @@ impl CoreManager {
                     forwarder,
                     source_spec: desired.source_spec,
                     revision: desired.revision,
+                    capabilities: desired.capabilities,
+                    runtime_features: desired.runtime_features,
                     source_document: desired.source_document,
                     effective_document: desired.effective_document,
                 });
@@ -367,7 +384,11 @@ impl CoreManager {
                         epoch: old_revision.epoch,
                         attempt: 0,
                     },
-                    Some(spec_summary(&old_source_spec)),
+                    Some(spec_summary(
+                        &old_source_spec,
+                        old_capabilities,
+                        old_runtime_features,
+                    )),
                     Some(old_controller.host.clone()),
                     Some(old_revision.clone()),
                 );
@@ -385,6 +406,8 @@ impl CoreManager {
                             forwarder,
                             source_spec: old_source_spec,
                             revision: old_revision.clone(),
+                            capabilities: old_capabilities,
+                            runtime_features: old_runtime_features,
                             source_document: old_source_document,
                             effective_document: old_effective_document,
                         });
@@ -438,6 +461,8 @@ impl CoreManager {
         let old_controller = old.instance.controller().clone();
         let old_source_spec = old.source_spec.clone();
         let old_revision = old.revision.clone();
+        let old_capabilities = old.capabilities;
+        let old_runtime_features = old.runtime_features;
         let old_source_document = old.source_document.clone();
         let old_effective_document = old.effective_document.clone();
         abort_and_await(old.forwarder).await;
@@ -460,7 +485,11 @@ impl CoreManager {
                 from: Some(old_epoch),
                 to: desired.revision.epoch,
             },
-            Some(spec_summary(&desired.source_spec)),
+            Some(spec_summary(
+                &desired.source_spec,
+                desired.capabilities,
+                desired.runtime_features,
+            )),
             Some(desired.controller.host.clone()),
             Some(desired.revision.clone()),
         );
@@ -483,6 +512,8 @@ impl CoreManager {
                     forwarder,
                     source_spec: desired.source_spec,
                     revision: desired.revision,
+                    capabilities: desired.capabilities,
+                    runtime_features: desired.runtime_features,
                     source_document: desired.source_document,
                     effective_document: desired.effective_document,
                 });
@@ -512,7 +543,11 @@ impl CoreManager {
                         epoch: old_revision.epoch,
                         attempt: 0,
                     },
-                    Some(spec_summary(&old_source_spec)),
+                    Some(spec_summary(
+                        &old_source_spec,
+                        old_capabilities,
+                        old_runtime_features,
+                    )),
                     Some(old_controller.host.clone()),
                     Some(old_revision.clone()),
                 );
@@ -530,6 +565,8 @@ impl CoreManager {
                             forwarder,
                             source_spec: old_source_spec,
                             revision: old_revision.clone(),
+                            capabilities: old_capabilities,
+                            runtime_features: old_runtime_features,
                             source_document: old_source_document,
                             effective_document: old_effective_document,
                         });

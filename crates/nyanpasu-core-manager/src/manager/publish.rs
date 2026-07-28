@@ -1,4 +1,5 @@
 use crate::{
+    Feature, RuntimeFeature,
     error::Error,
     instance::Instance,
     spec::InstanceSpec,
@@ -38,6 +39,8 @@ impl Inner {
             state,
             &active.source_spec,
             &active.revision,
+            active.capabilities,
+            active.runtime_features,
         );
     }
 
@@ -47,13 +50,15 @@ impl Inner {
         state: CoreState,
         source_spec: &InstanceSpec,
         revision: &ConfigRevision,
+        capabilities: enumset::EnumSet<Feature>,
+        runtime_features: enumset::EnumSet<RuntimeFeature>,
     ) {
         let health = instance.state().borrow().health.clone();
         self.status_tx.send_modify(|status| {
             let lifecycle_changed = status.state != state;
             status.state = state;
             status.health = health;
-            status.spec = Some(spec_summary(source_spec));
+            status.spec = Some(spec_summary(source_spec, capabilities, runtime_features));
             status.controller = Some(instance.controller().host.clone());
             status.revision = Some(revision.clone());
             if lifecycle_changed {
@@ -108,10 +113,16 @@ fn apply_epoch_status(status: &mut CoreStatus, epoch: u64, instance: &InstanceSt
     true
 }
 
-pub(super) fn spec_summary(spec: &InstanceSpec) -> SpecSummary {
+pub(super) fn spec_summary(
+    spec: &InstanceSpec,
+    capabilities: enumset::EnumSet<Feature>,
+    runtime_features: enumset::EnumSet<RuntimeFeature>,
+) -> SpecSummary {
     SpecSummary {
         kind: spec.core.kind,
         config_path: spec.config_path.clone(),
+        capabilities: capabilities.iter().collect(),
+        runtime_features: runtime_features.iter().collect(),
     }
 }
 

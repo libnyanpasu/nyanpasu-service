@@ -10,8 +10,9 @@ use std::{
 };
 
 use nyanpasu_core_manager::{
-    ApplyOutcome, ControllerVersionProbe, CoreManager, CoreState, Error, HealthProbe, InstanceSpec,
-    ManagerOptions, ProbeHandle, ProbePhase, ProbeResult, RevisionId,
+    ApplyOutcome, ControllerMode, ControllerVersionProbe, CoreManager, CoreState, Error,
+    HealthProbe, InstanceSpec, LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbePhase,
+    ProbeResult, RevisionId,
 };
 use parking_lot::Mutex;
 
@@ -287,6 +288,89 @@ async fn apply_reload_uses_put_without_restarting() {
     );
     assert_eq!(running(&manager), before);
     manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn prefer_http_fallback_keeps_controller_fields_across_patch_and_reload() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let first = write_named(
+        &dir,
+        "prefer-first.yaml",
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nsecret: stable-secret\nallow-lan: false\nrules:\n  - MATCH,DIRECT\n"
+        ),
+    );
+    let patched = write_named(
+        &dir,
+        "prefer-patched.yaml",
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nsecret: stable-secret\nallow-lan: true\nrules:\n  - MATCH,DIRECT\n"
+        ),
+    );
+    let reloaded = write_named(
+        &dir,
+        "prefer-reloaded.yaml",
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nsecret: stable-secret\nallow-lan: true\nrules:\n  - MATCH,REJECT\n"
+        ),
+    );
+    let manager = CoreManager::new(ManagerOptions {
+        controller_mode: ControllerMode::Managed {
+            derived_dir: dir.join("runtime"),
+            controller_template: None,
+            local_ipc_policy: LocalIpcPolicy::Prefer,
+        },
+        reconcile_timeout: Duration::from_secs(5),
+        ..ManagerOptions::default()
+    })
+    .await
+    .unwrap();
+    let with_unsupported_version = |path| {
+        let mut spec = spec(&dir, path);
+        #[cfg(windows)]
+        let version = "1.18.8";
+        #[cfg(not(windows))]
+        let version = "1.18.3";
+        spec.core.version = Some(version.into());
+        spec
+    };
+    manager
+        .start(with_unsupported_version(first))
+        .await
+        .unwrap();
+    let before = manager.status();
+    let process = running(&manager);
+    let controller = before.controller.clone();
+    let revision = before.revision.unwrap();
+
+    let patched = manager
+        .apply_config(with_unsupported_version(patched), None)
+        .await
+        .unwrap();
+    assert!(matches!(patched, ApplyOutcome::Patched { .. }));
+    assert_eq!(running(&manager), process);
+    assert_eq!(manager.status().controller, controller);
+
+    let reloaded = manager
+        .apply_config(with_unsupported_version(reloaded), None)
+        .await
+        .unwrap();
+    assert!(matches!(reloaded, ApplyOutcome::Reloaded { .. }));
+    assert_eq!(running(&manager), process);
+    let status = manager.status();
+    assert_eq!(status.controller, controller);
+    assert_eq!(status.revision.as_ref().unwrap().epoch, revision.epoch);
+    assert_eq!(
+        status.revision.as_ref().unwrap().runtime_path,
+        revision.runtime_path
+    );
+    let runtime = std::fs::read_to_string(&revision.runtime_path).unwrap();
+    assert!(runtime.contains(&format!("external-controller: 127.0.0.1:{port}")));
+    assert!(runtime.contains("secret: stable-secret"));
+    assert!(!runtime.contains("external-controller-pipe:"));
+    assert!(!runtime.contains("external-controller-unix:"));
+    manager.shutdown().await.unwrap();
 }
 
 #[tokio::test]

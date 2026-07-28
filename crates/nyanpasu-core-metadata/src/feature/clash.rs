@@ -6,10 +6,12 @@
 //! specific upstream release. Each floor is pinned to the commit that
 //! introduced the feature and verified against the first tag containing it.
 
-use super::Support;
+use std::sync::LazyLock;
+
+use super::{CoreVersion, Support};
 use enumset::{EnumSet, EnumSetType};
 use schemars::JsonSchema;
-use semver::{Version, VersionReq};
+use semver::VersionReq;
 use serde::{Deserialize, Serialize};
 use specta::Type;
 
@@ -20,42 +22,36 @@ pub enum Feature {
     NamedPipeIpc,
     /// Supports a Unix domain socket for IPC.
     UnixSocketIpc,
+    /// Supports running without a TCP external controller.
+    DisableTcpController,
 }
 
 pub trait FeatureSupport {
     /// Whether `self` speaks `feature`.
     ///
-    /// Pass the core's version to get a decided [`Support::Yes`] or
-    /// [`Support::No`]. Pass `None` — which is also the right call for nightly
-    /// builds whose version string is not semver, such as Mihomo's
-    /// `alpha-<sha>` — to get the [`Support::Since`] requirement back and
-    /// decide yourself. Note that a semver prerelease (`1.19.0-alpha.1`) never
-    /// matches a plain floor like `>=1.18.9`, per semver's own rules.
-    fn supports(&self, feature: Feature, version: Option<&Version>) -> Support;
+    /// A release version is compared after discarding its prerelease label.
+    /// Nightly versions are treated as newer than every known floor, while an
+    /// unknown version is denied. Pass `None` to retrieve an unresolved
+    /// [`Support::Since`] requirement.
+    fn supports(&self, feature: Feature, version: Option<&CoreVersion>) -> Support;
 
-    /// Returns the set of features `self` speaks, given a known version.
+    /// Returns only features whose support is decided as [`Support::Yes`].
+    fn features(&self, version: Option<&CoreVersion>) -> EnumSet<Feature> {
+        EnumSet::all()
+            .iter()
+            .filter(|feature| matches!(self.supports(*feature, version), Support::Yes))
+            .collect()
+    }
+
+    /// Returns features that may be supported by a sufficiently recent build.
     ///
-    /// If the version is unknown, returns the set of features are supported whether the version is known or not.
-    fn features(&self, version: Option<&Version>) -> EnumSet<Feature> {
-        let mut features = EnumSet::new();
-        for feature in EnumSet::all() {
-            match self.supports(feature, version) {
-                Support::Yes => {
-                    features.insert(feature);
-                }
-                Support::No => (),
-                Support::Since(since) => {
-                    if let Some(version) = version {
-                        if since.matches(version) {
-                            features.insert(feature);
-                        }
-                    } else {
-                        features.insert(feature);
-                    }
-                }
-            }
-        }
-        features
+    /// This is for display and probe short-circuiting only, never for enabling
+    /// a capability.
+    fn potential_features(&self) -> EnumSet<Feature> {
+        EnumSet::all()
+            .iter()
+            .filter(|feature| !matches!(self.supports(*feature, None), Support::No))
+            .collect()
     }
 }
 
@@ -68,8 +64,10 @@ pub trait FeatureSupport {
 /// listeners serve the same `router()` as the TCP controller over plain
 /// HTTP/1.1, so `http.Hijacker` — and with it the `/traffic`, `/memory` and
 /// `/logs` upgrades — works from the release that added each key.
-const MIHOMO_UNIX: &str = ">=1.18.4";
-const MIHOMO_PIPE: &str = ">=1.18.9";
+static MIHOMO_UNIX: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=1.18.4").expect("valid Mihomo unix feature floor"));
+static MIHOMO_PIPE: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=1.18.9").expect("valid Mihomo pipe feature floor"));
 
 /// clash-rs added both keys at once in v0.9.1 (PR #867), but only the unix
 /// listener was usable: it went through `axum::serve`, which always enables
@@ -81,23 +79,31 @@ const MIHOMO_PIPE: &str = ">=1.18.9";
 /// client drives `/traffic`, `/memory` and friends over the very same transport
 /// it uses for REST, and clash-rs offers no newline-delimited-JSON fallback to
 /// degrade to.
-const CLASH_RS_UNIX: &str = ">=0.9.1";
-const CLASH_RS_PIPE: &str = ">=0.9.7";
+static CLASH_RS_UNIX: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=0.9.1").expect("valid clash-rs unix feature floor"));
+static CLASH_RS_PIPE: LazyLock<VersionReq> =
+    LazyLock::new(|| VersionReq::parse(">=0.9.7").expect("valid clash-rs pipe feature floor"));
 
+/// `DisableTcpController` is exported capability metadata only and currently
+/// gates no core-manager behavior; every core kind reports `Support::No`.
 impl FeatureSupport for crate::kind::ClashCoreKind {
-    fn supports(&self, feature: Feature, version: Option<&Version>) -> Support {
+    fn supports(&self, feature: Feature, version: Option<&CoreVersion>) -> Support {
         match self {
             crate::kind::ClashCoreKind::Mihomo => match feature {
-                Feature::NamedPipeIpc => since(MIHOMO_PIPE, version),
-                Feature::UnixSocketIpc => since(MIHOMO_UNIX, version),
+                Feature::NamedPipeIpc => since(&MIHOMO_PIPE, version),
+                Feature::UnixSocketIpc => since(&MIHOMO_UNIX, version),
+                Feature::DisableTcpController => Support::No,
             },
             crate::kind::ClashCoreKind::ClashRust => match feature {
-                Feature::NamedPipeIpc => since(CLASH_RS_PIPE, version),
-                Feature::UnixSocketIpc => since(CLASH_RS_UNIX, version),
+                Feature::NamedPipeIpc => since(&CLASH_RS_PIPE, version),
+                Feature::UnixSocketIpc => since(&CLASH_RS_UNIX, version),
+                Feature::DisableTcpController => Support::No,
             },
             // Clash Premium only ever exposed `external-controller` over TCP.
             crate::kind::ClashCoreKind::ClashPremium => match feature {
-                Feature::NamedPipeIpc | Feature::UnixSocketIpc => Support::No,
+                Feature::NamedPipeIpc | Feature::UnixSocketIpc | Feature::DisableTcpController => {
+                    Support::No
+                }
             },
             // meow-rs advertises `--ext-ctl-unix` and `--ext-ctl-pipe` in
             // `--help`, but only for mihomo CLI compatibility: both `bail!`
@@ -109,7 +115,9 @@ impl FeatureSupport for crate::kind::ClashCoreKind {
             // `external-controller`, parsed into a `SocketAddr`, and the repo
             // contains no `UnixListener` at all.
             crate::kind::ClashCoreKind::Meow => match feature {
-                Feature::NamedPipeIpc | Feature::UnixSocketIpc => Support::No,
+                Feature::NamedPipeIpc | Feature::UnixSocketIpc | Feature::DisableTcpController => {
+                    Support::No
+                }
             },
         }
     }
@@ -117,12 +125,12 @@ impl FeatureSupport for crate::kind::ClashCoreKind {
 
 /// Resolves a floor against a known version, or hands the requirement back when
 /// the version is unknown.
-fn since(req: &'static str, version: Option<&Version>) -> Support {
-    let req = VersionReq::parse(req).expect("feature floor is a valid version requirement");
+fn since(req: &LazyLock<VersionReq>, version: Option<&CoreVersion>) -> Support {
     match version {
-        Some(version) if req.matches(version) => Support::Yes,
-        Some(_) => Support::No,
-        None => Support::Since(req),
+        Some(CoreVersion::Release(version)) if req.matches(version) => Support::Yes,
+        Some(CoreVersion::Nightly) => Support::Yes,
+        Some(CoreVersion::Release(_) | CoreVersion::Unknown) => Support::No,
+        None => Support::Since((**req).clone()),
     }
 }
 
@@ -131,22 +139,34 @@ mod tests {
     use super::*;
     use crate::kind::ClashCoreKind;
 
-    fn version(raw: &str) -> Option<Version> {
-        Some(Version::parse(raw).expect("test version parses"))
+    fn version(raw: &str) -> Option<CoreVersion> {
+        Some(CoreVersion::parse(raw))
     }
 
     #[test]
-    #[ignore]
-    fn get_all_features() {
-        for kind in [
-            ClashCoreKind::Mihomo,
-            ClashCoreKind::ClashRust,
-            ClashCoreKind::ClashPremium,
-            ClashCoreKind::Meow,
-        ] {
-            let features = kind.features(None);
-            eprintln!("features for {kind}: {features:?}");
-        }
+    fn parses_bare_versions_banners_and_nightly_builds() {
+        assert_eq!(
+            CoreVersion::parse("v1.18.9"),
+            CoreVersion::Release(semver::Version::new(1, 18, 9))
+        );
+        assert_eq!(
+            CoreVersion::parse("Mihomo Meta v1.18.9 linux amd64 with go1.22"),
+            CoreVersion::Release(semver::Version::new(1, 18, 9))
+        );
+        assert_eq!(CoreVersion::parse("alpha-deadbeef"), CoreVersion::Nightly);
+        assert_eq!(
+            CoreVersion::parse("unrecognized build"),
+            CoreVersion::Unknown
+        );
+        assert!(matches!(
+            ClashCoreKind::Mihomo.supports(
+                Feature::NamedPipeIpc,
+                Some(&CoreVersion::parse(
+                    "Mihomo Meta v1.18.9 linux amd64 with go1.22"
+                ))
+            ),
+            Support::Yes
+        ));
     }
 
     #[test]
@@ -161,18 +181,20 @@ mod tests {
     #[test]
     fn every_floor_brackets_the_release_that_added_its_transport() {
         for (floor, last_without, first_with) in [
-            (MIHOMO_UNIX, "1.18.3", "1.18.4"),
-            (MIHOMO_PIPE, "1.18.8", "1.18.9"),
-            (CLASH_RS_UNIX, "0.9.0", "0.9.1"),
-            (CLASH_RS_PIPE, "0.9.6", "0.9.7"),
+            (&MIHOMO_UNIX, "1.18.3", "1.18.4"),
+            (&MIHOMO_PIPE, "1.18.8", "1.18.9"),
+            (&CLASH_RS_UNIX, "0.9.0", "0.9.1"),
+            (&CLASH_RS_PIPE, "0.9.6", "0.9.7"),
         ] {
             assert!(
                 matches!(since(floor, version(last_without).as_ref()), Support::No),
-                "`{floor}` must reject {last_without}"
+                "`{}` must reject {last_without}",
+                **floor
             );
             assert!(
                 matches!(since(floor, version(first_with).as_ref()), Support::Yes),
-                "`{floor}` must accept {first_with}"
+                "`{}` must accept {first_with}",
+                **floor
             );
         }
     }
@@ -223,15 +245,70 @@ mod tests {
     }
 
     #[test]
+    fn nightly_and_prerelease_versions_follow_core_version_policy() {
+        assert!(matches!(
+            ClashCoreKind::Mihomo.supports(Feature::NamedPipeIpc, Some(&CoreVersion::Nightly)),
+            Support::Yes
+        ));
+        assert!(matches!(
+            ClashCoreKind::ClashRust
+                .supports(Feature::NamedPipeIpc, version("0.9.7-alpha.1").as_ref()),
+            Support::Yes
+        ));
+        assert!(matches!(
+            ClashCoreKind::ClashRust
+                .supports(Feature::NamedPipeIpc, version("0.9.6-alpha.1").as_ref()),
+            Support::No
+        ));
+        assert!(matches!(
+            ClashCoreKind::Mihomo.supports(Feature::NamedPipeIpc, Some(&CoreVersion::Unknown)),
+            Support::No
+        ));
+    }
+
+    #[test]
+    fn unknown_versions_are_not_enabled_but_potential_features_remain_visible() {
+        assert!(ClashCoreKind::Mihomo.features(None).is_empty());
+        assert!(
+            ClashCoreKind::Mihomo
+                .potential_features()
+                .contains(Feature::NamedPipeIpc)
+        );
+    }
+
+    #[test]
     fn tcp_only_cores_never_support_local_ipc() {
         for kind in [ClashCoreKind::ClashPremium, ClashCoreKind::Meow] {
-            for feature in [Feature::NamedPipeIpc, Feature::UnixSocketIpc] {
+            for feature in [
+                Feature::NamedPipeIpc,
+                Feature::UnixSocketIpc,
+                Feature::DisableTcpController,
+            ] {
                 assert!(matches!(kind.supports(feature, None), Support::No));
                 assert!(matches!(
                     kind.supports(feature, version("99.0.0").as_ref()),
                     Support::No
                 ));
+                assert!(matches!(
+                    kind.supports(feature, Some(&CoreVersion::Nightly)),
+                    Support::No
+                ));
             }
+        }
+    }
+
+    #[test]
+    fn no_core_can_disable_its_tcp_controller_today() {
+        for kind in [
+            ClashCoreKind::Mihomo,
+            ClashCoreKind::ClashRust,
+            ClashCoreKind::ClashPremium,
+            ClashCoreKind::Meow,
+        ] {
+            assert!(matches!(
+                kind.supports(Feature::DisableTcpController, Some(&CoreVersion::Nightly)),
+                Support::No
+            ));
         }
     }
 }

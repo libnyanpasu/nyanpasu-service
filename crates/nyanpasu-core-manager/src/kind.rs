@@ -6,6 +6,8 @@ use camino::Utf8Path;
 
 use crate::error::Error;
 
+pub use nyanpasu_core_metadata::ClashCoreKind as CoreKind;
+
 /// The environment variable Mihomo consults for permitted file-system roots.
 pub const MIHOMO_SAFE_PATHS_ENV_NAME: &str = "SAFE_PATHS";
 
@@ -14,63 +16,32 @@ const SAFE_PATHS_SEPARATOR: &str = ";";
 #[cfg(not(windows))]
 const SAFE_PATHS_SEPARATOR: &str = ":";
 
-/// A core family. Build variants (alpha builds, custom binaries) are expressed
-/// through `CoreSpec::binary_path` and metadata, not extra kinds.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum CoreKind {
-    Mihomo,
-    ClashPremium,
-    ClashRs,
-    /// Declared for a future core; has no launch profile yet.
-    Meow,
+/// Launch arguments for this kind. `Meow` has no launch profile yet.
+pub(crate) fn run_args(
+    kind: CoreKind,
+    working_dir: &Utf8Path,
+    config_path: &Utf8Path,
+) -> Result<Vec<OsString>, Error> {
+    let dir = OsString::from(working_dir.as_str());
+    let cfg = OsString::from(config_path.as_str());
+    Ok(match kind {
+        CoreKind::Mihomo => vec!["-m".into(), "-d".into(), dir, "-f".into(), cfg],
+        CoreKind::ClashRust => vec!["-d".into(), dir, "-c".into(), cfg],
+        CoreKind::ClashPremium => vec!["-d".into(), dir, "-f".into(), cfg],
+        CoreKind::Meow => return Err(Error::UnsupportedCore(kind)),
+    })
 }
 
-impl AsRef<str> for CoreKind {
-    fn as_ref(&self) -> &str {
-        match self {
-            CoreKind::Mihomo => "mihomo",
-            CoreKind::ClashPremium => "clash",
-            CoreKind::ClashRs => "clash-rs",
-            CoreKind::Meow => "meow",
-        }
-    }
-}
-
-impl std::fmt::Display for CoreKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_ref())
-    }
-}
-
-impl CoreKind {
-    /// Launch arguments for this kind. `Meow` has no launch profile yet.
-    pub(crate) fn run_args(
-        &self,
-        working_dir: &Utf8Path,
-        config_path: &Utf8Path,
-    ) -> Result<Vec<OsString>, Error> {
-        let dir = OsString::from(working_dir.as_str());
-        let cfg = OsString::from(config_path.as_str());
-        Ok(match self {
-            CoreKind::Mihomo => vec!["-m".into(), "-d".into(), dir, "-f".into(), cfg],
-            CoreKind::ClashRs => vec!["-d".into(), dir, "-c".into(), cfg],
-            CoreKind::ClashPremium => vec!["-d".into(), dir, "-f".into(), cfg],
-            CoreKind::Meow => return Err(Error::UnsupportedCore(*self)),
-        })
-    }
-
-    /// Arguments for a one-shot `-t` config validation run (same for all kinds,
-    /// matching the legacy `check_config_`).
-    pub(crate) fn check_args(working_dir: &Utf8Path, config_path: &Utf8Path) -> Vec<OsString> {
-        vec![
-            "-t".into(),
-            "-d".into(),
-            working_dir.as_str().into(),
-            "-f".into(),
-            config_path.as_str().into(),
-        ]
-    }
+/// Arguments for a one-shot `-t` config validation run (same for all kinds,
+/// matching the legacy `check_config_`).
+pub(crate) fn check_args(working_dir: &Utf8Path, config_path: &Utf8Path) -> Vec<OsString> {
+    vec![
+        "-t".into(),
+        "-d".into(),
+        working_dir.as_str().into(),
+        "-f".into(),
+        config_path.as_str().into(),
+    ]
 }
 
 /// Joins the directories Mihomo may touch into its `SAFE_PATHS` format.
@@ -89,7 +60,7 @@ pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error>
         .parent()
         .ok_or_else(|| Error::ConfigNotFound(spec.config_path.clone()))?;
     let output = nyanpasu_utils::process::Command::new(spec.core.binary_path.as_str())
-        .args(CoreKind::check_args(&spec.working_dir, &spec.config_path))
+        .args(check_args(&spec.working_dir, &spec.config_path))
         .env(
             MIHOMO_SAFE_PATHS_ENV_NAME,
             mihomo_safe_paths(&spec.working_dir, config_dir),
@@ -100,7 +71,7 @@ pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error>
         return Ok(());
     }
     let message = match spec.core.kind {
-        CoreKind::ClashRs => format!("{}\n{}", output.stdout, output.stderr),
+        CoreKind::ClashRust => format!("{}\n{}", output.stdout, output.stderr),
         _ => parse_check_output(output.stdout.trim().to_owned()),
     };
     Err(Error::ConfigCheckFailed(message))
@@ -160,17 +131,17 @@ mod tests {
     fn run_args_match_legacy_profiles() {
         let dir = Utf8PathBuf::from("C:/data");
         let cfg = Utf8PathBuf::from("C:/data/config.yaml");
-        let args = CoreKind::Mihomo.run_args(&dir, &cfg).unwrap();
+        let args = run_args(CoreKind::Mihomo, &dir, &cfg).unwrap();
         assert_eq!(
             args,
             ["-m", "-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from)
         );
-        let args = CoreKind::ClashRs.run_args(&dir, &cfg).unwrap();
+        let args = run_args(CoreKind::ClashRust, &dir, &cfg).unwrap();
         assert_eq!(
             args,
             ["-d", "C:/data", "-c", "C:/data/config.yaml"].map(OsString::from)
         );
-        let args = CoreKind::ClashPremium.run_args(&dir, &cfg).unwrap();
+        let args = run_args(CoreKind::ClashPremium, &dir, &cfg).unwrap();
         assert_eq!(
             args,
             ["-d", "C:/data", "-f", "C:/data/config.yaml"].map(OsString::from)
@@ -181,7 +152,7 @@ mod tests {
     fn meow_has_no_launch_profile() {
         let dir = Utf8PathBuf::from("/d");
         assert!(matches!(
-            CoreKind::Meow.run_args(&dir, &dir),
+            run_args(CoreKind::Meow, &dir, &dir),
             Err(Error::UnsupportedCore(CoreKind::Meow))
         ));
     }
@@ -230,7 +201,7 @@ mod tests {
     fn error_summary_parses_last_mihomo_error_line() {
         let tail = "line one\ntime=\"x\" level=error msg=\"boom\"\nafter";
         assert_eq!(error_summary(CoreKind::Mihomo, tail), "boom");
-        assert_eq!(error_summary(CoreKind::ClashRs, tail), tail);
+        assert_eq!(error_summary(CoreKind::ClashRust, tail), tail);
         assert_eq!(error_summary(CoreKind::Mihomo, "no marker"), "no marker");
     }
 }

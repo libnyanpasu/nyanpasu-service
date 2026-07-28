@@ -11,9 +11,13 @@ pub(crate) mod mihomo;
 pub mod runtime_store;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use enumset::EnumSet;
 use serde_yaml_ng::{Mapping, Value};
 
+pub(crate) use clash::LOCAL_TRANSPORT_FEATURE;
+
 use crate::{
+    capability::RuntimeFeature,
     error::Error,
     spec::{ControllerMode, ResolvedController},
 };
@@ -30,6 +34,7 @@ pub(crate) struct PreparedConfig {
     pub bytes: Vec<u8>,
     pub document: Mapping,
     pub controller: ResolvedController,
+    pub rewrote_controller: bool,
     pub source_hash: String,
     pub effective_hash: String,
 }
@@ -88,8 +93,9 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
+        runtime: EnumSet<RuntimeFeature>,
     ) -> Result<PreparedConfig, Error> {
-        self.prepare(mode, runtime_dir, epoch, false)
+        self.prepare(mode, runtime_dir, epoch, runtime, false)
     }
 
     pub(crate) fn prepare_bootstrap(
@@ -97,8 +103,9 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
+        runtime: EnumSet<RuntimeFeature>,
     ) -> Result<PreparedConfig, Error> {
-        self.prepare(mode, runtime_dir, epoch, true)
+        self.prepare(mode, runtime_dir, epoch, runtime, true)
     }
 
     fn prepare(
@@ -106,6 +113,7 @@ impl ConfigSnapshot {
         mode: &ControllerMode,
         runtime_dir: &Utf8Path,
         epoch: u64,
+        runtime: EnumSet<RuntimeFeature>,
         zero_inbounds: bool,
     ) -> Result<PreparedConfig, Error> {
         let mut document = self.document.clone();
@@ -114,20 +122,30 @@ impl ConfigSnapshot {
             mihomo::zero_inbounds(&mut document);
         }
 
-        if let ControllerMode::Managed {
-            controller_template,
-            ..
-        } = mode
-        {
-            let endpoint =
-                managed_endpoint_path(runtime_dir, controller_template.as_deref(), epoch)?;
-            clash::rewrite_managed_controller(&mut document, endpoint);
-        }
+        let (rewrote_controller, inspect_http_only) = match mode {
+            ControllerMode::Passthrough => (false, false),
+            ControllerMode::Managed {
+                controller_template,
+                ..
+            } => {
+                let rewrite = runtime.contains(RuntimeFeature::LocalIpc);
+                if rewrite {
+                    let endpoint =
+                        managed_endpoint_path(runtime_dir, controller_template.as_deref(), epoch)?;
+                    clash::rewrite_managed_controller(&mut document, endpoint);
+                }
+                (rewrite, !rewrite)
+            }
+        };
 
         let Value::Mapping(document) = canonicalize(Value::Mapping(document))? else {
             unreachable!("canonical mapping remains a mapping")
         };
-        let info = clash::inspect(&document);
+        let info = if inspect_http_only {
+            clash::inspect_http(&document)
+        } else {
+            clash::inspect(&document)
+        };
         let controller = resolve_controller(&info)?;
         let bytes = serialize_mapping(&document)?;
         Ok(PreparedConfig {
@@ -136,6 +154,7 @@ impl ConfigSnapshot {
             bytes,
             document,
             controller,
+            rewrote_controller,
         })
     }
 }
@@ -295,6 +314,25 @@ mod tests {
     }
 
     #[test]
+    fn managed_http_path_ignores_a_configured_local_controller() {
+        #[cfg(windows)]
+        let source = snapshot(r"external-controller-pipe: \\.\pipe\source");
+        #[cfg(not(windows))]
+        let source = snapshot("external-controller-unix: /tmp/source.sock");
+        let mode = ControllerMode::Managed {
+            derived_dir: Utf8PathBuf::from("runtime"),
+            controller_template: None,
+            local_ipc_policy: crate::LocalIpcPolicy::Disable,
+        };
+
+        let error = source
+            .prepare_full(&mode, Utf8Path::new("runtime"), 1, EnumSet::new())
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ControllerMissing));
+    }
+
+    #[test]
     fn semantic_hash_ignores_mapping_order_and_whitespace() {
         let first = snapshot("mode: rule\ndns:\n  enable: true\n  listen: ''\n");
         let second = snapshot("dns: { listen: '', enable: true }\n\nmode: rule\n");
@@ -319,9 +357,15 @@ mod tests {
         let mode = ControllerMode::Managed {
             derived_dir: Utf8PathBuf::from("runtime"),
             controller_template: Some(r"\\.\pipe\ny-{epoch}".into()),
+            local_ipc_policy: crate::LocalIpcPolicy::Force,
         };
         let prepared = source
-            .prepare_bootstrap(&mode, Utf8Path::new("runtime"), 7)
+            .prepare_bootstrap(
+                &mode,
+                Utf8Path::new("runtime"),
+                7,
+                EnumSet::only(RuntimeFeature::LocalIpc),
+            )
             .unwrap();
         assert_eq!(
             prepared
