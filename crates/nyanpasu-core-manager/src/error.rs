@@ -20,8 +20,6 @@ pub enum Error {
     },
     #[error("no external controller configured; the version health probe needs one")]
     ControllerMissing,
-    #[error("core kind `{0}` has no launch profile yet")]
-    UnsupportedCore(CoreKind),
     #[error(
         "core `{kind}` version `{version}` does not support the required local IPC transport; use LocalIpcPolicy::Prefer or LocalIpcPolicy::Disable"
     )]

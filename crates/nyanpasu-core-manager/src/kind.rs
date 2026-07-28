@@ -16,7 +16,7 @@ const SAFE_PATHS_SEPARATOR: &str = ";";
 #[cfg(not(windows))]
 const SAFE_PATHS_SEPARATOR: &str = ":";
 
-/// Launch arguments for this kind. `Meow` has no launch profile yet.
+/// Launch arguments for this kind.
 pub(crate) fn run_args(
     kind: CoreKind,
     working_dir: &Utf8Path,
@@ -25,11 +25,31 @@ pub(crate) fn run_args(
     let dir = OsString::from(working_dir.as_str());
     let cfg = OsString::from(config_path.as_str());
     Ok(match kind {
-        CoreKind::Mihomo => vec!["-m".into(), "-d".into(), dir, "-f".into(), cfg],
+        // Meow accepts the mihomo CLI for compatibility.
+        CoreKind::Mihomo | CoreKind::Meow => {
+            vec!["-m".into(), "-d".into(), dir, "-f".into(), cfg]
+        }
         CoreKind::ClashRust => vec!["-d".into(), dir, "-c".into(), cfg],
         CoreKind::ClashPremium => vec!["-d".into(), dir, "-f".into(), cfg],
-        CoreKind::Meow => return Err(Error::UnsupportedCore(kind)),
     })
+}
+
+/// Extra launch flags to enable the controller for kinds that cannot take it
+/// from the config file.
+///
+/// clash-bin unconditionally overwrites the config's `external_controller_ipc`
+/// with its CLI flag value (clash-bin/src/main.rs), so for clash-rs a system
+/// IPC endpoint only takes effect when passed as `--controller-ipc`.
+pub(crate) fn controller_args(kind: CoreKind, host: &clash_api::Host) -> Vec<OsString> {
+    if !matches!(kind, CoreKind::ClashRust) {
+        return Vec::new();
+    }
+    match host {
+        clash_api::Host::NamedPipe(path) | clash_api::Host::UnixSocket(path) => {
+            vec!["--controller-ipc".into(), path.as_os_str().to_owned()]
+        }
+        _ => Vec::new(),
+    }
 }
 
 /// Arguments for a one-shot `-t` config validation run (same for all kinds,
@@ -52,9 +72,6 @@ pub fn mihomo_safe_paths(working_dir: &Utf8Path, config_dir: &Utf8Path) -> Strin
 /// One-shot `-t` config validation, replacing the legacy `check_config_`.
 /// A non-zero exit becomes [`Error::ConfigCheckFailed`] with a condensed message.
 pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error> {
-    if matches!(spec.core.kind, CoreKind::Meow) {
-        return Err(Error::UnsupportedCore(spec.core.kind));
-    }
     let config_dir = spec
         .config_path
         .parent()
@@ -149,12 +166,13 @@ mod tests {
     }
 
     #[test]
-    fn meow_has_no_launch_profile() {
+    fn meow_shares_the_mihomo_launch_profile() {
         let dir = Utf8PathBuf::from("/d");
-        assert!(matches!(
-            run_args(CoreKind::Meow, &dir, &dir),
-            Err(Error::UnsupportedCore(CoreKind::Meow))
-        ));
+        let cfg = Utf8PathBuf::from("/d/config.yaml");
+        assert_eq!(
+            run_args(CoreKind::Meow, &dir, &cfg).unwrap(),
+            run_args(CoreKind::Mihomo, &dir, &cfg).unwrap()
+        );
     }
 
     #[test]

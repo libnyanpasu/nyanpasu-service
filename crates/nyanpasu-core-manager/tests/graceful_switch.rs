@@ -3,7 +3,7 @@ mod common;
 use std::time::Duration;
 
 use nyanpasu_core_manager::{
-    ControllerMode, ControllerVersionProbe, CoreKind, CoreState, DegradeReason, Error, HealthProbe,
+    ControllerMode, ControllerVersionProbe, CoreState, DegradeReason, Error, HealthProbe,
     LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
@@ -79,16 +79,17 @@ async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
 async fn managed_spawn_error_removes_secret_derived_config() {
     let (_guard, dir) = common::utf8_tempdir();
     let derived_dir = dir.join("derived");
-    let config = common::write_config(&dir, "mixed-port: 0\nsecret: test-secret\n");
-    let manager = managed_manager(derived_dir.clone()).await;
-    let mut spec = common::mihomo_spec(&dir, config);
-    spec.core.kind = CoreKind::Meow;
-
-    let error = manager.start(spec).await.expect_err("spawn must fail");
-    assert!(
-        matches!(error, Error::UnsupportedCore(CoreKind::Meow)),
-        "got {error}"
+    let config = common::write_config(
+        &dir,
+        "mixed-port: 0\nsecret: test-secret\nx-fake-core:\n  check-fail: boom\n",
     );
+    let manager = managed_manager(derived_dir.clone()).await;
+
+    let error = manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect_err("config check must fail");
+    assert!(matches!(error, Error::ConfigCheckFailed(_)), "got {error}");
     assert!(matches!(
         manager.status().state,
         CoreState::Stopped {

@@ -131,7 +131,6 @@ impl Instance {
         if tokio::fs::metadata(&spec.core.binary_path).await.is_err() {
             return Err(Error::BinaryNotFound(spec.core.binary_path.clone()));
         }
-        // Rejects kinds without a launch profile (`Meow`) before spawning.
         kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)?;
 
         let readiness_probe = match readiness_probe {
@@ -168,7 +167,8 @@ impl Instance {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         let supervisor = Supervisor::builder({
             let spec = spec.clone();
-            move || build_command(&spec, epoch)
+            let controller = controller.clone();
+            move || build_command(&spec, epoch, &controller)
         })
         .restart_policy(spec.options.restart_policy)
         .backoff(spec.options.backoff)
@@ -427,9 +427,10 @@ impl Drop for Instance {
     }
 }
 
-fn build_command(spec: &InstanceSpec, epoch: u64) -> Command {
-    let args = kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)
+fn build_command(spec: &InstanceSpec, epoch: u64, controller: &ResolvedController) -> Command {
+    let mut args = kind::run_args(spec.core.kind, &spec.working_dir, &spec.config_path)
         .expect("kind validated in Instance::spawn");
+    args.extend(kind::controller_args(spec.core.kind, &controller.host));
     let config_dir = spec
         .config_path
         .parent()

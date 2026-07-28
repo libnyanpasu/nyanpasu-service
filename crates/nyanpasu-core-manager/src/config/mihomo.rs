@@ -3,7 +3,8 @@
 //!
 //! Every field table here mirrors Mihomo's own config schema and its Clash
 //! RESTful API surface, so nothing in this module generalizes to another core:
-//! [`classify`] degrades every non-Mihomo kind to [`ConfigChange::Switch`].
+//! [`classify`] degrades every non-Mihomo kind to [`ConfigChange::Switch`]
+//! (an identical config is still [`ConfigChange::Noop`]).
 //! Other cores get their own sibling module on top of [`super::diff`].
 
 use std::collections::BTreeSet;
@@ -210,13 +211,21 @@ pub(crate) fn classify(
     desired_effective: &Mapping,
     desired_spec: &InstanceSpec,
 ) -> Result<ConfigChange, Error> {
-    if desired_spec.core.kind != CoreKind::Mihomo
-        || process_spec_changed(current_spec, desired_spec)
-    {
+    if process_spec_changed(current_spec, desired_spec) {
         return Ok(ConfigChange::Switch);
     }
 
     let source_diff = diff(current_source, desired_source);
+    if desired_spec.core.kind != CoreKind::Mihomo {
+        // Non-mihomo kinds degrade to Switch — but an identical config is
+        // still a Noop; there is nothing to deny.
+        return Ok(if source_diff.is_empty() {
+            ConfigChange::Noop
+        } else {
+            ConfigChange::Switch
+        });
+    }
+
     if source_diff.iter().any(|entry| {
         entry
             .path
@@ -515,6 +524,32 @@ mod tests {
             classify_documents(&mapping("dns: {ipv6: false}"), &mapping("dns: null")).unwrap(),
             ConfigChange::Switch
         ));
+    }
+
+    #[test]
+    fn identical_config_is_noop_for_every_kind() {
+        for kind in [
+            CoreKind::Mihomo,
+            CoreKind::ClashRust,
+            CoreKind::ClashPremium,
+        ] {
+            let spec = spec(kind, "core");
+            assert!(
+                matches!(
+                    classify(
+                        &mapping("mixed-port: 7890"),
+                        &Mapping::new(),
+                        &spec,
+                        &mapping("mixed-port: 7890"),
+                        &Mapping::new(),
+                        &spec,
+                    )
+                    .unwrap(),
+                    ConfigChange::Noop
+                ),
+                "{kind:?} should noop on an identical config"
+            );
+        }
     }
 
     #[test]
