@@ -12,7 +12,7 @@ use windows_service::{
     service_dispatcher,
 };
 
-use crate::consts::SERVICE_LABEL;
+use nyanpasu_service::consts::SERVICE_LABEL;
 
 const SERVICE_TYPE: ServiceType = ServiceType::OWN_PROCESS;
 
@@ -109,7 +109,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
 
     let guard = ServiceHandleGuard(status_handle);
     let handle = std::thread::spawn(move || {
-        block_on(crate::handler());
+        block_on(nyanpasu_service::handler());
     });
 
     // Wait for shutdown signal
@@ -119,7 +119,7 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     report_stop_pending(&status_handle, checkpoint)?;
 
     // cancel the server handle
-    if let Some(token) = crate::cmds::SERVER_SHUTDOWN_TOKEN.get() {
+    if let Some(token) = nyanpasu_service::server_shutdown_token() {
         tracing::info!("Cancelling server shutdown token");
         token.cancel();
     }

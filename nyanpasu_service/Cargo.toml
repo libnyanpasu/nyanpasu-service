@@ -4,100 +4,21 @@ version = "1.4.5"
 edition = "2024"
 repository = { workspace = true }
 license = { workspace = true }
-build = "build.rs"
 default-run = "nyanpasu-service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-nyanpasu-core-manager = { path = "../crates/nyanpasu-core-manager" }
-nyanpasu-ipc = {
-  path = "../nyanpasu_ipc",
-  default-features = false,
-  features = [
-    "client",
-    "server",
-  ]
-}
-nyanpasu-utils = {
-  path = "../crates/nyanpasu-utils",
-  default-features = false,
-  features = [
-    "dirs",
-    "network",
-    "os",
-  ]
-}
-
-ansi-str = "0.9"
-anyhow = { workspace = true }
-axum = { workspace = true, features = ["macros"] }
-bounded-vec-deque = "0.1.1"
-camino = { version = "1.1", features = ["serde1"] }
-chrono = { workspace = true }
-clap = { version = "4", features = ["derive"] }
-colored = "3.0.0"
-console-subscriber = {
-  version = "0.5",
-  features = [
-    "parking_lot",
-  ],
-  optional = true
-}
-constcat = "0.6.0"
-ctrlc = { version = "3", features = ["termination"] }
-dunce = "1.0.5"
-futures-util = { workspace = true }
-indexmap = { version = "2", features = ["serde"] }
-oneshot = "0.2"
-parking_lot = "0.12"
-semver = "1"
-serde = { workspace = true, features = ["derive"] }
-serde_json = "1"
-service-manager = "0.11"
-simd-json = { workspace = true }
-supports-color = "3.0.2"
-sysinfo = "0.39.0"
-thiserror.workspace = true
-timeago = "0.6"
+nyanpasu-service-runtime = { path = "../crates/nyanpasu-service-runtime" }
+nyanpasu-utils = { path = "../crates/nyanpasu-utils", default-features = false }
 tokio = { workspace = true, features = ["full"] }
-tokio-util = { workspace = true }
-tower-http = { version = "0.7", features = ["trace"] }
 tracing.workspace = true
-tracing-appender.workspace = true
-tracing-attributes.workspace = true
-tracing-log.workspace = true
-tracing-panic = "0.1"
-tracing-serde = "0.2"
-tracing-subscriber = {
-  workspace = true,
-  features = [
-    "env-filter",
-    "json",
-    "parking_lot",
-  ]
-}
-
-[dev-dependencies]
-tempfile = "3"
-tower = { version = "0.5", features = ["util"] }
-
-[build-dependencies]
-chrono = { workspace = true }
-rustc_version = "0.4"
-
-[target."cfg(unix)".dependencies]
-whoami = "2"
 
 [target."cfg(windows)".dependencies]
-check_elevation = "0.2.4"
-windows = { workspace = true }
+tokio-util = { workspace = true }
 windows-service = "0.8"
 
 [features]
-deadlock_detection = [
-  "nyanpasu-utils/deadlock_detection",
-  "parking_lot/deadlock_detection",
-]
-debug = ["deadlock_detection", "tracing"]
-hardware-lock-elision = ["parking_lot/hardware-lock-elision"]
-tracing = ["dep:console-subscriber", "tokio/tracing"]
+deadlock_detection = ["nyanpasu-service-runtime/deadlock_detection"]
+debug = ["nyanpasu-service-runtime/debug"]
+hardware-lock-elision = ["nyanpasu-service-runtime/hardware-lock-elision"]
+tracing = ["nyanpasu-service-runtime/tracing"]

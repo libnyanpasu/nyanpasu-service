@@ -11,6 +11,11 @@ mod stop;
 mod uninstall;
 mod update;
 
+// macOS routes start/stop through launchctl instead of the injected manager
+// (see utils::service), so the control-plane mock has nothing to observe there.
+#[cfg(all(test, not(target_os = "macos")))]
+mod test_support;
+
 pub use server::SHUTDOWN_TOKEN as SERVER_SHUTDOWN_TOKEN;
 
 /// Nyanpasu Service, a privileged service for managing the core service.
@@ -20,7 +25,14 @@ pub use server::SHUTDOWN_TOKEN as SERVER_SHUTDOWN_TOKEN;
 /// rpc subcommands are shortcuts for client rpc calls,
 /// It is useful for testing and debugging service rpc calls.
 #[derive(Parser)]
-#[command(version, author, about, long_about, disable_version_flag = true)]
+#[command(
+    name = "nyanpasu-service",
+    version,
+    author,
+    about,
+    long_about,
+    disable_version_flag = true
+)]
 struct Cli {
     /// Enable verbose logging
     #[clap(short = 'V', long, default_value = "false")]
@@ -195,4 +207,14 @@ pub fn print_version() {
     );
     println!("╰{:─^width$}╯", "", width = header_width);
     std::process::exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::CommandFactory;
+
+    #[test]
+    fn cli_keeps_the_legacy_command_name() {
+        assert_eq!(super::Cli::command().get_name(), crate::consts::APP_NAME);
+    }
 }

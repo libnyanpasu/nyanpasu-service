@@ -1992,6 +1992,18 @@ dependencies = [
 name = "nyanpasu-service"
 version = "1.4.5"
 dependencies = [
+ "nyanpasu-service-runtime",
+ "nyanpasu-utils",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "windows-service",
+]
+
+[[package]]
+name = "nyanpasu-service-runtime"
+version = "1.4.5"
+dependencies = [
  "ansi-str",
  "anyhow",
  "axum",
@@ -2036,7 +2048,6 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "windows 0.62.2",
- "windows-service",
 ]
 
 [[package]]

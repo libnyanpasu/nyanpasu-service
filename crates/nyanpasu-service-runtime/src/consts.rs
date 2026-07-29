@@ -1,7 +1,10 @@
 use constcat::concat;
 
 pub const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const APP_NAME: &str = env!("CARGO_PKG_NAME");
+// Not CARGO_PKG_NAME: this crate is `nyanpasu-service-runtime`, but the label,
+// the service data/config dirs and the installed binary name are all derived
+// from the bin's name and must not change.
+pub const APP_NAME: &str = "nyanpasu-service";
 pub const SERVICE_LABEL: &str = concat!("moe.elaina.", APP_NAME);
 
 // Build info
