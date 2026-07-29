@@ -1,3 +1,4 @@
+pub mod contract;
 pub mod core;
 pub mod log;
 pub mod network;

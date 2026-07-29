@@ -1,11 +1,13 @@
-use std::{fmt::Debug, sync::OnceLock};
+use std::sync::OnceLock;
 
 use reqwest::{Method, RequestBuilder, StatusCode, Url};
-use serde::de::DeserializeOwned;
 
 use crate::{
     SERVICE_PLACEHOLDER,
-    api::{R, ResponseCode},
+    api::{
+        R, ResponseCode,
+        contract::{IpcOperation, OpResponse},
+    },
 };
 
 pub mod shortcuts;
@@ -109,10 +111,6 @@ impl Client {
         self.request(Method::GET, endpoint)
     }
 
-    pub(crate) fn post(&self, endpoint: &str) -> RequestBuilder {
-        self.request(Method::POST, endpoint)
-    }
-
     pub(crate) async fn send(
         &self,
         operation: &'static str,
@@ -149,52 +147,41 @@ impl Client {
         })
     }
 
-    /// Send a request and unwrap the data of the response envelope.
-    pub(crate) async fn send_data<T>(
-        &self,
-        operation: &'static str,
-        request: RequestBuilder,
-    ) -> Result<T>
+    /// Send `Op` and return its response envelope.
+    ///
+    /// `body` is `None` for the operations whose contract declares
+    /// `Req<'a> = ()`: nothing is written to the wire and no `Content-Type` is
+    /// set, matching what the hand-written shortcuts sent before the contract
+    /// existed.
+    pub async fn call<Op>(&self, body: Option<&Op::Req<'_>>) -> Result<OpResponse<Op>>
     where
-        T: serde::Serialize + DeserializeOwned + Debug,
+        Op: IpcOperation,
     {
-        let response = self.send(operation, request).await?;
+        let mut request = self.request(Op::METHOD, Op::PATH);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = self.send(Op::PATH, request).await?;
         let bytes = response
             .bytes()
             .await
-            .map_err(|source| ClientError::Request { operation, source })?;
-        let envelope = serde_json::from_slice::<R<'static, T>>(&bytes)
-            .map_err(|source| ClientError::Decode { operation, source })?;
+            .map_err(|source| ClientError::Request {
+                operation: Op::PATH,
+                source,
+            })?;
+        let envelope = serde_json::from_slice::<OpResponse<Op>>(&bytes).map_err(|source| {
+            ClientError::Decode {
+                operation: Op::PATH,
+                source,
+            }
+        })?;
         if envelope.code != ResponseCode::Ok {
             return Err(ClientError::Server {
-                operation,
+                operation: Op::PATH,
                 code: envelope.code,
                 msg: envelope.msg.into_owned(),
             });
         }
-        envelope.data.ok_or(ClientError::EmptyData { operation })
-    }
-
-    /// Send a request and only check the code of the response envelope.
-    pub(crate) async fn send_unit(
-        &self,
-        operation: &'static str,
-        request: RequestBuilder,
-    ) -> Result<()> {
-        let response = self.send(operation, request).await?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|source| ClientError::Request { operation, source })?;
-        let envelope = serde_json::from_slice::<R<'static, serde_json::Value>>(&bytes)
-            .map_err(|source| ClientError::Decode { operation, source })?;
-        if envelope.code != ResponseCode::Ok {
-            return Err(ClientError::Server {
-                operation,
-                code: envelope.code,
-                msg: envelope.msg.into_owned(),
-            });
-        }
-        Ok(())
+        Ok(envelope)
     }
 }

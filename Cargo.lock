@@ -492,6 +492,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "clap_complete"
+version = "4.6.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db8b397918185f0161ff3d6fcaa9e4bfc09b8367caf6e1d4a2848e5477ed027b"
+dependencies = [
+ "clap",
+]
+
+[[package]]
 name = "clap_derive"
 version = "4.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -781,20 +790,6 @@ dependencies = [
  "darling_core 0.21.3",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "dashmap"
-version = "6.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6361d5c062261c78a176addb82d4c821ae42bed6089de0e12603cd25de2059c"
-dependencies = [
- "cfg-if",
- "crossbeam-utils",
- "hashbrown 0.14.5",
- "lock_api",
- "once_cell",
- "parking_lot_core",
 ]
 
 [[package]]
@@ -1243,12 +1238,6 @@ dependencies = [
  "hashbrown 0.16.1",
  "serde",
 ]
-
-[[package]]
-name = "hashbrown"
-version = "0.14.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5274423e17b7c9fc20b6e7e208532f9b19825d82dfd615708b70edd83df41f1"
 
 [[package]]
 name = "hashbrown"
@@ -1991,6 +1980,7 @@ dependencies = [
  "axum-extra",
  "derive_builder",
  "futures-util",
+ "http",
  "indexmap",
  "interprocess",
  "nyanpasu-utils",
@@ -2012,6 +2002,18 @@ dependencies = [
 name = "nyanpasu-service"
 version = "1.4.5"
 dependencies = [
+ "nyanpasu-service-runtime",
+ "nyanpasu-utils",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "windows-service",
+]
+
+[[package]]
+name = "nyanpasu-service-runtime"
+version = "1.4.5"
+dependencies = [
  "ansi-str",
  "anyhow",
  "axum",
@@ -2020,14 +2022,15 @@ dependencies = [
  "check_elevation",
  "chrono",
  "clap",
+ "clap_complete",
  "colored",
  "console-subscriber",
  "constcat",
  "ctrlc",
- "dashmap",
  "dunce",
  "futures-util",
  "indexmap",
+ "nyanpasu-core-manager",
  "nyanpasu-ipc",
  "nyanpasu-utils",
  "oneshot",
@@ -2040,10 +2043,12 @@ dependencies = [
  "simd-json",
  "supports-color",
  "sysinfo",
+ "tempfile",
  "thiserror 2.0.19",
  "timeago",
  "tokio",
  "tokio-util",
+ "tower",
  "tower-http 0.7.0",
  "tracing",
  "tracing-appender",
@@ -2054,7 +2059,6 @@ dependencies = [
  "tracing-subscriber",
  "whoami",
  "windows 0.62.2",
- "windows-service",
 ]
 
 [[package]]
@@ -3627,13 +3631,16 @@ checksum = "b11f75e912b0c2be01b63d8cf8057b8c3f97cf34abb3d431a3a4c8675498e233"
 dependencies = [
  "bitflags",
  "bytes",
+ "futures-util",
  "http",
  "http-body",
+ "http-body-util",
  "percent-encoding",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3847,6 +3854,7 @@ version = "1.24.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bf3923a6f5c4c6382e0b653c4117f48d631ea17f38ed86e2a828e6f7412f5239"
 dependencies = [
+ "getrandom 0.4.3",
  "js-sys",
  "serde_core",
  "wasm-bindgen",

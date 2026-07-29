@@ -8,9 +8,10 @@ use reqwest_websocket::{Message, Upgrade};
 
 use crate::api::{
     self,
-    core::{restart::CORE_RESTART_ENDPOINT, start::CORE_START_ENDPOINT, stop::CORE_STOP_ENDPOINT},
+    contract::{
+        CoreRestart, CoreStart, CoreStop, LogsInspect, LogsRetrieve, NetworkSetDns, Status,
+    },
     log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT},
-    network::set_dns::NETWORK_SET_DNS_ENDPOINT,
     status::STATUS_ENDPOINT,
     ws::events::{EVENT_URI, Event},
 };
@@ -21,47 +22,49 @@ pub use super::Client;
 
 impl Client {
     pub async fn status(&self) -> Result<api::status::StatusResBody<'static>> {
-        self.send_data(STATUS_ENDPOINT, self.get(STATUS_ENDPOINT))
-            .await
+        self.call::<Status>(None)
+            .await?
+            .data
+            .ok_or(ClientError::EmptyData {
+                operation: STATUS_ENDPOINT,
+            })
     }
 
     pub async fn start_core(&self, payload: &api::core::start::CoreStartReq<'_>) -> Result<()> {
-        self.send_unit(
-            CORE_START_ENDPOINT,
-            self.post(CORE_START_ENDPOINT).json(payload),
-        )
-        .await
+        self.call::<CoreStart>(Some(payload)).await.map(|_| ())
     }
 
     pub async fn stop_core(&self) -> Result<()> {
-        self.send_unit(CORE_STOP_ENDPOINT, self.post(CORE_STOP_ENDPOINT))
-            .await
+        self.call::<CoreStop>(None).await.map(|_| ())
     }
 
     pub async fn restart_core(&self) -> Result<()> {
-        self.send_unit(CORE_RESTART_ENDPOINT, self.post(CORE_RESTART_ENDPOINT))
-            .await
+        self.call::<CoreRestart>(None).await.map(|_| ())
     }
 
     pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'static>> {
-        self.send_data(LOGS_INSPECT_ENDPOINT, self.get(LOGS_INSPECT_ENDPOINT))
-            .await
+        self.call::<LogsInspect>(None)
+            .await?
+            .data
+            .ok_or(ClientError::EmptyData {
+                operation: LOGS_INSPECT_ENDPOINT,
+            })
     }
 
     pub async fn retrieve_logs(&self) -> Result<api::log::LogsResBody<'static>> {
-        self.send_data(LOGS_RETRIEVE_ENDPOINT, self.get(LOGS_RETRIEVE_ENDPOINT))
-            .await
+        self.call::<LogsRetrieve>(None)
+            .await?
+            .data
+            .ok_or(ClientError::EmptyData {
+                operation: LOGS_RETRIEVE_ENDPOINT,
+            })
     }
 
     pub async fn set_dns(
         &self,
         payload: &api::network::set_dns::NetworkSetDnsReq<'_>,
     ) -> Result<()> {
-        self.send_unit(
-            NETWORK_SET_DNS_ENDPOINT,
-            self.post(NETWORK_SET_DNS_ENDPOINT).json(payload),
-        )
-        .await
+        self.call::<NetworkSetDns>(Some(payload)).await.map(|_| ())
     }
 
     /// Subscribe to the events pushed by the service over `/ws/events`.

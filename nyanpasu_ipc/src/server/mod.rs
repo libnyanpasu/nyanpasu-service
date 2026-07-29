@@ -136,6 +136,38 @@ pub async fn create_server(
     Ok(())
 }
 
+/// Mount operation handlers from the shared contract.
+///
+/// The path and the method come from the `IpcOperation` impl, so a route
+/// cannot drift from the client that calls it.
+pub trait RegisterOperation<S> {
+    /// Mount `handler` at `op`'s path and method.
+    ///
+    /// `op` is a value rather than a turbofish so the call sites read as
+    /// `.register(CoreStart, start::start)`.
+    fn register<Op, H, T>(self, op: Op, handler: H) -> Self
+    where
+        Op: crate::api::contract::IpcOperation,
+        H: axum::handler::Handler<T, S>,
+        T: 'static;
+}
+
+impl<S> RegisterOperation<S> for Router<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
+    fn register<Op, H, T>(self, _op: Op, handler: H) -> Self
+    where
+        Op: crate::api::contract::IpcOperation,
+        H: axum::handler::Handler<T, S>,
+        T: 'static,
+    {
+        let filter = axum::routing::MethodFilter::try_from(Op::METHOD)
+            .expect("every IPC operation uses a method axum can filter on");
+        self.route(Op::PATH, axum::routing::on(filter, handler))
+    }
+}
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
