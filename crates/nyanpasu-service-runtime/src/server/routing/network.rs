@@ -1,7 +1,11 @@
-use axum::{Json, Router, http::StatusCode, routing::post};
-use nyanpasu_ipc::api::{
-    RBuilder,
-    network::set_dns::{NETWORK_SET_DNS_ENDPOINT, NetworkSetDnsReq, NetworkSetDnsRes},
+use axum::{Json, Router, http::StatusCode};
+use nyanpasu_ipc::{
+    api::{
+        RBuilder,
+        contract::NetworkSetDns,
+        network::set_dns::{NetworkSetDnsReq, NetworkSetDnsRes},
+    },
+    server::RegisterOperation,
 };
 use std::borrow::Cow;
 
@@ -12,7 +16,7 @@ pub fn setup<S>() -> Router<S>
 where
     S: Clone + Send + Sync + 'static,
 {
-    Router::new().route(NETWORK_SET_DNS_ENDPOINT, post(network))
+    Router::new().register(NetworkSetDns, network)
 }
 
 #[cfg(target_os = "macos")]

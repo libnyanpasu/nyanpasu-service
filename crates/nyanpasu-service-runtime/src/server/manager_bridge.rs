@@ -18,6 +18,12 @@ use super::{consts::RuntimeInfos, events::EventHub};
 
 const CORE_LOG_TARGET: &str = "nyanpasu_service::core";
 
+/// Legacy wire strings the GUI branches on. These are protocol, not
+/// diagnostics: changing any of them is a breaking change to clash-nyanpasu.
+pub(crate) const MSG_CORE_ALREADY_RUNNING: &str = "core is already running";
+pub(crate) const MSG_CORE_ALREADY_STOPPED: &str = "core is already stopped";
+pub(crate) const MSG_CORE_NOT_STARTED: &str = "core have not been started yet";
+
 struct Inner {
     manager: Manager,
     /// Wire-type echo: the manager knows nothing about the alpha variants.
@@ -124,7 +130,7 @@ impl CoreManagerService {
             self.inner.manager.status().state,
             ManagerCoreState::Stopped { .. }
         ) {
-            anyhow::bail!("core is already running");
+            anyhow::bail!(MSG_CORE_ALREADY_RUNNING);
         }
         let spec = self.instance_spec(infos, core_type, config_path)?;
         self.inner.manager.start(spec).await?;
@@ -139,7 +145,7 @@ impl CoreManagerService {
         }
         match self.inner.manager.stop().await {
             Ok(()) => Ok(()),
-            Err(ManagerError::NotStarted) => anyhow::bail!("core is already stopped"),
+            Err(ManagerError::NotStarted) => anyhow::bail!(MSG_CORE_ALREADY_STOPPED),
             Err(error) => Err(error.into()),
         }
     }
@@ -151,7 +157,7 @@ impl CoreManagerService {
         }
         match self.inner.manager.restart().await {
             Ok(_outcome) => Ok(()),
-            Err(ManagerError::NotStarted) => anyhow::bail!("core have not been started yet"),
+            Err(ManagerError::NotStarted) => anyhow::bail!(MSG_CORE_NOT_STARTED),
             Err(error) => Err(error.into()),
         }
     }
@@ -449,6 +455,23 @@ mod tests {
                 r#"Stopped(Some("boom"))"#,
                 r#"Stopped(Some("stopped by user"))"#,
             ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod wire_strings {
+    /// One of these three ("core is already running") cannot be produced by a
+    /// route-level unit test — it requires an actually-running core — so the
+    /// producer constants themselves are pinned here, and the two siblings'
+    /// route tests prove the bail→envelope pipeline delivers them verbatim.
+    #[test]
+    fn the_legacy_core_error_strings_are_protocol() {
+        assert_eq!(super::MSG_CORE_ALREADY_RUNNING, "core is already running");
+        assert_eq!(super::MSG_CORE_ALREADY_STOPPED, "core is already stopped");
+        assert_eq!(
+            super::MSG_CORE_NOT_STARTED,
+            "core have not been started yet"
         );
     }
 }

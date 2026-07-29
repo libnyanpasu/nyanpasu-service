@@ -23,11 +23,12 @@ use std::{
 
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
         State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
-    http::StatusCode,
+    http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
     response::Response,
     routing::{get, post},
 };
@@ -187,6 +188,13 @@ struct Received {
 
 type Shared = Arc<Mutex<Received>>;
 
+struct CapturedRequest {
+    content_type: Option<HeaderValue>,
+    body: Bytes,
+}
+
+type SharedCapture = Arc<Mutex<Option<CapturedRequest>>>;
+
 fn test_status_body() -> StatusResBody<'static> {
     StatusResBody {
         version: Cow::Borrowed(TEST_VERSION),
@@ -222,6 +230,30 @@ async fn stop_core_handler(
     State(state): State<Shared>,
 ) -> (StatusCode, Json<CoreStopRes<'static>>) {
     state.lock().unwrap().stop_core_calls += 1;
+    (StatusCode::OK, Json(RBuilder::success(())))
+}
+
+async fn capture_stop_core_handler(
+    State(capture): State<SharedCapture>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> (StatusCode, Json<CoreStopRes<'static>>) {
+    *capture.lock().unwrap() = Some(CapturedRequest {
+        content_type: headers.get(CONTENT_TYPE).cloned(),
+        body,
+    });
+    (StatusCode::OK, Json(RBuilder::success(())))
+}
+
+async fn capture_start_core_handler(
+    State(capture): State<SharedCapture>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> (StatusCode, Json<CoreStartRes<'static>>) {
+    *capture.lock().unwrap() = Some(CapturedRequest {
+        content_type: headers.get(CONTENT_TYPE).cloned(),
+        body,
+    });
     (StatusCode::OK, Json(RBuilder::success(())))
 }
 
@@ -471,6 +503,66 @@ async fn ok_status_with_error_code_maps_to_server_error() {
         }
         other => panic!("expected a server error, got: {other:?}"),
     }
+
+    let _ = shutdown.send(());
+    cleanup(&placeholder);
+}
+
+#[tokio::test]
+async fn body_less_posts_send_no_body_and_no_content_type() {
+    let placeholder = format!("nyanpasu-ipc-test-{}-empty-post", std::process::id());
+    let capture = SharedCapture::default();
+    let router = Router::new()
+        .route(STATUS_ENDPOINT, get(status_handler))
+        .route(CORE_STOP_ENDPOINT, post(capture_stop_core_handler))
+        .with_state(capture.clone());
+    let Some((shutdown, client)) = run_server(&placeholder, router).await else {
+        return;
+    };
+
+    client.stop_core().await.expect("stop_core should succeed");
+
+    let captured = capture.lock().unwrap();
+    let request = captured.as_ref().expect("request should be captured");
+    assert!(request.body.is_empty());
+    assert!(request.content_type.is_none());
+
+    let _ = shutdown.send(());
+    cleanup(&placeholder);
+}
+
+#[tokio::test]
+async fn json_posts_send_the_exact_payload() {
+    let placeholder = format!("nyanpasu-ipc-test-{}-json-post", std::process::id());
+    let capture = SharedCapture::default();
+    let router = Router::new()
+        .route(STATUS_ENDPOINT, get(status_handler))
+        .route(CORE_START_ENDPOINT, post(capture_start_core_handler))
+        .with_state(capture.clone());
+    let Some((shutdown, client)) = run_server(&placeholder, router).await else {
+        return;
+    };
+    let payload = CoreStartReq {
+        core_type: Cow::Owned(CoreType::Clash(ClashCoreType::Mihomo)),
+        config_file: Cow::Owned(PathBuf::from("/etc/nyanpasu/config.yaml")),
+    };
+
+    client
+        .start_core(&payload)
+        .await
+        .expect("start_core should succeed");
+
+    let captured = capture.lock().unwrap();
+    let request = captured.as_ref().expect("request should be captured");
+    assert_eq!(
+        request
+            .content_type
+            .as_ref()
+            .expect("content-type should be present"),
+        "application/json"
+    );
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body, serde_json::to_value(&payload).unwrap());
 
     let _ = shutdown.send(());
     cleanup(&placeholder);

@@ -67,9 +67,9 @@ supports-color = "3.0.2"
 sysinfo = "0.39.0"
 thiserror.workspace = true
 timeago = "0.6"
-tokio = { workspace = true, features = ["full"] }
+tokio = { workspace = true, features = ["full", "test-util"] }
 tokio-util = { workspace = true }
-tower-http = { version = "0.7", features = ["trace"] }
+tower-http = { version = "0.7", features = ["catch-panic", "request-id", "trace"] }
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-attributes.workspace = true

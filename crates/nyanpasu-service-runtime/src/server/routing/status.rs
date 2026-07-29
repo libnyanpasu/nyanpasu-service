@@ -1,17 +1,20 @@
 use std::borrow::Cow;
 
-use axum::{Json, Router, extract::State, http::StatusCode, routing::get};
+use axum::{Json, Router, extract::State, http::StatusCode};
 
-use nyanpasu_ipc::api::{
-    RBuilder,
-    status::{RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody},
+use nyanpasu_ipc::{
+    api::{
+        RBuilder,
+        contract::Status as StatusOp,
+        status::{RuntimeInfos, StatusRes, StatusResBody},
+    },
+    server::RegisterOperation,
 };
 
 use super::AppState;
 
 pub fn setup() -> Router<AppState> {
-    let router = Router::new();
-    router.route(STATUS_ENDPOINT, get(status))
+    Router::new().register(StatusOp, status)
 }
 
 pub async fn status(State(state): State<AppState>) -> (StatusCode, Json<StatusRes<'static>>) {

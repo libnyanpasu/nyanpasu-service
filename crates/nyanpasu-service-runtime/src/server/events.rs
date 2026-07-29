@@ -138,4 +138,15 @@ mod tests {
         assert!(!should_forward_to_hub(WS_LAG_LOG_TARGET));
         assert!(should_forward_to_hub("nyanpasu_service::server"));
     }
+
+    /// The ws handler frames events with simd_json; the bytes on the socket
+    /// must match the shape the client's serde_json decoder expects.
+    #[test]
+    fn ws_frames_are_pinned() {
+        let frame = simd_json::to_vec(&state_event(CoreState::Running)).unwrap();
+        assert_eq!(
+            String::from_utf8(frame).unwrap(),
+            r#"{"CoreStateChanged":"Running"}"#
+        );
+    }
 }
