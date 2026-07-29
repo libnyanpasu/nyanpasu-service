@@ -29,6 +29,7 @@ struct Behavior {
     ready_delay_ms: u64,
     never_ready: bool,
     exit_code: Option<i32>,
+    stdout_lines: Vec<String>,
     stderr_lines: Vec<String>,
     crash_after_ms: u64,
     crash_times: u64,
@@ -62,6 +63,18 @@ fn b(doc: &Mapping, key: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn lines(doc: &Mapping, key: &str) -> Vec<String> {
+    doc.get(Value::String(key.into()))
+        .and_then(Value::as_sequence)
+        .map(|seq| {
+            seq.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn parse(config: &str) -> Behavior {
     let doc: Mapping = serde_yaml_ng::from_str(config).expect("valid yaml");
     let x = doc
@@ -82,16 +95,8 @@ fn parse(config: &str) -> Behavior {
             .get(Value::String("exit-code".into()))
             .and_then(Value::as_i64)
             .map(|c| c as i32),
-        stderr_lines: x
-            .get(Value::String("stderr-lines".into()))
-            .and_then(Value::as_sequence)
-            .map(|seq| {
-                seq.iter()
-                    .filter_map(Value::as_str)
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default(),
+        stdout_lines: lines(&x, "stdout-lines"),
+        stderr_lines: lines(&x, "stderr-lines"),
         crash_after_ms: u(&x, "crash-after-ms"),
         crash_times: u(&x, "crash-times"),
         state_file: s(&x, "state-file"),
@@ -158,6 +163,9 @@ async fn main() {
         }
     }
 
+    for line in &behavior.stdout_lines {
+        println!("{line}");
+    }
     for line in &behavior.stderr_lines {
         eprintln!("{line}");
     }

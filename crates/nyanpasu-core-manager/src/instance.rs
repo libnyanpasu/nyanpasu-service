@@ -13,7 +13,7 @@ use nyanpasu_utils::process::{
     Supervisor, SupervisorEvent, TerminatedPayload, reap_epoch_pid_file,
 };
 use tokio::{
-    sync::{mpsc, oneshot, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     time::Instant,
 };
 use tokio_util::sync::CancellationToken;
@@ -24,13 +24,17 @@ use crate::{
         HealthTracker, TrackerState,
         driver::{ProbeDriver, ProbeObservation},
     },
-    kind::{self, MIHOMO_SAFE_PATHS_ENV_NAME},
+    kind::{self, CLICOLOR_FORCE_ENV_NAME, MIHOMO_SAFE_PATHS_ENV_NAME},
+    log::{
+        LOG_CHANNEL_CAPACITY, LogFrame, LogLevel, LogParser, LogStream, ParsedFrames,
+        error_summary, format_tail,
+    },
     probe::{ControllerVersionProbe, ProbeHandle, ProbePhase, ProbeResult},
     spec::{InstanceOptions, InstanceSpec, ResolvedController},
     state::{HealthState, HealthStatus, InstanceState, InstanceStatus, StopReason, now_ms},
 };
 
-const STDERR_TAIL_LINES: usize = 32;
+const LOG_TAIL_FRAMES: usize = 32;
 
 /// One epoch of a running core. The spec is immutable; a config change means a
 /// new `Instance` with a new epoch (created by `CoreManager`).
@@ -46,7 +50,9 @@ struct Shared {
     state_tx: watch::Sender<InstanceStatus>,
     user_stop: AtomicBool,
     probe_timeout: AtomicBool,
-    stderr_tail: parking_lot::Mutex<VecDeque<String>>,
+    parser: parking_lot::Mutex<LogParser>,
+    log_tail: parking_lot::Mutex<VecDeque<LogFrame>>,
+    log_tx: broadcast::Sender<LogFrame>,
     cancel: CancellationToken,
     probe_cancel: CancellationToken,
     probe_request_tx: mpsc::UnboundedSender<ProbeNowRequest>,
@@ -68,9 +74,56 @@ impl Shared {
         let _ = self.state_tx.send(status);
     }
 
-    fn tail(&self) -> String {
-        let buf = self.stderr_tail.lock();
-        buf.iter().cloned().collect::<Vec<_>>().join("\n")
+    /// The parser lock is released before logging, buffering and broadcasting:
+    /// this runs inline on the supervision loop.
+    fn parse(&self, stream: LogStream, line: String) -> ParsedFrames {
+        self.parser.lock().push(stream, line)
+    }
+
+    fn finish_log_record(&self) -> ParsedFrames {
+        self.parser.lock().finish()
+    }
+
+    fn publish_log_frame(&self, frame: LogFrame) {
+        let record = frame.raw.as_str();
+        match frame.level {
+            LogLevel::Trace => tracing::trace!(target: "core", "{record}"),
+            LogLevel::Debug => tracing::debug!(target: "core", "{record}"),
+            LogLevel::Info => tracing::info!(target: "core", "{record}"),
+            LogLevel::Warning => tracing::warn!(target: "core", "{record}"),
+            LogLevel::Error | LogLevel::Fatal => tracing::error!(target: "core", "{record}"),
+        }
+        let mut tail = self.log_tail.lock();
+        if tail.len() == LOG_TAIL_FRAMES {
+            tail.pop_front();
+        }
+        tail.push_back(frame.clone());
+        drop(tail);
+        let _ = self.log_tx.send(frame);
+    }
+
+    /// `Terminated` is best-effort, so every terminal path releases the pending
+    /// record itself: a fatal block that never saw its terminating event still
+    /// reaches the tail and the subscribers.
+    fn flush_log_record(&self) {
+        for frame in self.finish_log_record().into_iter().flatten() {
+            self.publish_log_frame(frame);
+        }
+    }
+
+    fn diagnostic_frames(&self) -> Vec<LogFrame> {
+        self.flush_log_record();
+        self.log_tail.lock().iter().cloned().collect()
+    }
+
+    fn diagnostics(&self) -> String {
+        format_tail(&self.diagnostic_frames())
+    }
+
+    /// The lifecycle text already carries the raw tail, so it stands in when the
+    /// core logged nothing above `Info`.
+    fn failure_summary(&self, lifecycle: &str) -> String {
+        error_summary(&self.diagnostic_frames()).unwrap_or_else(|| lifecycle.to_owned())
     }
 }
 
@@ -86,6 +139,7 @@ pub struct InstanceBuilder {
     readiness_probe: Option<ProbeHandle>,
     liveness_probe: Option<ProbeHandle>,
     liveness_with_readiness: bool,
+    log_tx: Option<broadcast::Sender<LogFrame>>,
 }
 
 impl Instance {
@@ -103,6 +157,7 @@ impl Instance {
             readiness_probe: None,
             liveness_probe: None,
             liveness_with_readiness: false,
+            log_tx: None,
         }
     }
 
@@ -124,6 +179,7 @@ impl Instance {
             readiness_probe,
             liveness_probe,
             liveness_with_readiness,
+            log_tx,
         } = builder;
         if tokio::fs::metadata(&spec.config_path).await.is_err() {
             return Err(Error::ConfigNotFound(spec.config_path.clone()));
@@ -156,7 +212,9 @@ impl Instance {
             state_tx,
             user_stop: AtomicBool::new(false),
             probe_timeout: AtomicBool::new(false),
-            stderr_tail: parking_lot::Mutex::new(VecDeque::with_capacity(STDERR_TAIL_LINES)),
+            parser: parking_lot::Mutex::new(LogParser::new(spec.core.kind, epoch)),
+            log_tail: parking_lot::Mutex::new(VecDeque::with_capacity(LOG_TAIL_FRAMES)),
+            log_tx: log_tx.unwrap_or_else(|| broadcast::channel(LOG_CHANNEL_CAPACITY).0),
             cancel: cancel.clone(),
             probe_cancel,
             probe_request_tx,
@@ -179,20 +237,20 @@ impl Instance {
         })
         .on_process_event({
             let shared = shared.clone();
-            move |event| match event {
-                ProcessEvent::Stdout(line) => tracing::info!(target: "core", "{line}"),
-                ProcessEvent::Stderr(line) => {
-                    tracing::warn!(target: "core", "{line}");
-                    let mut tail = shared.stderr_tail.lock();
-                    if tail.len() == STDERR_TAIL_LINES {
-                        tail.pop_front();
+            move |event| {
+                let frames = match event {
+                    ProcessEvent::Stdout(line) => shared.parse(LogStream::Stdout, line),
+                    ProcessEvent::Stderr(line) => shared.parse(LogStream::Stderr, line),
+                    ProcessEvent::Terminated(_) => shared.finish_log_record(),
+                    ProcessEvent::Error(error) => {
+                        tracing::warn!(target: "core", "output pump: {error}");
+                        [None, None]
                     }
-                    tail.push_back(line);
+                    _ => [None, None],
+                };
+                for frame in frames.into_iter().flatten() {
+                    shared.publish_log_frame(frame);
                 }
-                ProcessEvent::Error(error) => {
-                    tracing::warn!(target: "core", "output pump: {error}")
-                }
-                _ => {}
             }
         })
         .spawn()
@@ -223,6 +281,10 @@ impl Instance {
 
     pub fn state(&self) -> watch::Receiver<InstanceStatus> {
         self.state_rx.clone()
+    }
+
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<LogFrame> {
+        self.shared.log_tx.subscribe()
     }
 
     pub fn epoch(&self) -> u64 {
@@ -257,7 +319,7 @@ impl Instance {
                         StopReason::Error(text) => text,
                         other => format!("stopped before ready: {other:?}"),
                     };
-                    let stderr_tail = kind::error_summary(self.spec.core.kind, &text);
+                    let stderr_tail = self.shared.failure_summary(&text);
                     return Err(if self.shared.probe_timeout.load(Ordering::SeqCst) {
                         Error::StartupTimeout { stderr_tail }
                     } else {
@@ -268,7 +330,7 @@ impl Instance {
             }
             if rx.changed().await.is_err() {
                 return Err(Error::StartupFailed {
-                    stderr_tail: self.shared.tail(),
+                    stderr_tail: self.shared.diagnostics(),
                 });
             }
         }
@@ -412,6 +474,13 @@ impl InstanceBuilder {
         self
     }
 
+    /// Lets the manager keep one log channel across epochs so subscriptions
+    /// survive restarts and core switches.
+    pub(crate) fn log_sender(mut self, log_tx: broadcast::Sender<LogFrame>) -> Self {
+        self.log_tx = Some(log_tx);
+        self
+    }
+
     pub async fn spawn(self) -> Result<Instance, Error> {
         Instance::spawn_configured(self).await
     }
@@ -441,6 +510,7 @@ fn build_command(spec: &InstanceSpec, epoch: u64, controller: &ResolvedControlle
             MIHOMO_SAFE_PATHS_ENV_NAME,
             kind::mihomo_safe_paths(&spec.working_dir, config_dir),
         )
+        .env(CLICOLOR_FORCE_ENV_NAME, "0")
         .current_dir(spec.working_dir.as_str());
     if let Some(pid_file) = &spec.pid_file {
         command = if epoch_pid_path(spec, epoch).is_some() {
@@ -560,7 +630,7 @@ async fn monitor_loop(
                     shared.publish_status(InstanceStatus {
                         state: InstanceState::Stopped(StopReason::Error(format!(
                         "core kept crashing; restart budget exhausted\n{}",
-                        shared.tail()
+                        shared.diagnostics()
                         ))),
                         health: None,
                     });
@@ -805,16 +875,19 @@ fn health_status(
 }
 
 fn publish_terminal(shared: &Shared, last_exit: Option<&TerminatedPayload>) {
+    // The clean-exit and user-stop arms never read the diagnostics, so without
+    // this a held fatal record would never reach the log subscribers.
+    shared.flush_log_record();
     let reason = if shared.user_stop.load(Ordering::SeqCst) {
         StopReason::User
     } else if shared.probe_timeout.load(Ordering::SeqCst) {
-        StopReason::Error(format!("health probe timed out\n{}", shared.tail()))
+        StopReason::Error(format!("health probe timed out\n{}", shared.diagnostics()))
     } else if last_exit.is_some_and(|payload| payload.code == Some(0)) {
         StopReason::Finished
     } else {
         StopReason::Error(format!(
             "core exited unexpectedly ({last_exit:?})\n{}",
-            shared.tail()
+            shared.diagnostics()
         ))
     };
     let _ = shared.state_tx.send(InstanceStatus {
@@ -866,6 +939,53 @@ mod tests {
     }
 
     #[test]
+    fn terminal_publication_releases_a_held_record() {
+        let (state_tx, _state_rx) = watch::channel(InstanceStatus::initial());
+        let (probe_request_tx, _probe_request_rx) = mpsc::unbounded_channel();
+        let (log_tx, mut logs) = broadcast::channel(LOG_CHANNEL_CAPACITY);
+        let shared = Shared {
+            state_tx,
+            user_stop: AtomicBool::new(true),
+            probe_timeout: AtomicBool::new(false),
+            parser: parking_lot::Mutex::new(LogParser::new(kind::CoreKind::Mihomo, 1)),
+            log_tail: parking_lot::Mutex::new(VecDeque::new()),
+            log_tx,
+            cancel: CancellationToken::new(),
+            probe_cancel: CancellationToken::new(),
+            probe_request_tx,
+            supervisor: tokio::sync::Mutex::new(None),
+            monitor: tokio::sync::Mutex::new(None),
+        };
+        // A fatal record is held back waiting for continuation lines.
+        for frame in shared
+            .parse(
+                LogStream::Stdout,
+                r#"time="2026-07-29T00:17:26+08:00" level=fatal msg="final record""#.to_owned(),
+            )
+            .into_iter()
+            .flatten()
+        {
+            shared.publish_log_frame(frame);
+        }
+        assert!(logs.try_recv().is_err());
+
+        // A user stop reads no diagnostics, so the flush has to happen anyway.
+        publish_terminal(&shared, None);
+        assert_eq!(
+            logs.try_recv().expect("held record").message,
+            "final record"
+        );
+        assert!(matches!(
+            state_rx_state(&shared),
+            InstanceState::Stopped(StopReason::User)
+        ));
+    }
+
+    fn state_rx_state(shared: &Shared) -> InstanceState {
+        shared.state_tx.borrow().state.clone()
+    }
+
+    #[test]
     #[ignore = "spawned as the managed child by the deadline-drain test"]
     fn deadline_drain_test_child() {
         std::thread::sleep(Duration::from_secs(60));
@@ -907,7 +1027,9 @@ mod tests {
             state_tx,
             user_stop: AtomicBool::new(false),
             probe_timeout: AtomicBool::new(false),
-            stderr_tail: parking_lot::Mutex::new(VecDeque::new()),
+            parser: parking_lot::Mutex::new(LogParser::new(kind::CoreKind::Mihomo, 1)),
+            log_tail: parking_lot::Mutex::new(VecDeque::new()),
+            log_tx: broadcast::channel(LOG_CHANNEL_CAPACITY).0,
             cancel: CancellationToken::new(),
             probe_cancel: CancellationToken::new(),
             probe_request_tx,

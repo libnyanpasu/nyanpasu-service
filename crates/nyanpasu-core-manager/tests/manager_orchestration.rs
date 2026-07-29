@@ -10,8 +10,8 @@ use std::{
 };
 
 use nyanpasu_core_manager::{
-    ControllerMode, CoreState, Error, HealthPolicy, HealthState, LocalIpcPolicy, ManagerOptions,
-    ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
+    ControllerMode, CoreState, Error, HealthPolicy, HealthState, LocalIpcPolicy, LogLevel,
+    LogStream, ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
@@ -197,6 +197,44 @@ async fn start_publishes_running_and_rejects_double_start() {
     let err = manager.start(spec).await.expect_err("double start");
     assert!(matches!(err, Error::AlreadyRunning), "got {err}");
 
+    manager.shutdown().await.expect("shutdown");
+}
+
+#[tokio::test]
+async fn log_subscription_observes_startup_frames() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  stdout-lines:\n    - 'time=\"2026-07-29T00:16:22.646059400+08:00\" level=info msg=\"startup frame\"'\n"
+        ),
+    );
+    let manager = manager(&dir).await;
+    // Subscribing before the first start must not miss the startup window.
+    let mut logs = manager.subscribe_logs();
+    manager
+        .start(common::mihomo_spec(&dir, config))
+        .await
+        .expect("start");
+
+    let frame = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            match logs.recv().await {
+                Ok(frame) if frame.message == "startup frame" => break frame,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                    panic!("log channel closed")
+                }
+            }
+        }
+    })
+    .await
+    .expect("startup frame was never published");
+
+    assert_eq!(frame.epoch, 1);
+    assert_eq!(frame.level, LogLevel::Info);
+    assert_eq!(frame.stream, LogStream::Stdout);
     manager.shutdown().await.expect("shutdown");
 }
 
