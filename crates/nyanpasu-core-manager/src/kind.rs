@@ -4,12 +4,17 @@ use std::ffi::OsString;
 
 use camino::Utf8Path;
 
-use crate::error::Error;
+use crate::{error::Error, log::summarize_output};
 
 pub use nyanpasu_core_metadata::ClashCoreKind as CoreKind;
 
 /// The environment variable Mihomo consults for permitted file-system roots.
 pub const MIHOMO_SAFE_PATHS_ENV_NAME: &str = "SAFE_PATHS";
+
+/// Logrus honours this when `EnvironmentOverrideColors` is set, which Mihomo
+/// does (`log/log.go`). Pinning it to `0` keeps the logfmt layout the log parser
+/// expects even when the service inherits a colour-forcing environment.
+pub(crate) const CLICOLOR_FORCE_ENV_NAME: &str = "CLICOLOR_FORCE";
 
 #[cfg(windows)]
 const SAFE_PATHS_SEPARATOR: &str = ";";
@@ -82,61 +87,17 @@ pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error>
             MIHOMO_SAFE_PATHS_ENV_NAME,
             mihomo_safe_paths(&spec.working_dir, config_dir),
         )
+        .env(CLICOLOR_FORCE_ENV_NAME, "0")
         .output()
         .await?;
     if output.success() {
         return Ok(());
     }
-    let message = match spec.core.kind {
-        CoreKind::ClashRust => format!("{}\n{}", output.stdout, output.stderr),
-        _ => parse_check_output(output.stdout.trim().to_owned()),
-    };
-    Err(Error::ConfigCheckFailed(message))
-}
-
-/// Extracts the human-readable message from a Mihomo error log line.
-/// Behavioral port of the legacy `core::utils::parse_check_output`.
-pub(crate) fn parse_check_output(log: String) -> String {
-    let t = log.find("time=");
-    let m = log.find("msg=");
-    let mr = log.rfind('"');
-
-    if let (Some(_), Some(m), Some(mr)) = (t, m, mr) {
-        let e = match log.find("level=error msg=") {
-            Some(e) => e + 17,
-            None => m + 5,
-        };
-
-        if mr > m {
-            return log[e..mr].to_owned();
-        }
-    }
-
-    let l = log.find("error=");
-    let r = log.find("path=").unwrap_or(log.len());
-
-    if let Some(l) = l {
-        let start = l + 6;
-        if r >= start {
-            return log[start..r].trim_end().to_owned();
-        }
-    }
-
-    log
-}
-
-/// Condenses a stderr tail into an error message. Mihomo logs are structured,
-/// so the last `level=error` line carries the actual cause.
-pub(crate) fn error_summary(kind: CoreKind, stderr_tail: &str) -> String {
-    if matches!(kind, CoreKind::Mihomo)
-        && let Some(line) = stderr_tail
-            .lines()
-            .rev()
-            .find(|l| l.contains("level=error"))
-    {
-        return parse_check_output(line.to_string());
-    }
-    stderr_tail.to_owned()
+    Err(Error::ConfigCheckFailed(summarize_output(
+        spec.core.kind,
+        &output.stdout,
+        &output.stderr,
+    )))
 }
 
 #[cfg(test)]
@@ -185,41 +146,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_check_output_extracts_mihomo_msg() {
-        let log = r#"time="2026-07-18T10:00:00Z" level=error msg="configuration file /x.yaml test failed""#;
+    fn check_output_condenses_the_last_error_record() {
+        let log = "time=\"2026-07-18T10:00:00Z\" level=info msg=\"start\"\n\
+                   time=\"2026-07-18T10:00:01Z\" level=error msg=\"configuration file /x.yaml test failed\"";
         assert_eq!(
-            parse_check_output(log.to_string()),
+            summarize_output(CoreKind::Mihomo, log, ""),
             "configuration file /x.yaml test failed"
         );
     }
 
     #[test]
-    fn parse_check_output_extracts_error_field() {
-        assert_eq!(parse_check_output("error=bad path=/etc".to_string()), "bad");
-    }
-
-    #[test]
-    fn parse_check_output_handles_fallback_error_boundaries() {
-        assert_eq!(parse_check_output("error=bad".to_string()), "bad");
+    fn check_output_keeps_unrecognized_text() {
         assert_eq!(
-            parse_check_output("path=/etc error=bad".to_string()),
-            "path=/etc error=bad"
-        );
-    }
-
-    #[test]
-    fn parse_check_output_falls_back_to_input() {
-        assert_eq!(
-            parse_check_output("plain failure".to_string()),
+            summarize_output(CoreKind::Mihomo, "plain failure", ""),
             "plain failure"
         );
     }
 
     #[test]
-    fn error_summary_parses_last_mihomo_error_line() {
-        let tail = "line one\ntime=\"x\" level=error msg=\"boom\"\nafter";
-        assert_eq!(error_summary(CoreKind::Mihomo, tail), "boom");
-        assert_eq!(error_summary(CoreKind::ClashRust, tail), tail);
-        assert_eq!(error_summary(CoreKind::Mihomo, "no marker"), "no marker");
+    fn check_output_no_longer_special_cases_clash_rs() {
+        assert_eq!(
+            summarize_output(CoreKind::ClashRust, "", "Error: invalid config"),
+            "Error: invalid config"
+        );
     }
 }

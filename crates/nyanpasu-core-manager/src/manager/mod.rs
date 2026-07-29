@@ -13,7 +13,7 @@ use std::sync::{
 
 use enumset::EnumSet;
 use serde_yaml_ng::Mapping;
-use tokio::sync::watch;
+use tokio::sync::{broadcast, watch};
 
 use crate::{
     Feature, RuntimeFeature,
@@ -21,6 +21,7 @@ use crate::{
     config::{self, ConfigSnapshot, mihomo},
     error::Error,
     instance::Instance,
+    log::{LOG_CHANNEL_CAPACITY, LogFrame},
     probe::ProbeHandle,
     runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
     spec::{
@@ -101,6 +102,9 @@ struct Inner {
     store: RuntimeConfigStore,
     ctrl: tokio::sync::Mutex<Ctrl>,
     status_tx: watch::Sender<CoreStatus>,
+    /// Outlives every epoch, so callers can subscribe before the first start and
+    /// keep receiving across restarts and core switches.
+    log_tx: broadcast::Sender<LogFrame>,
     epoch: AtomicU64,
     version_cache: VersionCache,
     // Declared last so ordinary Inner destruction drops instances/tasks before
@@ -238,6 +242,7 @@ impl CoreManager {
                 store,
                 ctrl: tokio::sync::Mutex::default(),
                 status_tx,
+                log_tx: broadcast::channel(LOG_CHANNEL_CAPACITY).0,
                 epoch: AtomicU64::new(max_epoch),
                 version_cache: VersionCache::default(),
                 _runtime_lock: runtime_lock,
@@ -247,6 +252,10 @@ impl CoreManager {
 
     pub fn subscribe(&self) -> watch::Receiver<CoreStatus> {
         self.inner.status_tx.subscribe()
+    }
+
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<LogFrame> {
+        self.inner.log_tx.subscribe()
     }
 
     pub fn status(&self) -> CoreStatus {
@@ -549,7 +558,8 @@ impl CoreManager {
             epoch,
             controller,
             self.inner.options.cancel_token.clone(),
-        );
+        )
+        .log_sender(self.inner.log_tx.clone());
         if let Some(probe) = self.inner.probes.readiness.clone() {
             builder = builder.readiness_probe(probe);
         }

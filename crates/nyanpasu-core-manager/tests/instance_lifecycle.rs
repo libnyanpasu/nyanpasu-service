@@ -130,6 +130,34 @@ async fn immediate_exit_reports_stderr_tail() {
     }
 }
 
+/// mihomo and clash premium print their fatal record on stdout and leave stderr
+/// empty, so the diagnostic tail has to follow severity rather than the stream.
+#[tokio::test]
+async fn immediate_exit_reports_a_stdout_fatal() {
+    let (_guard, dir) = common::utf8_tempdir();
+    let port = common::free_port();
+    let config = common::write_config(
+        &dir,
+        &format!(
+            "external-controller: 127.0.0.1:{port}\nx-fake-core:\n  exit-code: 1\n  stdout-lines:\n    - 'time=\"2026-07-29T00:17:26.518376100+08:00\" level=fatal msg=\"Parse config error: bad port\"'\n"
+        ),
+    );
+    let mut spec = common::mihomo_spec(&dir, config);
+    spec.options.restart_policy =
+        nyanpasu_utils::process::RestartPolicy::OnFailure { max_restarts: 1 };
+
+    let instance = Instance::spawn(spec, 1, http_controller(port), CancellationToken::new())
+        .await
+        .expect("spawn succeeds; the failure is the exit");
+    let err = instance.wait_ready().await.expect_err("must fail");
+    match err {
+        nyanpasu_core_manager::Error::StartupFailed { stderr_tail } => {
+            assert_eq!(stderr_tail, "Parse config error: bad port")
+        }
+        other => panic!("unexpected error: {other}"),
+    }
+}
+
 #[tokio::test]
 async fn crash_recovers_through_restart_and_reprobe() {
     let (_guard, dir) = common::utf8_tempdir();

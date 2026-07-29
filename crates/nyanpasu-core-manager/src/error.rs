@@ -55,9 +55,11 @@ pub enum Error {
         source: Box<Error>,
         warning: String,
     },
-    #[error("core did not become healthy before the startup timeout; stderr tail:\n{stderr_tail}")]
+    #[error(
+        "core did not become healthy before the startup timeout; diagnostic log tail:\n{stderr_tail}"
+    )]
     StartupTimeout { stderr_tail: String },
-    #[error("core failed to start; stderr tail:\n{stderr_tail}")]
+    #[error("core failed to start; diagnostic log tail:\n{stderr_tail}")]
     StartupFailed { stderr_tail: String },
     #[error(transparent)]
     Process(#[from] nyanpasu_utils::process::ProcessError),
