@@ -1,8 +1,13 @@
 pub mod consts;
+mod events;
 mod logger;
 mod manager_bridge;
 mod routing;
 
+use std::sync::Arc;
+
+use consts::RuntimeInfos;
+pub use events::EventHub;
 pub use logger::Logger;
 pub use manager_bridge::CoreManagerService as CoreManager;
 use nyanpasu_ipc::{
@@ -14,12 +19,11 @@ use routing::{AppState, create_router};
 use tokio_util::sync::CancellationToken;
 use tracing_attributes::instrument;
 
-use crate::server::routing::ws::WsState;
-
 const SERVER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
-#[instrument]
+#[instrument(skip(runtime))]
 pub async fn run(
+    runtime: RuntimeInfos,
     token: CancellationToken,
     #[cfg(windows)] sids: &[&str],
     #[cfg(not(windows))] sids: (),
@@ -28,37 +32,42 @@ pub async fn run(
         camino::Utf8PathBuf::from_path_buf(crate::utils::dirs::service_core_runtime_dir())
             .map_err(|path| anyhow::anyhow!("core runtime dir is not UTF-8: {}", path.display()))?;
     let core_manager = CoreManager::new(runtime_dir).await?;
-    let state = AppState {
-        core_manager,
-        ws_state: WsState::default(),
-    };
-    state.core_manager.spawn_bridges(state.ws_state.clone());
-    let ws_state = state.ws_state.clone();
-    let tokio_handle = tokio::runtime::Handle::current();
-    Logger::global().set_subscriber(Box::new(move |logging| {
-        let ws_state = ws_state.clone();
-        tokio_handle.spawn(async move {
-            ws_state
-                .event_broadcast(WsEvent::new_log(TraceLog {
-                    timestamp: logging.timestamp,
-                    level: logging.level,
-                    message: logging
-                        .fields
-                        .get("message")
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        .unwrap_or("".to_string()),
-                    target: logging
-                        .fields
-                        .get("target")
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        .unwrap_or("".to_string()),
-                    fields: logging.fields,
-                }))
-                .await;
-        });
+    let hub = EventHub::new();
+    core_manager.spawn_bridges(hub.clone());
+
+    // The tracing writer was bound to the global logger before `run`; share that
+    // instance so the `/logs` routes read the buffer that is actually being fed.
+    let logger = Logger::global().clone();
+    let log_hub = hub.clone();
+    logger.set_subscriber(Box::new(move |logging| {
+        // Runs inside the tracing writer: stays synchronous, never logs.
+        let target = logging
+            .fields
+            .get("target")
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or("".to_string());
+        if !events::should_forward_to_hub(&target) {
+            return;
+        }
+        log_hub.send(WsEvent::new_log(TraceLog {
+            timestamp: logging.timestamp,
+            level: logging.level,
+            message: logging
+                .fields
+                .get("message")
+                .and_then(|v| v.as_str().map(|s| s.to_string()))
+                .unwrap_or("".to_string()),
+            target,
+            fields: logging.fields,
+        }));
     }));
 
-    let core_manager = state.core_manager.clone();
+    let state = AppState {
+        core_manager: core_manager.clone(),
+        hub,
+        runtime: Arc::new(runtime),
+        logger,
+    };
     let app = create_router(state);
     tracing::info!("Starting server...");
     let shutdown_token = token.clone();

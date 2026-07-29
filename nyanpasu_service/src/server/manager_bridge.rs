@@ -14,7 +14,7 @@ use parking_lot::RwLock;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::instrument;
 
-use super::{consts, routing::ws::WsState};
+use super::{consts::RuntimeInfos, events::EventHub};
 
 const CORE_LOG_TARGET: &str = "nyanpasu_service::core";
 
@@ -53,7 +53,7 @@ impl CoreManagerService {
     }
 
     /// State → ws events and core logs → tracing.
-    pub fn spawn_bridges(&self, ws_state: WsState) {
+    pub fn spawn_bridges(&self, hub: EventHub) {
         let mut states = self.inner.manager.subscribe();
         tokio::spawn(async move {
             let raw = states.borrow_and_update().clone();
@@ -72,9 +72,7 @@ impl CoreManagerService {
                     continue;
                 }
                 tracing::info!("State changed: {:?}", next);
-                ws_state
-                    .event_broadcast(WsEvent::new_core_state_changed(next.clone()))
-                    .await;
+                hub.send(WsEvent::new_core_state_changed(next.clone()));
                 last = next;
             }
         });
@@ -106,9 +104,10 @@ impl CoreManagerService {
         }
     }
 
-    #[instrument(skip(self))]
+    #[instrument(skip(self, infos))]
     pub async fn start(
         &self,
+        infos: &RuntimeInfos,
         core_type: &CoreType,
         config_path: &Utf8Path,
     ) -> Result<(), anyhow::Error> {
@@ -127,7 +126,7 @@ impl CoreManagerService {
         ) {
             anyhow::bail!("core is already running");
         }
-        let spec = self.instance_spec(core_type, config_path)?;
+        let spec = self.instance_spec(infos, core_type, config_path)?;
         self.inner.manager.start(spec).await?;
         *self.inner.requested_core.write() = Some(core_type.clone());
         Ok(())
@@ -169,15 +168,15 @@ impl CoreManagerService {
 
     fn instance_spec(
         &self,
+        infos: &RuntimeInfos,
         core_type: &CoreType,
         config_path: Utf8PathBuf,
     ) -> Result<InstanceSpec, anyhow::Error> {
-        let infos = consts::RuntimeInfos::global();
         let working_dir =
             Utf8PathBuf::from_path_buf(infos.nyanpasu_data_dir.clone()).map_err(|path| {
                 anyhow::anyhow!("nyanpasu data dir is not UTF-8: {}", path.display())
             })?;
-        let binary_path = Utf8PathBuf::from_path_buf(find_binary_path(core_type)?)
+        let binary_path = Utf8PathBuf::from_path_buf(find_binary_path(infos, core_type)?)
             .map_err(|path| anyhow::anyhow!("core binary path is not UTF-8: {}", path.display()))?;
         let kind = core_kind(core_type)?;
         tracing::info!(
@@ -260,8 +259,7 @@ fn forward_log(frame: LogFrame) {
 
 // TODO: support system path search via a config or flag
 /// Search the binary path of the core: Data Dir -> Sidecar Dir
-fn find_binary_path(core_type: &CoreType) -> std::io::Result<PathBuf> {
-    let infos = consts::RuntimeInfos::global();
+fn find_binary_path(infos: &RuntimeInfos, core_type: &CoreType) -> std::io::Result<PathBuf> {
     let data_dir = &infos.nyanpasu_data_dir;
     let binary_path = data_dir.join(core_type.get_executable_name());
     if binary_path.exists() {

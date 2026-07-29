@@ -15,6 +15,7 @@ pub async fn start(
     let res = state
         .core_manager
         .start(
+            &state.runtime,
             &payload.core_type,
             camino::Utf8Path::from_path(&payload.config_file)
                 .expect("failed to convert config_file to Utf8Path"),

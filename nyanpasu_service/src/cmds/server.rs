@@ -72,13 +72,13 @@ pub async fn server_inner(
         tracing::error!("create pid file error: {}", e);
     };
 
-    crate::server::consts::RuntimeInfos::set_infos(RuntimeInfos {
+    let runtime_infos = RuntimeInfos {
         service_data_dir,
         service_config_dir,
         nyanpasu_config_dir,
         nyanpasu_data_dir,
         nyanpasu_app_dir,
-    });
+    };
 
     #[cfg(windows)]
     let sids = crate::utils::acl::read_acl_file()
@@ -92,7 +92,7 @@ pub async fn server_inner(
     #[cfg(windows)]
     tracing::info!(sids = ?sids_str, "Loaded acl file");
 
-    crate::server::run(token, sids_str).await?;
+    crate::server::run(runtime_infos, token, sids_str).await?;
     Ok(())
 }
 
