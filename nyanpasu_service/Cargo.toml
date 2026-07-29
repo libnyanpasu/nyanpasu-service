@@ -9,6 +9,7 @@ default-run = "nyanpasu-service"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+nyanpasu-core-manager = { path = "../crates/nyanpasu-core-manager" }
 nyanpasu-ipc = {
   path = "../nyanpasu_ipc",
   default-features = false,

@@ -1,10 +1,10 @@
 pub mod consts;
-mod instance;
 mod logger;
+mod manager_bridge;
 mod routing;
 
-pub use instance::CoreManagerService as CoreManager;
 pub use logger::Logger;
+pub use manager_bridge::CoreManagerService as CoreManager;
 use nyanpasu_ipc::{
     SERVICE_PLACEHOLDER,
     api::ws::events::{Event as WsEvent, TraceLog},
@@ -16,27 +16,23 @@ use tracing_attributes::instrument;
 
 use crate::server::routing::ws::WsState;
 
+const SERVER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 #[instrument]
 pub async fn run(
     token: CancellationToken,
     #[cfg(windows)] sids: &[&str],
     #[cfg(not(windows))] sids: (),
 ) -> Result<(), anyhow::Error> {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(10);
-    let core_manager = CoreManager::new_with_notify(tx, token.clone());
+    let runtime_dir =
+        camino::Utf8PathBuf::from_path_buf(crate::utils::dirs::service_core_runtime_dir())
+            .map_err(|path| anyhow::anyhow!("core runtime dir is not UTF-8: {}", path.display()))?;
+    let core_manager = CoreManager::new(runtime_dir).await?;
     let state = AppState {
         core_manager,
         ws_state: WsState::default(),
     };
-    let ws_state = state.ws_state.clone();
-    tokio::spawn(async move {
-        while let Some(state) = rx.recv().await {
-            tracing::info!("State changed: {:?}", state);
-            ws_state
-                .event_broadcast(WsEvent::new_core_state_changed(state))
-                .await;
-        }
-    });
+    state.core_manager.spawn_bridges(state.ws_state.clone());
     let ws_state = state.ws_state.clone();
     let tokio_handle = tokio::runtime::Handle::current();
     Logger::global().set_subscriber(Box::new(move |logging| {
@@ -62,16 +58,33 @@ pub async fn run(
         });
     }));
 
+    let core_manager = state.core_manager.clone();
     let app = create_router(state);
     tracing::info!("Starting server...");
-    create_server(
+    let shutdown_token = token.clone();
+    let server = create_server(
         SERVICE_PLACEHOLDER,
         app,
         Some(async move {
-            token.cancelled().await;
+            shutdown_token.cancelled().await;
         }),
         sids,
-    )
-    .await?;
+    );
+    tokio::pin!(server);
+    tokio::select! {
+        result = &mut server => {
+            core_manager.shutdown().await;
+            result?;
+        }
+        _ = token.cancelled() => {
+            core_manager.shutdown().await;
+            match tokio::time::timeout(SERVER_DRAIN_TIMEOUT, &mut server).await {
+                Ok(result) => result?,
+                Err(_) => tracing::warn!(
+                    "pipe server did not drain within {SERVER_DRAIN_TIMEOUT:?}; abandoning open connections"
+                ),
+            }
+        }
+    }
     Ok(())
 }

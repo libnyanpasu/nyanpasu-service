@@ -43,18 +43,26 @@ impl Drop for ServiceHandleGuard {
     }
 }
 
-fn set_stop_pending(status_handle: &ServiceStatusHandle) -> windows_service::Result<()> {
-    let next_status = ServiceStatus {
+const STOP_PENDING_TICK: Duration = Duration::from_secs(2);
+
+/// Upper bound for legitimate shutdown work (in-flight start 30s, core stop 10s,
+/// pipe drain 5s, with margin). Past this, checkpoint reporting stops so the
+/// SCM can detect a hung service instead of seeing fake progress forever.
+const STOP_PENDING_DEADLINE: Duration = Duration::from_secs(90);
+
+fn report_stop_pending(
+    status_handle: &ServiceStatusHandle,
+    checkpoint: u32,
+) -> windows_service::Result<()> {
+    status_handle.set_service_status(ServiceStatus {
         service_type: SERVICE_TYPE,
         current_state: ServiceState::StopPending,
         exit_code: ServiceExitCode::Win32(0),
-        checkpoint: 1,
-        wait_hint: Duration::from_secs(15),
+        checkpoint,
+        wait_hint: Duration::from_secs(10),
         process_id: Some(std::process::id()),
         controls_accepted: ServiceControlAccept::empty(),
-    };
-    status_handle.set_service_status(next_status)?;
-    Ok(())
+    })
 }
 
 pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
@@ -107,13 +115,30 @@ pub fn run_service(_arguments: Vec<OsString>) -> windows_service::Result<()> {
     // Wait for shutdown signal
     block_on(shutdown_token.cancelled());
 
-    // Give the service 15 seconds to stop
-    set_stop_pending(&status_handle)?;
+    let mut checkpoint = 1;
+    report_stop_pending(&status_handle, checkpoint)?;
 
     // cancel the server handle
     if let Some(token) = crate::cmds::SERVER_SHUTDOWN_TOKEN.get() {
         tracing::info!("Cancelling server shutdown token");
         token.cancel();
+    }
+    // The shutdown chain (core stop + pipe drain) is internally bounded but can
+    // exceed a single wait hint; keep the SCM informed while real progress is
+    // still plausible, then go quiet so a genuine hang becomes detectable.
+    let stop_started = std::time::Instant::now();
+    while !handle.is_finished() {
+        if stop_started.elapsed() >= STOP_PENDING_DEADLINE {
+            tracing::error!(
+                "shutdown exceeded {STOP_PENDING_DEADLINE:?}; ceasing SCM progress reports"
+            );
+            break;
+        }
+        std::thread::sleep(STOP_PENDING_TICK);
+        checkpoint += 1;
+        if let Err(error) = report_stop_pending(&status_handle, checkpoint) {
+            tracing::warn!("failed to refresh STOP_PENDING checkpoint: {error}");
+        }
     }
     handle.join().unwrap();
 
