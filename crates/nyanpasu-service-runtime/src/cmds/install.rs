@@ -8,19 +8,23 @@ use crate::consts::{APP_NAME, SERVICE_LABEL};
 
 use super::CommandError;
 
+/// Every argument may come from its `NYANPASU_*` variable instead; an explicit
+/// flag always wins. Note for callers: `sudo` resets the environment by
+/// default, so the fallbacks need `sudo -E` (or `sudo NYANPASU_…=…`) to reach
+/// an elevated install.
 #[derive(Debug, clap::Args)]
 pub struct InstallCommand {
     /// The user who will run the service
-    #[clap(long)]
+    #[clap(long, env = "NYANPASU_USER")]
     user: String, // Should manual specify because the runner should be administrator/root
     /// The nyanpasu data directory
-    #[clap(long)]
+    #[clap(long, env = "NYANPASU_DATA_DIR")]
     nyanpasu_data_dir: PathBuf,
     /// The nyanpasu config directory
-    #[clap(long)]
+    #[clap(long, env = "NYANPASU_CONFIG_DIR")]
     nyanpasu_config_dir: PathBuf,
     /// The nyanpasu install directory, allowing to search the sidecar binary
-    #[clap(long)]
+    #[clap(long, env = "NYANPASU_APP_DIR")]
     nyanpasu_app_dir: PathBuf,
 }
 

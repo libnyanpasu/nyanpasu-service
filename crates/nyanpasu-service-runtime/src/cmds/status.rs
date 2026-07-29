@@ -15,6 +15,11 @@ pub struct StatusCommand {
     /// Skip the service check
     #[clap(long, default_value = "false")]
     skip_service_check: bool,
+
+    /// Report the service state through the process exit code as well:
+    /// running exits 0, stopped exits 102, not installed exits 100
+    #[clap(long, default_value = "false")]
+    exit_code: bool,
 }
 
 // TODO: impl the health check if service is running
@@ -64,6 +69,18 @@ pub async fn status_with(
     } else {
         println!("{info:#?}");
     }
+    if ctx.exit_code {
+        // The codes are `consts::ExitCode`'s, mapped from these variants by
+        // `crate::handler` — the flag reuses the service's exit table rather
+        // than inventing a second one.
+        return match info.status {
+            nyanpasu_ipc::types::ServiceStatus::Running => Ok(()),
+            nyanpasu_ipc::types::ServiceStatus::Stopped => Err(CommandError::ServiceAlreadyStopped),
+            nyanpasu_ipc::types::ServiceStatus::NotInstalled => {
+                Err(CommandError::ServiceNotInstalled)
+            }
+        };
+    }
     Ok(())
 }
 
@@ -109,10 +126,63 @@ mod tests {
             StatusCommand {
                 json: true,
                 skip_service_check: false,
+                exit_code: false,
             },
         )
         .await
         .unwrap();
         assert_eq!(manager.calls(), [status_call()]);
+    }
+
+    #[tokio::test]
+    async fn the_exit_code_flag_reports_a_missing_service() {
+        let manager = MockServiceManager::with_statuses([ServiceStatus::NotInstalled]);
+
+        let result = status_with(
+            &manager,
+            StatusCommand {
+                json: true,
+                skip_service_check: false,
+                exit_code: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Err(CommandError::ServiceNotInstalled)));
+        assert_eq!(manager.calls(), [status_call()]);
+    }
+
+    #[tokio::test]
+    async fn the_exit_code_flag_reports_a_stopped_service() {
+        let manager = MockServiceManager::with_statuses([ServiceStatus::Stopped(None)]);
+
+        let result = status_with(
+            &manager,
+            StatusCommand {
+                json: true,
+                skip_service_check: false,
+                exit_code: true,
+            },
+        )
+        .await;
+
+        assert!(matches!(result, Err(CommandError::ServiceAlreadyStopped)));
+    }
+
+    #[tokio::test]
+    async fn without_the_flag_a_missing_service_still_exits_successfully() {
+        let manager = MockServiceManager::with_statuses([ServiceStatus::NotInstalled]);
+
+        let result = status_with(
+            &manager,
+            StatusCommand {
+                json: true,
+                skip_service_check: false,
+                exit_code: false,
+            },
+        )
+        .await;
+
+        assert!(result.is_ok());
     }
 }

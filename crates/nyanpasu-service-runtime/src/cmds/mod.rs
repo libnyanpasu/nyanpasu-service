@@ -1,6 +1,7 @@
 use crate::logging;
 use clap::{Parser, Subcommand};
 
+mod completions;
 mod install;
 mod restart;
 mod rpc;
@@ -31,7 +32,8 @@ pub use server::SHUTDOWN_TOKEN as SERVER_SHUTDOWN_TOKEN;
     author,
     about,
     long_about,
-    disable_version_flag = true
+    disable_version_flag = true,
+    arg_required_else_help = true
 )]
 struct Cli {
     /// Enable verbose logging
@@ -63,10 +65,13 @@ enum Commands {
     /// Get the status of the service
     Status(status::StatusCommand),
     /// Update the service
-    Update,
+    Update(update::UpdateCommand),
     /// RPC commands, a shortcut for client rpc calls
     #[command(subcommand)]
     Rpc(rpc::RpcCommand),
+    /// Print a shell completion script on stdout
+    #[command(hide = true)]
+    Completions(completions::CompletionsCommand),
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -99,17 +104,30 @@ pub enum CommandError {
     Other(#[from] anyhow::Error),
 }
 
+/// Commands that only read state or print text, and therefore run unelevated.
+///
+/// `None` is in the list because a bare `-V` reaches the "no command" arm and
+/// must not demand administrator rights to say so.
+fn is_unprivileged(command: &Option<Commands>) -> bool {
+    match command {
+        None
+        | Some(Commands::Status(_))
+        | Some(Commands::Rpc(_))
+        | Some(Commands::Completions(_)) => true,
+        // `--check` only compares versions; a real update still writes to the
+        // service data dir and still needs elevation.
+        Some(Commands::Update(ctx)) => ctx.check,
+        _ => false,
+    }
+}
+
 pub async fn process() -> Result<(), CommandError> {
     let cli = Cli::parse();
     if cli.version {
         print_version();
     }
 
-    if !matches!(
-        cli.command,
-        Some(Commands::Status(_)) | Some(Commands::Rpc(_)) | None
-    ) && !crate::utils::must_check_elevation()
-    {
+    if !is_unprivileged(&cli.command) && !crate::utils::must_check_elevation() {
         return Err(CommandError::PermissionDenied);
     }
     if matches!(cli.command, Some(Commands::Server(_))) {
@@ -131,12 +149,16 @@ pub async fn process() -> Result<(), CommandError> {
             Ok(())
         }
         Some(Commands::Status(ctx)) => Ok(status::status(ctx).await?),
-        Some(Commands::Update) => {
-            update::update().await?;
+        Some(Commands::Update(ctx)) => {
+            update::update(ctx).await?;
             Ok(())
         }
         Some(Commands::Rpc(ctx)) => {
             rpc::rpc(ctx).await?;
+            Ok(())
+        }
+        Some(Commands::Completions(ctx)) => {
+            completions::completions(ctx);
             Ok(())
         }
         None => {
@@ -211,10 +233,244 @@ pub fn print_version() {
 
 #[cfg(test)]
 mod tests {
-    use clap::CommandFactory;
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+
+    /// Every invocation that worked before S5. If one of these stops parsing,
+    /// the change is breaking and must be reverted, not "fixed" here.
+    const LEGACY_INVOCATIONS: &[&[&str]] = &[
+        &[
+            "nyanpasu-service",
+            "install",
+            "--user",
+            "alice",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-app-dir",
+            "app",
+        ],
+        &["nyanpasu-service", "uninstall"],
+        &["nyanpasu-service", "start"],
+        &["nyanpasu-service", "stop"],
+        &["nyanpasu-service", "restart"],
+        &[
+            "nyanpasu-service",
+            "server",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-app-dir",
+            "app",
+        ],
+        // The exact argv `install` writes into the service definition.
+        &[
+            "nyanpasu-service",
+            "server",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-app-dir",
+            "app",
+            "--service",
+        ],
+        &["nyanpasu-service", "status"],
+        &["nyanpasu-service", "status", "--json"],
+        &["nyanpasu-service", "status", "--skip-service-check"],
+        &[
+            "nyanpasu-service",
+            "status",
+            "--json",
+            "--skip-service-check",
+        ],
+        &["nyanpasu-service", "update"],
+        &[
+            "nyanpasu-service",
+            "rpc",
+            "start-core",
+            "--core-type",
+            r#"{"clash":"mihomo"}"#,
+            "--config-file",
+            "config.yaml",
+        ],
+        &["nyanpasu-service", "rpc", "stop-core"],
+        &["nyanpasu-service", "rpc", "restart-core"],
+        &["nyanpasu-service", "rpc", "inspect-logs"],
+        &["nyanpasu-service", "rpc", "set-dns"],
+        &["nyanpasu-service", "rpc", "set-dns", "1.1.1.1", "8.8.8.8"],
+        &["nyanpasu-service", "-V"],
+        &["nyanpasu-service", "--verbose"],
+        &["nyanpasu-service", "-v"],
+        &["nyanpasu-service", "--version"],
+    ];
+
+    /// Everything S5 adds. All additive: none of these parsed before.
+    const NEW_INVOCATIONS: &[&[&str]] = &[
+        &["nyanpasu-service", "status", "--exit-code"],
+        &["nyanpasu-service", "update", "--check"],
+        &["nyanpasu-service", "update", "--from", "candidate.exe"],
+        &["nyanpasu-service", "completions", "bash"],
+        &["nyanpasu-service", "completions", "zsh"],
+        &["nyanpasu-service", "completions", "fish"],
+        &["nyanpasu-service", "completions", "powershell"],
+        &["nyanpasu-service", "completions", "elvish"],
+        &[
+            "nyanpasu-service",
+            "rpc",
+            "start-core",
+            "--core-type",
+            "mihomo",
+            "--config-file",
+            "config.yaml",
+        ],
+    ];
 
     #[test]
     fn cli_keeps_the_legacy_command_name() {
         assert_eq!(super::Cli::command().get_name(), crate::consts::APP_NAME);
+    }
+
+    #[test]
+    fn the_cli_definition_is_internally_consistent() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn every_legacy_invocation_still_parses() {
+        for argv in LEGACY_INVOCATIONS {
+            Cli::try_parse_from(*argv)
+                .unwrap_or_else(|err| panic!("{argv:?} no longer parses:\n{err}"));
+        }
+    }
+
+    #[test]
+    fn every_new_invocation_parses() {
+        for argv in NEW_INVOCATIONS {
+            Cli::try_parse_from(*argv)
+                .unwrap_or_else(|err| panic!("{argv:?} does not parse:\n{err}"));
+        }
+    }
+
+    /// A bare call used to print "No command specified" and exit 0; it now
+    /// prints the help. `-V` must still reach the no-command arm.
+    #[test]
+    fn a_bare_invocation_asks_for_help() {
+        let err = Cli::try_parse_from(["nyanpasu-service"])
+            .err()
+            .expect("a bare invocation must fail");
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+        );
+    }
+
+    /// `help` is clap-provided and must survive the required-help change.
+    #[test]
+    fn the_help_subcommand_still_prints_help() {
+        let err = Cli::try_parse_from(["nyanpasu-service", "help"])
+            .err()
+            .expect("help must not parse into a command");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+    }
+
+    /// `-V` is verbose and `-v` is version — the inverse of the usual
+    /// convention, and deliberately kept until the GUI-coordinated CLI v2.
+    #[test]
+    fn the_legacy_short_flags_keep_their_meaning() {
+        let verbose = Cli::try_parse_from(["nyanpasu-service", "-V"]).unwrap();
+        assert!(verbose.verbose);
+        assert!(!verbose.version);
+        assert!(verbose.command.is_none());
+
+        let version = Cli::try_parse_from(["nyanpasu-service", "-v"]).unwrap();
+        assert!(version.version);
+        assert!(!version.verbose);
+        assert!(version.command.is_none());
+    }
+
+    #[test]
+    fn install_arguments_fall_back_to_environment_variables() {
+        let cli = Cli::command();
+        let install = cli.find_subcommand("install").expect("install is declared");
+        let envs: Vec<(&str, &str)> = install
+            .get_arguments()
+            .filter_map(|arg| Some((arg.get_id().as_str(), arg.get_env()?.to_str()?)))
+            .collect();
+
+        assert_eq!(
+            envs,
+            [
+                ("user", "NYANPASU_USER"),
+                ("nyanpasu_data_dir", "NYANPASU_DATA_DIR"),
+                ("nyanpasu_config_dir", "NYANPASU_CONFIG_DIR"),
+                ("nyanpasu_app_dir", "NYANPASU_APP_DIR"),
+            ]
+        );
+    }
+
+    /// `--help` must look exactly as it did before S5.
+    #[test]
+    fn the_completions_subcommand_is_hidden() {
+        let cli = Cli::command();
+        assert!(
+            cli.find_subcommand("completions")
+                .expect("completions is declared")
+                .is_hide_set()
+        );
+        for name in ["install", "status", "update", "rpc", "server"] {
+            assert!(
+                !cli.find_subcommand(name)
+                    .unwrap_or_else(|| panic!("{name} is declared"))
+                    .is_hide_set(),
+                "{name} must stay visible"
+            );
+        }
+    }
+
+    #[test]
+    fn only_the_read_only_commands_skip_the_elevation_check() {
+        fn unprivileged(argv: &[&str]) -> bool {
+            let cli = Cli::try_parse_from(argv)
+                .unwrap_or_else(|err| panic!("{argv:?} does not parse:\n{err}"));
+            is_unprivileged(&cli.command)
+        }
+
+        assert!(unprivileged(&["nyanpasu-service", "status"]));
+        assert!(unprivileged(&["nyanpasu-service", "rpc", "stop-core"]));
+        assert!(unprivileged(&["nyanpasu-service", "completions", "bash"]));
+        assert!(unprivileged(&["nyanpasu-service", "update", "--check"]));
+        assert!(unprivileged(&["nyanpasu-service", "-V"]));
+
+        assert!(!unprivileged(&["nyanpasu-service", "update"]));
+        assert!(!unprivileged(&["nyanpasu-service", "start"]));
+        assert!(!unprivileged(&["nyanpasu-service", "stop"]));
+        assert!(!unprivileged(&["nyanpasu-service", "restart"]));
+        assert!(!unprivileged(&["nyanpasu-service", "uninstall"]));
+        assert!(!unprivileged(&[
+            "nyanpasu-service",
+            "install",
+            "--user",
+            "alice",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-app-dir",
+            "app",
+        ]));
+        assert!(!unprivileged(&[
+            "nyanpasu-service",
+            "server",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-app-dir",
+            "app",
+        ]));
     }
 }

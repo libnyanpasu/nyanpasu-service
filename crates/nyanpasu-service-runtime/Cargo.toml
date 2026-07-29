@@ -42,7 +42,8 @@ axum = { workspace = true, features = ["macros"] }
 bounded-vec-deque = "0.1.1"
 camino = { version = "1.1", features = ["serde1"] }
 chrono = { workspace = true }
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
 colored = "3.0.0"
 console-subscriber = {
   version = "0.5",
