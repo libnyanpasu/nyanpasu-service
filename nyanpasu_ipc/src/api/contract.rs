@@ -11,7 +11,7 @@
 //! request/response operation, and has no `R` envelope. It keeps its own
 //! constant in [`super::ws::events::EVENT_URI`].
 //!
-//! Written by hand on purpose. Seven impls cost less than a macro to maintain.
+//! Written by hand on purpose. Ten impls cost less than a macro to maintain.
 
 use std::fmt::Debug;
 
@@ -20,7 +20,14 @@ use serde::{Serialize, de::DeserializeOwned};
 
 use super::{
     R,
-    core::{restart::CORE_RESTART_ENDPOINT, start::CORE_START_ENDPOINT, stop::CORE_STOP_ENDPOINT},
+    core::{
+        apply::{CORE_APPLY_ENDPOINT, CoreApplyData},
+        check::CORE_CHECK_ENDPOINT,
+        recover::CORE_RECOVER_ENDPOINT,
+        restart::CORE_RESTART_ENDPOINT,
+        start::CORE_START_ENDPOINT,
+        stop::CORE_STOP_ENDPOINT,
+    },
     log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT, LogsResBody},
     network::set_dns::{NETWORK_SET_DNS_ENDPOINT, NetworkSetDnsReq},
     status::{STATUS_ENDPOINT, StatusResBody},
@@ -78,6 +85,36 @@ pub struct CoreRestart;
 impl IpcOperation for CoreRestart {
     const METHOD: Method = Method::POST;
     const PATH: &'static str = CORE_RESTART_ENDPOINT;
+    type Req<'a> = ();
+    type Data = ();
+}
+
+/// `POST /core/apply`
+pub struct CoreApply;
+
+impl IpcOperation for CoreApply {
+    const METHOD: Method = Method::POST;
+    const PATH: &'static str = CORE_APPLY_ENDPOINT;
+    type Req<'a> = super::core::apply::CoreApplyReq<'a>;
+    type Data = CoreApplyData;
+}
+
+/// `POST /core/check`
+pub struct CoreCheck;
+
+impl IpcOperation for CoreCheck {
+    const METHOD: Method = Method::POST;
+    const PATH: &'static str = CORE_CHECK_ENDPOINT;
+    type Req<'a> = super::core::check::CoreCheckReq<'a>;
+    type Data = ();
+}
+
+/// `POST /core/recover`
+pub struct CoreRecover;
+
+impl IpcOperation for CoreRecover {
+    const METHOD: Method = Method::POST;
+    const PATH: &'static str = CORE_RECOVER_ENDPOINT;
     type Req<'a> = ();
     type Data = ();
 }
@@ -145,6 +182,24 @@ mod tests {
         assert_eq!(
             (NetworkSetDns::METHOD, NetworkSetDns::PATH),
             (Method::POST, "/network/set_dns")
+        );
+    }
+
+    /// The S8 additions pin the report's addresses rather than legacy
+    /// behaviour, but for the same reason: a path typo is a protocol break.
+    #[test]
+    fn every_s8_operation_is_addressed_as_the_report_says() {
+        assert_eq!(
+            (CoreApply::METHOD, CoreApply::PATH),
+            (Method::POST, "/core/apply")
+        );
+        assert_eq!(
+            (CoreCheck::METHOD, CoreCheck::PATH),
+            (Method::POST, "/core/check")
+        );
+        assert_eq!(
+            (CoreRecover::METHOD, CoreRecover::PATH),
+            (Method::POST, "/core/recover")
         );
     }
 }

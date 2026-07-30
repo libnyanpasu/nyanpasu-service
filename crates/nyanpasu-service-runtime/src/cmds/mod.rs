@@ -327,6 +327,36 @@ mod tests {
             "--config-file",
             "config.yaml",
         ],
+        &[
+            "nyanpasu-service",
+            "rpc",
+            "apply-config",
+            "--core-type",
+            "mihomo",
+            "--config-file",
+            "config.yaml",
+        ],
+        &[
+            "nyanpasu-service",
+            "rpc",
+            "apply-config",
+            "--core-type",
+            "mihomo",
+            "--config-file",
+            "config.yaml",
+            "--expected-revision",
+            "3:7:fedcba9876543210",
+        ],
+        &[
+            "nyanpasu-service",
+            "rpc",
+            "check-config",
+            "--core-type",
+            "mihomo",
+            "--config-file",
+            "config.yaml",
+        ],
+        &["nyanpasu-service", "rpc", "recover-core"],
     ];
 
     #[test]

@@ -1,20 +1,28 @@
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    borrow::Cow,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
-    ConfigRevision, ControllerMode, CoreKind, CoreManager as Manager, CoreSpec,
+    ApplyOutcome, ConfigRevision, ControllerMode, CoreKind, CoreManager as Manager, CoreSpec,
     CoreState as ManagerCoreState, Error as ManagerError, HealthState, HealthStatus, Host,
-    InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions,
+    InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions, RevisionId,
 };
 use nyanpasu_ipc::api::{
+    R, RBuilder,
+    core::apply::{ApplyOutcomeKind, CoreApplyData},
+    error_kind,
     status::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
-        CoreState, CoreStateDetail,
+        CoreState, CoreStateDetail, RevisionIdInfo,
     },
     ws::events::Event as WsEvent,
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 use parking_lot::RwLock;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::broadcast::error::RecvError;
 use tracing::instrument;
 
@@ -27,6 +35,57 @@ const CORE_LOG_TARGET: &str = "nyanpasu_service::core";
 pub(crate) const MSG_CORE_ALREADY_RUNNING: &str = "core is already running";
 pub(crate) const MSG_CORE_ALREADY_STOPPED: &str = "core is already stopped";
 pub(crate) const MSG_CORE_NOT_STARTED: &str = "core have not been started yet";
+
+/// A failed operation, carrying its wire `error_kind` next to its message.
+///
+/// `start`/`stop`/`restart` predate `error_kind` and keep returning
+/// `anyhow::Error`; the S8 operations need the classification, and the only
+/// place it can be derived without downcasting is where the `ManagerError` is
+/// still typed.
+pub(crate) struct OpError {
+    kind: Option<&'static str>,
+    message: String,
+}
+
+impl OpError {
+    /// A failure the service cannot classify. Omitting the kind is correct
+    /// here: a guessed one is worse than none.
+    fn plain(message: impl Into<String>) -> Self {
+        Self {
+            kind: None,
+            message: message.into(),
+        }
+    }
+
+    /// The error envelope for this failure, `error_kind` included.
+    pub(crate) fn into_envelope<T>(self) -> R<'static, T>
+    where
+        T: Serialize + DeserializeOwned + std::fmt::Debug,
+    {
+        RBuilder::other_error_with_kind(Cow::Owned(self.message), self.kind.map(Cow::Borrowed))
+    }
+}
+
+impl From<ManagerError> for OpError {
+    fn from(error: ManagerError) -> Self {
+        Self {
+            kind: map_error_kind(&error),
+            message: match &error {
+                // The legacy wire string the GUI already branches on, so
+                // `apply` on a stopped core reads exactly like `restart` on
+                // one instead of inventing a second phrasing.
+                ManagerError::NotStarted => MSG_CORE_NOT_STARTED.to_owned(),
+                _ => error.to_string(),
+            },
+        }
+    }
+}
+
+impl From<anyhow::Error> for OpError {
+    fn from(error: anyhow::Error) -> Self {
+        Self::plain(error.to_string())
+    }
+}
 
 struct Inner {
     manager: Manager,
@@ -137,6 +196,14 @@ impl CoreManagerService {
             anyhow::bail!(MSG_CORE_ALREADY_RUNNING);
         }
         let spec = self.instance_spec(infos, core_type, config_path)?;
+        tracing::info!(
+            core_type = %core_type,
+            kind = %spec.core.kind,
+            working_dir = %spec.working_dir,
+            binary_path = %spec.core.binary_path,
+            config_path = %spec.config_path,
+            "Starting Core"
+        );
         self.inner.manager.start(spec).await?;
         *self.inner.requested_core.write() = Some(core_type.clone());
         Ok(())
@@ -166,6 +233,81 @@ impl CoreManagerService {
         }
     }
 
+    /// Apply `config_file` to the running core.
+    ///
+    /// The manager classifies the change and routes it: in-place patch, reload,
+    /// same-epoch restart with rollback, or a full core switch when the process
+    /// spec changed (which is what a different `core_type` produces). A stopped
+    /// core is an error, never an implicit start (report §7 R2).
+    #[instrument(skip(self, infos))]
+    pub async fn apply(
+        &self,
+        infos: &RuntimeInfos,
+        core_type: &CoreType,
+        config_file: &Path,
+        expected_revision: Option<&RevisionIdInfo>,
+    ) -> Result<CoreApplyData, OpError> {
+        let control = self.inner.control.lock().await;
+        if control.closing {
+            return Err(OpError::plain("service is shutting down"));
+        }
+        let config_path = canonical_config_path(config_file)?;
+        let spec = self.instance_spec(infos, core_type, config_path)?;
+        let outcome = self
+            .inner
+            .manager
+            .apply_config(spec, expected_revision.map(map_revision_id))
+            .await?;
+        let data = map_apply_outcome(&outcome);
+        tracing::info!(
+            outcome = ?data.outcome,
+            epoch = data.revision.epoch,
+            generation = data.revision.generation,
+            "Applied config"
+        );
+        // A rollback put the *old* spec back, so the wire echo must not claim
+        // the core type that was asked for.
+        if data.outcome != ApplyOutcomeKind::RolledBack {
+            *self.inner.requested_core.write() = Some(core_type.clone());
+        }
+        Ok(data)
+    }
+
+    /// Dry-run a config against a core binary. Never touches the running core.
+    #[instrument(skip(self, infos))]
+    pub async fn check(
+        &self,
+        infos: &RuntimeInfos,
+        core_type: &CoreType,
+        config_file: &Path,
+    ) -> Result<(), OpError> {
+        {
+            // Released before the check runs: it spawns the core binary, and
+            // holding the adapter latch across an external process would block
+            // start/stop/restart for as long as that takes.
+            let control = self.inner.control.lock().await;
+            if control.closing {
+                return Err(OpError::plain("service is shutting down"));
+            }
+        }
+        let config_path = canonical_config_path(config_file)?;
+        let spec = self.instance_spec(infos, core_type, config_path)?;
+        self.inner.manager.check_config(&spec).await?;
+        Ok(())
+    }
+
+    /// Clear the quarantine latch left by an epoch whose death could not be
+    /// confirmed. Idempotent: succeeds when nothing was quarantined.
+    #[instrument(skip(self))]
+    pub async fn recover(&self) -> Result<(), OpError> {
+        let control = self.inner.control.lock().await;
+        if control.closing {
+            return Err(OpError::plain("service is shutting down"));
+        }
+        self.inner.manager.recover_quarantine().await?;
+        Ok(())
+    }
+
     pub async fn status(&self) -> CoreInfos {
         let status = self.inner.manager.status();
         CoreInfos {
@@ -193,14 +335,6 @@ impl CoreManagerService {
         let binary_path = Utf8PathBuf::from_path_buf(find_binary_path(infos, core_type)?)
             .map_err(|path| anyhow::anyhow!("core binary path is not UTF-8: {}", path.display()))?;
         let kind = core_kind(core_type)?;
-        tracing::info!(
-            core_type = %core_type,
-            kind = %kind,
-            working_dir = %working_dir,
-            binary_path = %binary_path,
-            config_path = %config_path,
-            "Starting Core"
-        );
         Ok(InstanceSpec {
             core: CoreSpec {
                 kind,
@@ -297,6 +431,85 @@ fn map_revision(revision: &ConfigRevision) -> ConfigRevisionInfo {
     }
 }
 
+/// The wire CAS token, as the manager compares it.
+fn map_revision_id(info: &RevisionIdInfo) -> RevisionId {
+    RevisionId {
+        epoch: info.epoch,
+        generation: info.generation,
+        effective_hash: info.effective_hash.clone(),
+    }
+}
+
+/// Project an apply result onto the wire.
+///
+/// `DurabilityUncertain` is a wrapper, not an outcome, and the apply path can
+/// wrap twice — a commit warning around a restore warning
+/// (`manager/apply.rs:148` around `:445`) — so unwrap to the real outcome and
+/// keep every warning. `ApplyOutcome` is not `#[non_exhaustive]`: if the
+/// manager grows a variant, this match must fail to compile rather than
+/// silently mislabel it.
+fn map_apply_outcome(outcome: &ApplyOutcome) -> CoreApplyData {
+    let mut warnings = Vec::new();
+    let mut current = outcome;
+    while let ApplyOutcome::DurabilityUncertain { outcome, warning } = current {
+        warnings.push(warning.clone());
+        current = &**outcome;
+    }
+    let (kind, revision, failed_apply) = match current {
+        ApplyOutcome::Noop { revision } => (ApplyOutcomeKind::Noop, revision, None),
+        ApplyOutcome::Patched { revision } => (ApplyOutcomeKind::Patched, revision, None),
+        ApplyOutcome::Reloaded { revision } => (ApplyOutcomeKind::Reloaded, revision, None),
+        // The core-switch path reports `Restarted` too (`manager/apply.rs:531`),
+        // so `ApplyOutcomeKind::Switched` is never produced here. Do not try to
+        // infer it from an epoch change: the pre-call epoch can only be read
+        // outside the manager's control lock.
+        ApplyOutcome::Restarted { revision } => (ApplyOutcomeKind::Restarted, revision, None),
+        ApplyOutcome::RolledBack {
+            revision,
+            failed_apply,
+        } => (
+            ApplyOutcomeKind::RolledBack,
+            revision,
+            Some(failed_apply.clone()),
+        ),
+        ApplyOutcome::DurabilityUncertain { .. } => {
+            unreachable!("unwrapped by the loop above")
+        }
+    };
+    CoreApplyData {
+        outcome: kind,
+        revision: map_revision(revision),
+        warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
+        failed_apply,
+    }
+}
+
+/// The wire classification for a manager error, or `None` when this change does
+/// not classify it yet (report P3 maps the rest).
+///
+/// `Error` is `#[non_exhaustive]`, so the wildcard arm is mandatory; it must
+/// stay "no kind", never a guess.
+fn map_error_kind(error: &ManagerError) -> Option<&'static str> {
+    match error {
+        ManagerError::NotStarted => Some(error_kind::NOT_STARTED),
+        ManagerError::AlreadyRunning => Some(error_kind::ALREADY_RUNNING),
+        ManagerError::RevisionConflict { .. } => Some(error_kind::REVISION_CONFLICT),
+        ManagerError::ManagerQuarantined { .. } => Some(error_kind::QUARANTINED),
+        ManagerError::ConfigCheckFailed(_) => Some(error_kind::CONFIG_CHECK_FAILED),
+        ManagerError::ConfigNotFound(_) => Some(error_kind::CONFIG_NOT_FOUND),
+        ManagerError::BinaryNotFound(_) => Some(error_kind::BINARY_NOT_FOUND),
+        ManagerError::InvalidConfig(_) | ManagerError::Yaml(_) => Some(error_kind::INVALID_CONFIG),
+        ManagerError::ControllerMissing => Some(error_kind::CONTROLLER_MISSING),
+        ManagerError::ApplyFailed(_) => Some(error_kind::APPLY_FAILED),
+        ManagerError::ApplyRollbackFailed { .. } => Some(error_kind::APPLY_ROLLBACK_FAILED),
+        ManagerError::StopUnconfirmed(_) => Some(error_kind::STOP_UNCONFIRMED),
+        // The durability wrapper is a warning around a real failure; report the
+        // failure's kind so a caller can still branch on it.
+        ManagerError::DurabilityUncertain { source, .. } => map_error_kind(source),
+        _ => None,
+    }
+}
+
 /// The lossless counterpart to `map_core_state`.
 fn map_state_detail(state: &ManagerCoreState) -> Option<CoreStateDetail> {
     match state {
@@ -364,6 +577,23 @@ fn find_binary_path(infos: &RuntimeInfos, core_type: &CoreType) -> std::io::Resu
         std::io::ErrorKind::NotFound,
         format!("{} not found", core_type.get_executable_name()),
     ))
+}
+
+/// The absolute, non-verbatim, UTF-8 path the manager is handed for a config.
+///
+/// Same shape as `start`'s inline version: canonicalizing makes the source path
+/// a stable identity, and `dunce::simplified` strips the Windows `\\?\` prefix
+/// the core's own command line cannot use. Canonicalization is also the
+/// existence check.
+fn canonical_config_path(config_file: &Path) -> Result<Utf8PathBuf, OpError> {
+    let canonical = config_file.canonicalize().map_err(|error| {
+        OpError::plain(format!(
+            "failed to resolve config path {}: {error}",
+            config_file.display()
+        ))
+    })?;
+    Utf8PathBuf::from_path_buf(dunce::simplified(&canonical).to_path_buf())
+        .map_err(|path| OpError::plain(format!("config path is not UTF-8: {}", path.display())))
 }
 
 #[cfg(test)]
@@ -695,6 +925,176 @@ mod tests {
         assert_eq!(mapped.consecutive_failures, 4);
         assert_eq!(mapped.last_error.as_deref(), Some("probe timed out"));
         assert_eq!(mapped.last_success_at, Some(1_700_000_000_000));
+    }
+
+    fn revision(generation: u64) -> ConfigRevision {
+        ConfigRevision {
+            epoch: 3,
+            generation,
+            source_hash: "0123456789abcdef".to_owned(),
+            effective_hash: "fedcba9876543210".to_owned(),
+            runtime_path: "/srv/data/core-runtime/config-3.yaml".into(),
+        }
+    }
+
+    #[test]
+    fn apply_outcomes_map_onto_the_wire_kinds() {
+        let cases = [
+            (
+                ApplyOutcome::Noop {
+                    revision: revision(7),
+                },
+                ApplyOutcomeKind::Noop,
+            ),
+            (
+                ApplyOutcome::Patched {
+                    revision: revision(8),
+                },
+                ApplyOutcomeKind::Patched,
+            ),
+            (
+                ApplyOutcome::Reloaded {
+                    revision: revision(9),
+                },
+                ApplyOutcomeKind::Reloaded,
+            ),
+            (
+                ApplyOutcome::Restarted {
+                    revision: revision(10),
+                },
+                ApplyOutcomeKind::Restarted,
+            ),
+        ];
+        for (outcome, expected) in cases {
+            let data = map_apply_outcome(&outcome);
+            assert_eq!(data.outcome, expected);
+            assert_eq!(data.revision.effective_hash, "fedcba9876543210");
+            assert!(data.warning.is_none());
+            assert!(data.failed_apply.is_none());
+        }
+    }
+
+    /// The report's sharpest requirement: a rollback must not be
+    /// indistinguishable from a success. The core is running the OLD config, so
+    /// the reported revision is the old one and the rejection reason comes with
+    /// it.
+    #[test]
+    fn a_rolled_back_apply_reports_the_old_revision_and_the_failure() {
+        let data = map_apply_outcome(&ApplyOutcome::RolledBack {
+            revision: revision(7),
+            failed_apply: "core failed to start".to_owned(),
+        });
+        assert_eq!(data.outcome, ApplyOutcomeKind::RolledBack);
+        assert_eq!(data.revision.generation, 7);
+        assert_eq!(data.failed_apply.as_deref(), Some("core failed to start"));
+    }
+
+    /// `DurabilityUncertain` is a wrapper, and the apply path can wrap twice —
+    /// a commit warning around a restore warning. Both must survive, and the
+    /// wrapper must never be reported as the outcome.
+    #[test]
+    fn durability_warnings_unwrap_to_the_real_outcome() {
+        let single = ApplyOutcome::DurabilityUncertain {
+            outcome: Box::new(ApplyOutcome::Patched {
+                revision: revision(8),
+            }),
+            warning: "directory sync failed".to_owned(),
+        };
+        let data = map_apply_outcome(&single);
+        assert_eq!(data.outcome, ApplyOutcomeKind::Patched);
+        assert_eq!(data.warning.as_deref(), Some("directory sync failed"));
+
+        let nested = ApplyOutcome::DurabilityUncertain {
+            outcome: Box::new(ApplyOutcome::DurabilityUncertain {
+                outcome: Box::new(ApplyOutcome::RolledBack {
+                    revision: revision(7),
+                    failed_apply: "boom".to_owned(),
+                }),
+                warning: "restore sync failed".to_owned(),
+            }),
+            warning: "commit sync failed".to_owned(),
+        };
+        let data = map_apply_outcome(&nested);
+        assert_eq!(data.outcome, ApplyOutcomeKind::RolledBack);
+        assert_eq!(
+            data.warning.as_deref(),
+            Some("commit sync failed; restore sync failed")
+        );
+        assert_eq!(data.failed_apply.as_deref(), Some("boom"));
+    }
+
+    #[test]
+    fn manager_errors_map_onto_the_wire_error_kinds() {
+        let cases: [(ManagerError, Option<&str>); 8] = [
+            (ManagerError::NotStarted, Some("not_started")),
+            (ManagerError::AlreadyRunning, Some("already_running")),
+            (
+                ManagerError::RevisionConflict {
+                    expected: RevisionId {
+                        epoch: 3,
+                        generation: 7,
+                        effective_hash: "fedcba9876543210".to_owned(),
+                    },
+                    actual: None,
+                },
+                Some("revision_conflict"),
+            ),
+            (
+                ManagerError::ManagerQuarantined {
+                    epoch: 3,
+                    reason: "death unconfirmed".to_owned(),
+                },
+                Some("quarantined"),
+            ),
+            (
+                ManagerError::ConfigCheckFailed("unknown field".to_owned()),
+                Some("config_check_failed"),
+            ),
+            (ManagerError::ControllerMissing, Some("controller_missing")),
+            // The durability wrapper reports the wrapped failure's kind.
+            (
+                ManagerError::DurabilityUncertain {
+                    source: Box::new(ManagerError::ApplyFailed("boom".to_owned())),
+                    warning: "sync failed".to_owned(),
+                },
+                Some("apply_failed"),
+            ),
+            // Unmapped until report P3: no kind rather than a guessed one.
+            (
+                ManagerError::StartupFailed {
+                    stderr_tail: String::new(),
+                },
+                None,
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(map_error_kind(&error), expected, "{error}");
+        }
+    }
+
+    /// `apply` on a stopped core answers with the same string `restart` does,
+    /// so a GUI branching on it keeps working, and gains the kind beside it.
+    #[test]
+    fn the_not_started_failure_keeps_the_legacy_wire_string() {
+        let error = OpError::from(ManagerError::NotStarted);
+        assert_eq!(error.message, MSG_CORE_NOT_STARTED);
+        assert_eq!(error.kind, Some("not_started"));
+    }
+
+    #[test]
+    fn expected_revisions_cross_the_wire_unchanged() {
+        assert_eq!(
+            map_revision_id(&RevisionIdInfo {
+                epoch: 3,
+                generation: 7,
+                effective_hash: "fedcba9876543210".to_owned(),
+            }),
+            RevisionId {
+                epoch: 3,
+                generation: 7,
+                effective_hash: "fedcba9876543210".to_owned(),
+            }
+        );
     }
 }
 

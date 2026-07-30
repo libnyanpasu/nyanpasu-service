@@ -14,12 +14,17 @@ use std::{
 use indexmap::IndexMap;
 use nyanpasu_ipc::api::{
     R, RBuilder, ResponseCode,
-    core::start::CoreStartReq,
+    core::{
+        apply::{ApplyOutcomeKind, CoreApplyData, CoreApplyReq},
+        check::CoreCheckReq,
+        start::CoreStartReq,
+    },
+    error_kind,
     log::LogsResBody,
     network::set_dns::NetworkSetDnsReq,
     status::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
-        CoreState, CoreStateDetail, RuntimeInfos, StatusResBody,
+        CoreState, CoreStateDetail, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
     ws::events::{Event, TraceLog},
 };
@@ -42,6 +47,16 @@ where
     T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
 {
     let mut envelope: R<'static, T> = RBuilder::other_error(Cow::Borrowed(msg));
+    envelope.ts = TS;
+    envelope
+}
+
+fn error_envelope_with_kind<T>(msg: &'static str, kind: &'static str) -> R<'static, T>
+where
+    T: serde::Serialize + serde::de::DeserializeOwned + std::fmt::Debug,
+{
+    let mut envelope: R<'static, T> =
+        RBuilder::other_error_with_kind(Cow::Borrowed(msg), Some(Cow::Borrowed(kind)));
     envelope.ts = TS;
     envelope
 }
@@ -436,4 +451,171 @@ fn a_pre_s7_status_payload_still_decodes() {
     assert!(core_infos.health.is_none());
     assert!(core_infos.revision.is_none());
     assert!(core_infos.detail.is_none());
+}
+
+#[test]
+fn the_apply_outcome_kinds_are_pinned() {
+    for (value, expected) in [
+        (ApplyOutcomeKind::Noop, r#""noop""#),
+        (ApplyOutcomeKind::Patched, r#""patched""#),
+        (ApplyOutcomeKind::Reloaded, r#""reloaded""#),
+        (ApplyOutcomeKind::Restarted, r#""restarted""#),
+        // Reserved, never produced today; pinned so the day it is produced is
+        // not also the day its spelling is decided.
+        (ApplyOutcomeKind::Switched, r#""switched""#),
+        (ApplyOutcomeKind::RolledBack, r#""rolled_back""#),
+    ] {
+        assert_eq!(serde_json::to_string(&value).unwrap(), expected);
+    }
+}
+
+#[test]
+fn the_error_kind_strings_are_pinned() {
+    // These are protocol: a caller branches on them.
+    assert_eq!(error_kind::NOT_STARTED, "not_started");
+    assert_eq!(error_kind::ALREADY_RUNNING, "already_running");
+    assert_eq!(error_kind::REVISION_CONFLICT, "revision_conflict");
+    assert_eq!(error_kind::QUARANTINED, "quarantined");
+    assert_eq!(error_kind::CONFIG_CHECK_FAILED, "config_check_failed");
+    assert_eq!(error_kind::CONFIG_NOT_FOUND, "config_not_found");
+    assert_eq!(error_kind::BINARY_NOT_FOUND, "binary_not_found");
+    assert_eq!(error_kind::INVALID_CONFIG, "invalid_config");
+    assert_eq!(error_kind::CONTROLLER_MISSING, "controller_missing");
+    assert_eq!(error_kind::APPLY_FAILED, "apply_failed");
+    assert_eq!(error_kind::APPLY_ROLLBACK_FAILED, "apply_rollback_failed");
+    assert_eq!(error_kind::STOP_UNCONFIRMED, "stop_unconfirmed");
+}
+
+/// The new field is appended, so no existing key moves; the absent case is
+/// pinned by every other envelope golden in this file staying unchanged.
+#[test]
+fn an_error_envelope_carries_its_kind() {
+    let envelope: R<'static, ()> =
+        error_envelope_with_kind("config revision conflict", error_kind::REVISION_CONFLICT);
+    assert_eq!(
+        serde_json::to_string(&envelope).unwrap(),
+        concat!(
+            r#"{"code":"OtherError","msg":"config revision conflict","data":null,"#,
+            r#""ts":1700000000,"error_kind":"revision_conflict"}"#
+        )
+    );
+}
+
+/// The other half of the compatibility gate: an envelope written by a pre-S8
+/// service has no `error_kind` key and must still decode.
+#[test]
+fn a_pre_s8_envelope_still_decodes() {
+    let legacy = r#"{"code":"OtherError","msg":"boom","data":null,"ts":1700000000}"#;
+    let decoded: R<'static, ()> = serde_json::from_str(legacy).unwrap();
+    assert_eq!(decoded.code, ResponseCode::OtherError);
+    assert!(decoded.error_kind.is_none());
+}
+
+#[test]
+fn the_revision_id_info_is_pinned() {
+    let revision = ConfigRevisionInfo {
+        epoch: 3,
+        generation: 7,
+        source_hash: "0123456789abcdef".to_owned(),
+        effective_hash: "fedcba9876543210".to_owned(),
+    };
+    assert_eq!(
+        serde_json::to_string(&revision.id()).unwrap(),
+        r#"{"epoch":3,"generation":7,"effective_hash":"fedcba9876543210"}"#
+    );
+    // The CAS token is a strict subset: `source_hash` takes no part in it.
+    assert_eq!(
+        revision.id(),
+        RevisionIdInfo {
+            epoch: 3,
+            generation: 7,
+            effective_hash: "fedcba9876543210".to_owned(),
+        }
+    );
+}
+
+#[test]
+fn the_core_apply_request_is_pinned() {
+    let without = CoreApplyReq {
+        core_type: Cow::Owned(CoreType::Clash(ClashCoreType::Mihomo)),
+        config_file: Cow::Owned(PathBuf::from("/etc/nyanpasu/config.yaml")),
+        expected_revision: None,
+    };
+    // No CAS token: the key is omitted, not sent as null.
+    assert_eq!(
+        serde_json::to_string(&without).unwrap(),
+        r#"{"core_type":{"clash":"mihomo"},"config_file":"/etc/nyanpasu/config.yaml"}"#
+    );
+    let with = CoreApplyReq {
+        expected_revision: Some(RevisionIdInfo {
+            epoch: 3,
+            generation: 7,
+            effective_hash: "fedcba9876543210".to_owned(),
+        }),
+        ..without
+    };
+    assert_eq!(
+        serde_json::to_string(&with).unwrap(),
+        concat!(
+            r#"{"core_type":{"clash":"mihomo"},"#,
+            r#""config_file":"/etc/nyanpasu/config.yaml","#,
+            r#""expected_revision":{"epoch":3,"generation":7,"#,
+            r#""effective_hash":"fedcba9876543210"}}"#
+        )
+    );
+}
+
+#[test]
+fn the_core_check_request_is_pinned() {
+    let request = CoreCheckReq {
+        core_type: Cow::Owned(CoreType::Clash(ClashCoreType::Mihomo)),
+        config_file: Cow::Owned(PathBuf::from("/etc/nyanpasu/config.yaml")),
+    };
+    assert_eq!(
+        serde_json::to_string(&request).unwrap(),
+        r#"{"core_type":{"clash":"mihomo"},"config_file":"/etc/nyanpasu/config.yaml"}"#
+    );
+}
+
+#[test]
+fn the_core_apply_response_is_pinned() {
+    let revision = ConfigRevisionInfo {
+        epoch: 3,
+        generation: 7,
+        source_hash: "0123456789abcdef".to_owned(),
+        effective_hash: "fedcba9876543210".to_owned(),
+    };
+    let clean = CoreApplyData {
+        outcome: ApplyOutcomeKind::Patched,
+        revision: revision.clone(),
+        warning: None,
+        failed_apply: None,
+    };
+    assert_eq!(
+        serde_json::to_string(&ok_envelope(clean)).unwrap(),
+        concat!(
+            r#"{"code":"Ok","msg":"ok","data":{"outcome":"patched","#,
+            r#""revision":{"epoch":3,"generation":7,"#,
+            r#""source_hash":"0123456789abcdef","#,
+            r#""effective_hash":"fedcba9876543210"}},"ts":1700000000}"#
+        )
+    );
+    // A rollback is a *successful* call reporting that the old config runs.
+    let rolled_back = CoreApplyData {
+        outcome: ApplyOutcomeKind::RolledBack,
+        revision,
+        warning: Some("runtime directory sync failed".to_owned()),
+        failed_apply: Some("core failed to start".to_owned()),
+    };
+    assert_eq!(
+        serde_json::to_string(&ok_envelope(rolled_back)).unwrap(),
+        concat!(
+            r#"{"code":"Ok","msg":"ok","data":{"outcome":"rolled_back","#,
+            r#""revision":{"epoch":3,"generation":7,"#,
+            r#""source_hash":"0123456789abcdef","#,
+            r#""effective_hash":"fedcba9876543210"},"#,
+            r#""warning":"runtime directory sync failed","#,
+            r#""failed_apply":"core failed to start"},"ts":1700000000}"#
+        )
+    );
 }

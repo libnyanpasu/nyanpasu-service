@@ -75,6 +75,35 @@ pub struct ConfigRevisionInfo {
     pub effective_hash: String,
 }
 
+/// The compare-and-swap identity of a config revision.
+///
+/// Deliberately a subset of [`ConfigRevisionInfo`]: the manager's CAS compares
+/// epoch, generation and `effective_hash` only, so carrying `source_hash` here
+/// would imply it takes part.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct RevisionIdInfo {
+    pub epoch: u64,
+    pub generation: u64,
+    pub effective_hash: String,
+}
+
+impl ConfigRevisionInfo {
+    /// The CAS token for this revision, for feeding a `/status` snapshot
+    /// straight back into `POST /core/apply`'s `expected_revision`.
+    ///
+    /// Which fields make up the identity is protocol knowledge, not caller
+    /// convenience — hence a method here rather than a struct literal at every
+    /// call site.
+    pub fn id(&self) -> RevisionIdInfo {
+        RevisionIdInfo {
+            epoch: self.epoch,
+            generation: self.generation,
+            effective_hash: self.effective_hash.clone(),
+        }
+    }
+}
+
 /// The core's full lifecycle state.
 ///
 /// [`CoreState`] is a two-valued projection kept for wire compatibility: it

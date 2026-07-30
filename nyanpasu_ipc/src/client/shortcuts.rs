@@ -9,8 +9,10 @@ use reqwest_websocket::{Message, Upgrade};
 use crate::api::{
     self,
     contract::{
-        CoreRestart, CoreStart, CoreStop, LogsInspect, LogsRetrieve, NetworkSetDns, Status,
+        CoreApply, CoreCheck, CoreRecover, CoreRestart, CoreStart, CoreStop, LogsInspect,
+        LogsRetrieve, NetworkSetDns, Status,
     },
+    core::apply::{CORE_APPLY_ENDPOINT, CoreApplyData},
     log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT},
     status::STATUS_ENDPOINT,
     ws::events::{EVENT_URI, Event},
@@ -40,6 +42,32 @@ impl Client {
 
     pub async fn restart_core(&self) -> Result<()> {
         self.call::<CoreRestart>(None).await.map(|_| ())
+    }
+
+    /// Apply a config to the running core. See
+    /// [`CoreApplyData::outcome`](api::core::apply::CoreApplyData::outcome):
+    /// `rolled_back` is a successful call reporting that the **old** config is
+    /// what runs.
+    pub async fn apply_config(
+        &self,
+        payload: &api::core::apply::CoreApplyReq<'_>,
+    ) -> Result<CoreApplyData> {
+        self.call::<CoreApply>(Some(payload))
+            .await?
+            .data
+            .ok_or(ClientError::EmptyData {
+                operation: CORE_APPLY_ENDPOINT,
+            })
+    }
+
+    /// Dry-run a config against a core binary without touching the running one.
+    pub async fn check_config(&self, payload: &api::core::check::CoreCheckReq<'_>) -> Result<()> {
+        self.call::<CoreCheck>(Some(payload)).await.map(|_| ())
+    }
+
+    /// Clear the manager's quarantine latch. Idempotent.
+    pub async fn recover_core(&self) -> Result<()> {
+        self.call::<CoreRecover>(None).await.map(|_| ())
     }
 
     pub async fn inspect_logs(&self) -> Result<api::log::LogsResBody<'static>> {

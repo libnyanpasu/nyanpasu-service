@@ -1,20 +1,29 @@
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use axum::{
     body::{Body, to_bytes},
-    http::{Method, Request, StatusCode, header::HeaderName},
+    http::{
+        Method, Request, StatusCode,
+        header::{CONTENT_TYPE, HeaderName},
+    },
     response::Response,
 };
 use camino::Utf8PathBuf;
 use nyanpasu_ipc::api::{
     ResponseCode,
     contract::{
-        CoreRestart, CoreStart, CoreStop, IpcOperation, LogsInspect, LogsRetrieve, NetworkSetDns,
-        Status as StatusOp,
+        CoreApply, CoreCheck, CoreRecover, CoreRestart, CoreStart, CoreStop, IpcOperation,
+        LogsInspect, LogsRetrieve, NetworkSetDns, Status as StatusOp,
     },
-    core::stop::{CORE_STOP_ENDPOINT, CoreStopRes},
+    core::{
+        apply::{CoreApplyReq, CoreApplyRes},
+        check::{CoreCheckReq, CoreCheckRes},
+        recover::CoreRecoverRes,
+        stop::{CORE_STOP_ENDPOINT, CoreStopRes},
+    },
     status::{CoreState, CoreStateDetail, STATUS_ENDPOINT, StatusRes},
 };
+use nyanpasu_utils::core::{ClashCoreType, CoreType};
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
 use tower::ServiceExt;
@@ -209,6 +218,9 @@ async fn every_operation_is_mounted_where_its_contract_says() {
         (CoreStart::METHOD, CoreStart::PATH),
         (CoreStop::METHOD, CoreStop::PATH),
         (CoreRestart::METHOD, CoreRestart::PATH),
+        (CoreApply::METHOD, CoreApply::PATH),
+        (CoreCheck::METHOD, CoreCheck::PATH),
+        (CoreRecover::METHOD, CoreRecover::PATH),
         (LogsRetrieve::METHOD, LogsRetrieve::PATH),
         (LogsInspect::METHOD, LogsInspect::PATH),
         (NetworkSetDns::METHOD, NetworkSetDns::PATH),
@@ -319,4 +331,107 @@ async fn status_projects_the_new_fields_from_the_manager_snapshot() {
         body.core_infos.detail,
         Some(CoreStateDetail::Stopped { reason: None })
     );
+}
+
+/// A JSON POST through the production router.
+async fn post_json<T: serde::Serialize>(state: AppState, path: &str, payload: &T) -> Response {
+    create_router(state)
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(path)
+                .header(CONTENT_TYPE, "application/json")
+                .body(Body::from(serde_json::to_vec(payload).unwrap()))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+}
+
+/// `apply` refuses a stopped core instead of starting one, and the refusal
+/// carries both the legacy string and the new machine-readable kind.
+///
+/// The manager rejects a stopped core before it reads either file
+/// (`manager/apply.rs:25-26`), but the bridge resolves both first, so both have
+/// to exist — the "binary" only has to be findable, never runnable.
+#[tokio::test]
+async fn applying_to_a_stopped_core_reports_not_started_with_its_kind() {
+    let env = TestEnv::new().await;
+    let core_type = CoreType::Clash(ClashCoreType::Mihomo);
+    let data_dir = &env.state.runtime.nyanpasu_data_dir;
+    std::fs::create_dir_all(data_dir).unwrap();
+    std::fs::write(data_dir.join(core_type.get_executable_name()), b"").unwrap();
+    let config = data_dir.join("config.yaml");
+    std::fs::write(&config, b"mixed-port: 7890\n").unwrap();
+
+    let response = post_json(
+        env.state.clone(),
+        CoreApply::PATH,
+        &CoreApplyReq {
+            core_type: Cow::Borrowed(&core_type),
+            config_file: Cow::Borrowed(&config),
+            expected_revision: None,
+        },
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let envelope: CoreApplyRes<'static> = body_of(response).await;
+    assert_eq!(envelope.code, ResponseCode::OtherError);
+    assert_eq!(envelope.msg, "core have not been started yet");
+    assert_eq!(envelope.error_kind.as_deref(), Some("not_started"));
+    assert!(envelope.data.is_none());
+}
+
+/// An unresolvable config path is answered in the envelope, not by a panic the
+/// catch layer has to convert — and with no kind, because there is no manager
+/// error to classify.
+#[tokio::test]
+async fn checking_an_unresolvable_config_answers_in_the_envelope() {
+    let env = TestEnv::new().await;
+    let core_type = CoreType::Clash(ClashCoreType::Mihomo);
+    let missing = env.state.runtime.nyanpasu_data_dir.join("nope.yaml");
+
+    let response = post_json(
+        env.state.clone(),
+        CoreCheck::PATH,
+        &CoreCheckReq {
+            core_type: Cow::Borrowed(&core_type),
+            config_file: Cow::Borrowed(&missing),
+        },
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let envelope: CoreCheckRes<'static> = body_of(response).await;
+    assert_eq!(envelope.code, ResponseCode::OtherError);
+    assert!(envelope.error_kind.is_none());
+    assert!(
+        envelope.msg.contains("nope.yaml"),
+        "the failure must name the path: {}",
+        envelope.msg
+    );
+}
+
+/// Recovery is idempotent: with nothing quarantined it succeeds, which is what
+/// makes it safe for a client to call before retrying an operation.
+#[tokio::test]
+async fn recovering_without_a_quarantine_succeeds() {
+    let env = TestEnv::new().await;
+    let response = create_router(env.state.clone())
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri(CoreRecover::PATH)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let envelope: CoreRecoverRes<'static> = body_of(response).await;
+    assert_eq!(envelope.code, ResponseCode::Ok);
+    assert!(envelope.error_kind.is_none());
+    assert!(envelope.data.is_none());
 }
