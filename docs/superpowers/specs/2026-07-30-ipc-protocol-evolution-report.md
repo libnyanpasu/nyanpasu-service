@@ -157,11 +157,12 @@ pub struct CoreApplyData {
 
 ### P2:移除 `ControllerMode`,`LocalIpcPolicy` 成为唯一旋钮(O6 收敛为一次性移除)
 
-2026-07-30 追加复核后的决策:不做"Managed 参数化 + 日后默认化翻转"的过渡态,直接删除 `ControllerMode` 枚举。依据:Managed 自带的 `LocalIpcPolicy` 三档(`spec.rs:62-73`)已覆盖 Passthrough 绝大部分场景——`Prefer` 承接不支持本地 IPC 的老内核(回落源 config 的 HTTP,`capability.rs:169-172`),`Disable` 承接 HTTP 面板直连诉求(行为 ≈ 今日 Passthrough)。Passthrough 独有语义仅剩"尊重用户自声明的 `external-controller-pipe`/`-unix`"(完整 `inspect` `clash.rs:39-51` vs `inspect_http` `clash.rs:53-58`),属小众用法,决定放弃。
+2026-07-30 追加复核后的决策:不做"Managed 参数化 + 日后默认化翻转"的过渡态,直接删除 `ControllerMode` 枚举。依据:Managed 自带的 `LocalIpcPolicy` 三档(`spec.rs:62-73`)已覆盖 Passthrough 绝大部分场景——`Prefer` 承接不支持本地 IPC 的老内核(回落源 config 的 HTTP,`capability.rs:169-172`),`Disable` 承接 HTTP 面板直连诉求(对**仅依赖 HTTP `external-controller`** 的 config 与今日 Passthrough 逐字节等价;若 config 同时声明了本地键,Passthrough 会优先取本地键而 Disable 直接忽略之——见"代价(已接受)")。Passthrough 独有语义仅剩"尊重用户自声明的 `external-controller-pipe`/`-unix`"(完整 `inspect` `clash.rs:39-51` vs `inspect_http` `clash.rs:53-58`),属小众用法,决定放弃。
 
 - **core-manager 侧**:删除 `ControllerMode` 枚举,`local_ipc_policy` / `derived_dir` / `controller_template` 平铺进 `ManagerOptions`;随之删除 `prepare` 的 mode match(`config/mod.rs:125-139`)、`DegradeReason::PassthroughMode` 臂(`switching.rs:33-35`)、`runtime_dir`/`derived_dir` 双目录兼容逻辑(`spec.rs:97-99`);graceful 门槛简化为 local-ipc + kind + overlap 三条件;测试矩阵少一个模式维度。
 - **service 侧**:`local_ipc_policy` 从服务启动参数/配置注入(`install` 长参 + `NYANPASU_*` env,沿用 S5 模式);**过渡默认 `Disable`**——对声明了 `external-controller` 的现有 GUI config 行为不变,过渡态由 policy 天然承载,不需要保留枚举做"日后翻转";GUI 完成端点发现适配(消费 P0-A 的 `controller` 字段)后,默认切 `Prefer`。
-- **收益**:服务端永久摆脱"restart 恒 hard switch"降级路径——policy 命中 LocalIpc 后,P0-B 的 `/core/apply` 无需任何改动即自动享受 graceful 零停机切换;config 不再强制声明 `external-controller`(`ControllerMissing` 仅剩 Disable / Prefer 回落且无 HTTP 键一种情形);控制通道默认收敛到 0o700 目录下的 pipe/socket,不再默认暴露 localhost TCP。
+- **收益**:服务端永久摆脱"restart 恒 hard switch"降级路径——policy 命中 LocalIpc 后,`restart()` / `switch()`(即 `POST /core/restart`)走 graceful 零停机切换;config 不再强制声明 `external-controller`(`ControllerMissing` 仅剩 Disable / Prefer 回落且无 HTTP 键一种情形);控制通道默认收敛到 0o700 目录下的 pipe/socket,不再默认暴露 localhost TCP。
+  - **2026-07-30 勘误(S10 实施后复核)**:本行原称"P0-B 的 `/core/apply` 无需任何改动即自动享受 graceful 零停机切换",与代码不符。`apply_config` 的 switch 类走 `switch_with_compensation`(旧 epoch 回滚的硬 stop→start),从不调用 `graceful_switch`,policy 命中 LocalIpc 对它没有影响。让 apply 复用 graceful 需要调和两套互不兼容的失败补偿,属独立变更(S10 计划 D6)。
 - **代价(已接受)**:用户自声明 pipe/unix 路径不再支持;LocalIpc 命中时 HTTP `external-controller` 被无条件移除(`clash.rs:61-70`,graceful 的 epoch 隔离所需)——第三方面板(yacd/metacubexd)直连需显式 `Disable`,以放弃 graceful 为代价。
 - **约束解除**:上轮设计"crates/* 只消费不改动"的约束到此阶段正式解除;`ManagerOptions` 是公开 API,GUI 若有进程内复用计划需同版本协调。
 
@@ -200,3 +201,5 @@ pub struct CoreApplyData {
 | R5 | `expected_revision` 缺省语义(不检查 vs 以 last_revision 兜底) | 实施时定;倾向"缺省不检查",兜底逻辑放 GUI |
 | R6 | 存量用法:用户自声明 pipe/unix controller;第三方面板依赖 `external-controller` 直连 | 前者随 S10 放弃(小众,发布说明标注);后者文档化"显式 `Disable`",GUI 侧可评估面板流量代理作为后续增强 |
 | R7 | S10 删除 `ControllerMode` 是 core-manager 公开 API 破坏性变更 | "crates/* 不改动"约束自 S10 起解除;与 GUI 进程内复用(如有)同版本协调 |
+| R8 | `/core/start`、`/core/apply`、`/core/check` 均接受调用方任意路径,组内成员可指向任何 root 可读文件 | **接受并记录**:socket ACL 是本服务唯一的授权边界,自 `/core/start` 起一贯如此,本轮 S8 新端点未扩大该面。若日后要收窄,应做成显式的路径白名单策略,而不是在各端点里零散校验 |
+| R9 | v2 事件与 v1 共用 256 槽广播环(`server/events.rs:6`),v2 帧更密,v1 客户端在启动抖动期可能略早触发 `Lagged` | **接受并记录**:稳态下事件稀疏;`Lagged` 已由 ws 处理器的 resubscribe 兜底并告知丢失条数(`events.rs` 的 `lag_recovery_with_feedback_reaches_the_tail` 已固定该路径)。若实测有压力,提高容量比拆分通道便宜 |

@@ -612,8 +612,8 @@ fn the_apply_outcome_kinds_are_pinned() {
         (ApplyOutcomeKind::Patched, r#""patched""#),
         (ApplyOutcomeKind::Reloaded, r#""reloaded""#),
         (ApplyOutcomeKind::Restarted, r#""restarted""#),
-        // Reserved, never produced today; pinned so the day it is produced is
-        // not also the day its spelling is decided.
+        // Produced since S10 by the manager's core-switch path; the spelling was
+        // pinned a stage before it was reachable.
         (ApplyOutcomeKind::Switched, r#""switched""#),
         (ApplyOutcomeKind::RolledBack, r#""rolled_back""#),
     ] {

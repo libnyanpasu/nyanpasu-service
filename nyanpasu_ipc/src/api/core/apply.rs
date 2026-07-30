@@ -44,10 +44,14 @@ pub enum ApplyOutcomeKind {
     Reloaded,
     /// The core process was replaced within the same epoch.
     Restarted,
-    /// Reserved, never sent today: the manager reports the core-switch path as
-    /// [`Self::Restarted`] too (`manager/apply.rs:531`). Declared now because a
-    /// variant added later would make every older client fail to decode this
-    /// field.
+    /// The process spec itself changed — a different core, binary, or launch
+    /// option — so the old epoch was stopped and a new one started. Distinct
+    /// from [`Self::Restarted`], which replaces the process inside one epoch.
+    ///
+    /// This is a hard switch today: the apply path runs a stop → start with
+    /// old-epoch rollback (`manager/apply.rs`, `switch_with_compensation`), not
+    /// the manager's graceful zero-downtime switch, which only
+    /// `restart()`/`switch()` reach.
     Switched,
     /// The apply failed and the previous revision was restored. **The core is
     /// running the OLD config**, `revision` is the old revision, and
