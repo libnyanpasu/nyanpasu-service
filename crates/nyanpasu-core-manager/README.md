@@ -14,7 +14,7 @@ Key concepts:
   `ConfigRevision` identifies desired config within that epoch by generation
   and semantic hashes. Fully expressible changes can PATCH or reload the
   current epoch; switch-class changes allocate a new epoch.
-- **Manager-owned snapshots** — both controller modes run from a private,
+- **Manager-owned snapshots** — every controller policy runs from a private,
   stable `config-{epoch}.yaml`, never directly from the caller's mutable file.
   Supervisor respawns therefore reload the committed desired revision.
 - **Health-probed startup and runtime status** — a start is only confirmed once
@@ -25,10 +25,10 @@ Key concepts:
 - **Supervision** — crash → backoff → respawn → re-probe, bounded by
   `RestartPolicy`/`Backoff` from `nyanpasu-utils`. Dropping an `Instance`
   without `stop()` kills the whole process tree.
-- **Controller modes** — `Passthrough` preserves the endpoint written in the
-  snapshot. `Managed` selects local IPC according to `LocalIpcPolicy`: `Force`
-  requires it, `Prefer` falls back to the upstream-prepared HTTP controller
-  when unsupported, and `Disable` always uses that HTTP controller. Selecting
+- **Controller transport policy** — `LocalIpcPolicy` decides how the core's
+  control plane is reached: `Force` requires the platform-local transport,
+  `Prefer` falls back to the source config's HTTP controller when the core does
+  not support it, and `Disable` always uses that HTTP controller. Selecting
   local IPC removes all configured controller addresses and inserts only the
   epoch-specific platform-local key. It retains `secret` for effective-config
   compatibility, but local clients do not use it for authentication. The HTTP
@@ -36,14 +36,15 @@ Key concepts:
 
 ## Requirements on the config
 
-The config must declare an external controller whenever Passthrough or a
-Managed HTTP path (`Prefer` fallback or `Disable`) can be selected; the
-upstream caller owns that HTTP address and secret. `external-controller-pipe`
-(Windows) / `external-controller-unix` (Unix) take priority in Passthrough.
-Managed HTTP paths inspect only `external-controller`; a config with only a
-local key is rejected as missing its required HTTP controller. Wildcard HTTP
-binds (`0.0.0.0`, `::`, `:port`) are probed via loopback. For mihomo, the
-manager sets `SAFE_PATHS` to the working dir plus the config dir.
+The config must declare `external-controller` whenever an HTTP path can be
+selected (`Disable`, or a `Prefer` fallback); the upstream caller owns that
+address and secret. Only `external-controller` is read on those paths — a
+config that declares just `external-controller-pipe` (Windows) or
+`external-controller-unix` (Unix) is rejected as missing its required HTTP
+controller, because a caller-declared local path is not a channel the manager
+can own across overlapping epochs. Wildcard HTTP binds (`0.0.0.0`, `::`,
+`:port`) are probed via loopback. For mihomo, the manager sets `SAFE_PATHS` to
+the working dir plus the config dir.
 
 ## Instance state machine
 
@@ -128,7 +129,7 @@ sequenceDiagram
     participant C as Core process
 
     App->>M: start(spec)
-    M->>M: prepare(): inspect (Passthrough) or derive (Managed) config,<br/>resolve probe controller
+    M->>M: prepare(): preserve HTTP or derive local-IPC config,<br/>resolve probe controller
     M->>I: spawn(spec, N, controller)
     I->>S: spawn(-m -d dir -f cfg, SAFE_PATHS=…)
     S->>C: exec
@@ -167,7 +168,7 @@ kill/restart an epoch directly from the probe driver.
 
 ### Graceful switch
 
-Selected only when Managed mode resolves to a per-epoch local controller and
+Selected only when the policy resolves to a per-epoch local controller and
 every inbound is provably zeroable and restorable. A `Prefer` HTTP fallback or
 `Disable` uses a hard switch because both epochs would otherwise bind the same
 upstream HTTP controller. The old core keeps serving while the new one starts
@@ -207,8 +208,7 @@ cleanly: the old core is untouched and `Running` is re-published.
 | Condition | Outcome |
 | --- | --- |
 | No core currently running | plain start, `Hard { NotRunning }` |
-| `ControllerMode::Passthrough` | `Hard { PassthroughMode }` |
-| Managed mode resolves to the upstream HTTP controller | `Hard { HttpController }` |
+| The policy resolved to the source config's HTTP controller | `Hard { HttpController }` |
 | Core kind is not mihomo | `Hard { UnsupportedKind }` |
 | Config sets `dns.listen` | `Hard { DnsListen }` |
 | Another inbound cannot be proven safe for overlap | `Hard { InboundConflict }` |
@@ -222,7 +222,7 @@ warning while treating the nested outcome as the reconciled result.
 
 ## Usage
 
-### Start and stop (Passthrough)
+### Start and stop (HTTP controller)
 
 ```rust
 use camino::Utf8PathBuf;
@@ -247,7 +247,7 @@ let spec = InstanceSpec {
 let manager = CoreManager::new(ManagerOptions {
     runtime_dir: Some(Utf8PathBuf::from("/run/nyanpasu/core-runtime")),
     ..ManagerOptions::default()
-}).await?; // Passthrough controller, manager-owned runtime snapshot
+}).await?; // LocalIpcPolicy::Disable by default: the config's controller, as-is
 manager.start(spec).await?; // resolves once the version probe passes
 manager.stop().await?;
 ```
@@ -315,23 +315,21 @@ and must set `kill_on_drop(true)` so the child dies with the future.
 instance instead, `Instance::builder(spec, epoch, controller, parent)` exposes
 the same three methods before `.spawn()`.
 
-### Managed mode + graceful switch
+### Local IPC + graceful switch
 
 ```rust
 use camino::Utf8PathBuf;
 use nyanpasu_core_manager::{
-    ControllerMode, CoreManager, LocalIpcPolicy, ManagerOptions, SwitchOutcome,
+    CoreManager, LocalIpcPolicy, ManagerOptions, SwitchOutcome,
 };
 use tokio_util::sync::CancellationToken;
 
 let manager = CoreManager::new(ManagerOptions {
-    controller_mode: ControllerMode::Managed {
-        derived_dir: Utf8PathBuf::from("/run/nyanpasu/derived"),
-        // None → \\.\pipe\nyanpasu\core-{epoch} on Windows,
-        //        <derived_dir>/core-{epoch}.sock elsewhere
-        controller_template: None,
-        local_ipc_policy: LocalIpcPolicy::Force,
-    },
+    runtime_dir: Some(Utf8PathBuf::from("/run/nyanpasu/core-runtime")),
+    local_ipc_policy: LocalIpcPolicy::Force,
+    // None → \\.\pipe\nyanpasu\core-{epoch} on Windows,
+    //        <runtime_dir>/core-{epoch}.sock elsewhere
+    controller_template: None,
     cancel_token: CancellationToken::new(),
     ..ManagerOptions::default()
 }).await?;
@@ -360,10 +358,9 @@ local transports and is kept only for effective-config compatibility with the
 pre-policy behavior. The manager warns without exposing that secret, and
 callers can observe the selected channel through `CoreStatus`.
 
-The manager writes `config-{N}.yaml` and `core-{N}.pid` in its runtime
-directory. Managed mode may use `derived_dir` as the compatibility runtime-dir
-alias; Passthrough requires `runtime_dir` explicitly. The advertised endpoint
-is available as `CoreStatus.controller` in both modes.
+The manager writes `config-{N}.yaml` and `core-{N}.pid` in `runtime_dir`, which
+is required. The advertised endpoint is available as `CoreStatus.controller`
+under every policy.
 
 Managed endpoints are per-kind: mihomo and clash-rs (new enough versions) take
 a named pipe / unix socket, clash premium and meow are HTTP-only. clash-rs is

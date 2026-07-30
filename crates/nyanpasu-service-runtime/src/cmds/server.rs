@@ -24,6 +24,18 @@ pub struct ServerContext {
     /// run as service
     #[clap(long, default_value = "false")]
     pub service: bool,
+    /// How the core's control plane is reached.
+    ///
+    /// `default_value` is mandatory, not cosmetic: a service definition written
+    /// before this argument existed has no `--local-ipc-policy` in its argv and
+    /// must keep starting an upgraded binary.
+    #[clap(
+        long,
+        value_enum,
+        default_value = "disable",
+        env = "NYANPASU_LOCAL_IPC_POLICY"
+    )]
+    pub local_ipc_policy: super::LocalIpcPolicyArg,
 }
 
 pub static SHUTDOWN_TOKEN: OnceLock<CancellationToken> = OnceLock::new();
@@ -40,6 +52,7 @@ pub async fn server_inner(
     .await?;
     tracing::info!("nyanpasu config dir: {:?}", ctx.nyanpasu_config_dir);
     tracing::info!("nyanpasu data dir: {:?}", ctx.nyanpasu_data_dir);
+    tracing::info!("local ipc policy: {:?}", ctx.local_ipc_policy);
 
     // Print current envs
     let envs: BTreeMap<String, String> = std::env::vars().collect();
@@ -92,7 +105,7 @@ pub async fn server_inner(
     #[cfg(windows)]
     tracing::info!(sids = ?sids_str, "Loaded acl file");
 
-    crate::server::run(runtime_infos, token, sids_str).await?;
+    crate::server::run(runtime_infos, ctx.local_ipc_policy.into(), token, sids_str).await?;
     Ok(())
 }
 

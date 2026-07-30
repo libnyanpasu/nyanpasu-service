@@ -24,9 +24,7 @@ use crate::{
     log::{LOG_CHANNEL_CAPACITY, LogFrame},
     probe::ProbeHandle,
     runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
-    spec::{
-        ControllerMode, CoreSpec, InstanceSpec, LocalIpcPolicy, ManagerOptions, ResolvedController,
-    },
+    spec::{CoreSpec, InstanceSpec, LocalIpcPolicy, ManagerOptions, ResolvedController},
     state::{ConfigRevision, CoreState, CoreStatus, InstanceStatus, StopReason},
 };
 
@@ -36,7 +34,6 @@ use quarantine::{reject_quarantine, sweep_orphans};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DegradeReason {
     NotRunning,
-    PassthroughMode,
     UnsupportedKind,
     DnsListen,
     InboundConflict,
@@ -68,6 +65,12 @@ pub enum ApplyOutcome {
         revision: ConfigRevision,
     },
     Restarted {
+        revision: ConfigRevision,
+    },
+    /// The process spec itself changed (a different core, binary, or launch
+    /// option), so the old epoch was stopped and a new one started. Distinct
+    /// from [`Self::Restarted`], which replaces the process inside one epoch.
+    Switched {
         revision: ConfigRevision,
     },
     RolledBack {
@@ -203,25 +206,18 @@ impl CoreManager {
 
     async fn build_configured(builder: CoreManagerBuilder) -> Result<Self, Error> {
         let CoreManagerBuilder { options, probes } = builder;
-        let runtime_dir = match (&options.runtime_dir, &options.controller_mode) {
-            (Some(runtime_dir), _) => runtime_dir.clone(),
-            (None, ControllerMode::Managed { derived_dir, .. }) => derived_dir.clone(),
-            (None, ControllerMode::Passthrough) => {
-                return Err(Error::InvalidManagerOptions(
-                    "Passthrough mode requires runtime_dir".into(),
-                ));
-            }
-        };
+        let runtime_dir = options
+            .runtime_dir
+            .clone()
+            .ok_or_else(|| Error::InvalidManagerOptions("runtime_dir is required".into()))?;
         let store = RuntimeConfigStore::new(runtime_dir).await?;
         let runtime_lock = store.acquire_ownership().await?;
 
-        if let ControllerMode::Managed {
-            controller_template,
-            ..
-        } = &options.controller_mode
-        {
-            config::managed_endpoint_path(store.dir(), controller_template.as_deref(), 0)?;
-        }
+        // Validated under every policy: a template that cannot produce an
+        // endpoint is a configuration error whether or not this core ends up
+        // selecting local IPC, and construction is the caller's last chance to
+        // fix it.
+        config::managed_endpoint_path(store.dir(), options.controller_template.as_deref(), 0)?;
         for (name, timeout) in [
             ("control_timeout", options.control_timeout),
             ("reconcile_timeout", options.reconcile_timeout),
@@ -467,7 +463,7 @@ impl CoreManager {
         crate::capability::resolve_features(
             &self.inner.version_cache,
             core,
-            &self.inner.options.controller_mode,
+            self.inner.options.local_ipc_policy,
         )
         .await
     }
@@ -478,13 +474,7 @@ impl CoreManager {
         resolved_version: Option<&str>,
         rewrote_controller: bool,
     ) {
-        let ControllerMode::Managed {
-            local_ipc_policy, ..
-        } = &self.inner.options.controller_mode
-        else {
-            return;
-        };
-        if *local_ipc_policy == LocalIpcPolicy::Prefer && !rewrote_controller {
+        if self.inner.options.local_ipc_policy == LocalIpcPolicy::Prefer && !rewrote_controller {
             tracing::warn!(
                 kind = %core.kind,
                 version = resolved_version.or(core.version.as_deref()).unwrap_or("unknown"),

@@ -6,9 +6,10 @@ use std::{
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
-    ApplyOutcome, ConfigRevision, ControllerMode, CoreKind, CoreManager as Manager, CoreSpec,
+    ApplyOutcome, ConfigRevision, CoreKind, CoreManager as Manager, CoreSpec,
     CoreState as ManagerCoreState, CoreStatus, Error as ManagerError, HealthState, HealthStatus,
-    Host, InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions, RevisionId,
+    Host, InstanceOptions, InstanceSpec, LocalIpcPolicy, LogFrame, LogStream, ManagerOptions,
+    RevisionId,
 };
 use nyanpasu_ipc::api::{
     R, RBuilder,
@@ -109,10 +110,13 @@ pub struct CoreManagerService {
 }
 
 impl CoreManagerService {
-    pub async fn new(runtime_dir: Utf8PathBuf) -> Result<Self, anyhow::Error> {
+    pub async fn new(
+        runtime_dir: Utf8PathBuf,
+        local_ipc_policy: LocalIpcPolicy,
+    ) -> Result<Self, anyhow::Error> {
         let manager = Manager::new(ManagerOptions {
-            controller_mode: ControllerMode::Passthrough,
             runtime_dir: Some(runtime_dir),
+            local_ipc_policy,
             ..ManagerOptions::default()
         })
         .await?;
@@ -469,11 +473,11 @@ fn map_apply_outcome(outcome: &ApplyOutcome) -> CoreApplyData {
         ApplyOutcome::Noop { revision } => (ApplyOutcomeKind::Noop, revision, None),
         ApplyOutcome::Patched { revision } => (ApplyOutcomeKind::Patched, revision, None),
         ApplyOutcome::Reloaded { revision } => (ApplyOutcomeKind::Reloaded, revision, None),
-        // The core-switch path reports `Restarted` too (`manager/apply.rs:531`),
-        // so `ApplyOutcomeKind::Switched` is never produced here. Do not try to
-        // infer it from an epoch change: the pre-call epoch can only be read
-        // outside the manager's control lock.
         ApplyOutcome::Restarted { revision } => (ApplyOutcomeKind::Restarted, revision, None),
+        // Live since S10: the manager reports the core-switch path separately
+        // from a same-epoch restart, so the wire value S8 declared and never
+        // sent is finally produced here.
+        ApplyOutcome::Switched { revision } => (ApplyOutcomeKind::Switched, revision, None),
         ApplyOutcome::RolledBack {
             revision,
             failed_apply,
@@ -995,6 +999,12 @@ mod tests {
                     revision: revision(10),
                 },
                 ApplyOutcomeKind::Restarted,
+            ),
+            (
+                ApplyOutcome::Switched {
+                    revision: revision(11),
+                },
+                ApplyOutcomeKind::Switched,
             ),
         ];
         for (outcome, expected) in cases {

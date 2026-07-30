@@ -11,6 +11,7 @@ use axum::{
     response::Response,
 };
 use camino::Utf8PathBuf;
+use nyanpasu_core_manager::LocalIpcPolicy;
 use nyanpasu_ipc::api::{
     ResponseCode,
     contract::{
@@ -45,7 +46,9 @@ impl TestEnv {
         let root = dir.path();
         let runtime_dir =
             Utf8PathBuf::from_path_buf(root.join("core-runtime")).expect("temp path is UTF-8");
-        let core_manager = CoreManager::new(runtime_dir).await.unwrap();
+        let core_manager = CoreManager::new(runtime_dir, LocalIpcPolicy::Disable)
+            .await
+            .unwrap();
         let runtime = Arc::new(RuntimeInfos {
             service_data_dir: root.join("service-data"),
             service_config_dir: root.join("service-config"),

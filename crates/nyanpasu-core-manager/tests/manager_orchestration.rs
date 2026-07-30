@@ -10,8 +10,8 @@ use std::{
 };
 
 use nyanpasu_core_manager::{
-    ControllerMode, CoreState, Error, HealthPolicy, HealthState, LocalIpcPolicy, LogLevel,
-    LogStream, ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
+    CoreState, Error, HealthPolicy, HealthState, LocalIpcPolicy, LogLevel, LogStream,
+    ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 async fn manager(runtime_dir: &camino::Utf8Path) -> CoreManager {
@@ -110,18 +110,29 @@ async fn manager_builder_forwards_atomic_runtime_health_without_bumping_lifecycl
 }
 
 #[tokio::test]
-async fn managed_controller_template_without_epoch_is_rejected_at_construction() {
+async fn a_controller_template_without_epoch_is_rejected_at_construction() {
     let (_guard, dir) = common::utf8_tempdir();
     let options = ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir: dir,
-            controller_template: Some(r"\\.\pipe\nyanpasu\fixed".to_owned()),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(dir),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: Some(r"\\.\pipe\nyanpasu\fixed".to_owned()),
         ..ManagerOptions::default()
     };
 
     assert!(CoreManager::new(options).await.is_err());
+}
+
+/// `runtime_dir` is the manager's only runtime artifact directory.
+#[tokio::test]
+async fn a_missing_runtime_dir_is_rejected_at_construction() {
+    let error = CoreManager::new(ManagerOptions::default())
+        .await
+        .err()
+        .expect("a manager without a runtime dir was accepted");
+    assert!(
+        matches!(error, Error::InvalidManagerOptions(ref detail) if detail.contains("runtime_dir")),
+        "unexpected error: {error}"
+    );
 }
 
 #[cfg(unix)]
@@ -131,12 +142,9 @@ async fn managed_unix_controller_template_cannot_escape_runtime_directory() {
     let runtime = dir.join("runtime");
     let escaped = dir.join("escaped-{epoch}.sock").to_string();
     let result = CoreManager::new(ManagerOptions {
-        runtime_dir: Some(runtime.clone()),
-        controller_mode: ControllerMode::Managed {
-            derived_dir: runtime,
-            controller_template: Some(escaped),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(runtime),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: Some(escaped),
         ..ManagerOptions::default()
     })
     .await;
@@ -321,7 +329,7 @@ async fn hard_switch_replaces_the_core_and_bumps_the_epoch() {
 }
 
 #[tokio::test]
-async fn passthrough_prepare_failure_never_leaves_switching() {
+async fn prepare_failure_never_leaves_switching() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let config_a = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));

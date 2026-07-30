@@ -5,8 +5,7 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
-    ControllerMode, CoreKind, CoreManager, CoreSpec, InstanceOptions, InstanceSpec, LocalIpcPolicy,
-    ManagerOptions,
+    CoreKind, CoreManager, CoreSpec, InstanceOptions, InstanceSpec, LocalIpcPolicy, ManagerOptions,
 };
 
 /// A real core under test: its manager kind and the binary name in tests/bin.
@@ -132,17 +131,15 @@ fn unique_template() -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        None // unix default derives the socket under derived_dir (already unique)
+        None // unix default derives the socket under the runtime dir (already unique)
     }
 }
 
-pub async fn managed_manager(dir: &Utf8Path, local_ipc_policy: LocalIpcPolicy) -> CoreManager {
+pub async fn manager_with_policy(dir: &Utf8Path, local_ipc_policy: LocalIpcPolicy) -> CoreManager {
     CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir: dir.join("derived"),
-            controller_template: unique_template(),
-            local_ipc_policy,
-        },
+        runtime_dir: Some(dir.join("runtime")),
+        local_ipc_policy,
+        controller_template: unique_template(),
         control_timeout: Duration::from_secs(15),
         reconcile_timeout: Duration::from_secs(15),
         ..ManagerOptions::default()

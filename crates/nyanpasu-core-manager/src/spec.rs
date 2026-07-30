@@ -56,13 +56,17 @@ pub struct ResolvedController {
     pub secret: Option<String>,
 }
 
-/// How managed mode selects the core's primary controller transport.
+/// How the manager selects the core's primary controller transport.
+///
+/// This is the manager's only controller knob. Local IPC means a manager-owned,
+/// epoch-parameterized named pipe (Windows) or Unix socket (elsewhere) written
+/// into the effective config; the HTTP paths keep the `external-controller`
+/// address the source config declares, untouched.
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalIpcPolicy {
     /// Require local IPC and fail startup or switching when the core does not
     /// support the platform transport.
-    #[default]
     Force,
     /// Use local IPC when supported; otherwise use the HTTP controller from
     /// the source config.
@@ -72,31 +76,17 @@ pub enum LocalIpcPolicy {
     Disable,
 }
 
-/// How the manager learns and controls the core's external controller.
-#[non_exhaustive]
-#[derive(Debug, Clone, Default)]
-pub enum ControllerMode {
-    /// Start the config as-is; extract the probe endpoint from it.
-    #[default]
-    Passthrough,
-    /// Use a manager-owned, epoch-parameterized local transport when selected
-    /// by policy; otherwise retain the config's HTTP controller.
-    Managed {
-        /// Where derived configs (and default unix sockets) live.
-        derived_dir: camino::Utf8PathBuf,
-        /// Endpoint template containing `{epoch}`; platform default when `None`.
-        controller_template: Option<String>,
-        /// Whether local IPC is required, preferred, or disabled.
-        local_ipc_policy: LocalIpcPolicy,
-    },
-}
-
 #[derive(Debug, Clone)]
 pub struct ManagerOptions {
-    pub controller_mode: ControllerMode,
-    /// Manager-owned runtime artifact directory. Required for Passthrough;
-    /// Managed mode falls back to `derived_dir` for compatibility.
+    /// Manager-owned runtime artifact directory: effective configs, pid files,
+    /// and by default the epoch-scoped Unix sockets. Required.
     pub runtime_dir: Option<Utf8PathBuf>,
+    /// Whether local IPC is required, preferred, or disabled.
+    pub local_ipc_policy: LocalIpcPolicy,
+    /// Endpoint template containing `{epoch}`; platform default when `None`.
+    /// Only consulted when the policy selects local IPC, but validated at
+    /// construction under every policy.
+    pub controller_template: Option<String>,
     pub control_timeout: Duration,
     pub reconcile_timeout: Duration,
     pub stop_timeout: Duration,
@@ -106,8 +96,13 @@ pub struct ManagerOptions {
 impl Default for ManagerOptions {
     fn default() -> Self {
         Self {
-            controller_mode: ControllerMode::default(),
             runtime_dir: None,
+            // The behavioural successor of the removed passthrough default:
+            // the source config's HTTP controller is authoritative and is
+            // never rewritten. Callers that want the epoch-scoped local
+            // transport ask for it.
+            local_ipc_policy: LocalIpcPolicy::Disable,
+            controller_template: None,
             control_timeout: Duration::from_secs(10),
             reconcile_timeout: Duration::from_secs(30),
             stop_timeout: Duration::from_secs(10),
@@ -133,5 +128,16 @@ mod tests {
             o.restart_policy,
             RestartPolicy::OnFailure { max_restarts: 5 }
         );
+    }
+
+    /// The compatibility pin for S10: `ManagerOptions::default()` must keep the
+    /// removed passthrough behavior — the source config's HTTP controller,
+    /// never rewritten.
+    #[test]
+    fn manager_options_default_to_the_non_rewriting_policy() {
+        let o = ManagerOptions::default();
+        assert_eq!(o.local_ipc_policy, LocalIpcPolicy::Disable);
+        assert!(o.controller_template.is_none());
+        assert!(o.runtime_dir.is_none());
     }
 }

@@ -3,8 +3,8 @@ mod common;
 use std::time::Duration;
 
 use nyanpasu_core_manager::{
-    ControllerMode, ControllerVersionProbe, CoreState, DegradeReason, Error, HealthProbe,
-    LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
+    ControllerVersionProbe, CoreState, DegradeReason, Error, HealthProbe, LocalIpcPolicy,
+    ManagerOptions, ProbeHandle, ProbeResult, StopReason, manager::CoreManager,
 };
 
 fn unique_template() -> Option<String> {
@@ -20,17 +20,15 @@ fn unique_template() -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        None // unix default derives the socket under derived_dir (already unique)
+        None // unix default derives the socket under the runtime dir (already unique)
     }
 }
 
-async fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
+async fn local_ipc_manager(runtime_dir: camino::Utf8PathBuf) -> CoreManager {
     CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir,
-            controller_template: unique_template(),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(runtime_dir),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: unique_template(),
         ..Default::default()
     })
     .await
@@ -38,19 +36,20 @@ async fn managed_manager(derived_dir: camino::Utf8PathBuf) -> CoreManager {
 }
 
 #[tokio::test]
-async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
+async fn local_ipc_start_injects_the_epoch_endpoint_and_advertises_it() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     // Stale artifacts from a "previous run" must be swept by CoreManager::new.
-    std::fs::create_dir_all(&derived_dir).unwrap();
-    std::fs::write(derived_dir.join("config-99.yaml"), "stale").unwrap();
+    std::fs::create_dir_all(&runtime_dir).unwrap();
+    std::fs::write(runtime_dir.join("config-99.yaml"), "stale").unwrap();
 
-    // No external-controller in the user config — Managed mode injects one.
+    // No external-controller in the user config — Force resolves to local IPC, so the manager
+    // injects the epoch-scoped endpoint.
     let config = common::write_config(&dir, "mixed-port: 0\n");
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
     assert!(
-        !derived_dir.join("config-99.yaml").exists(),
-        "stale derived config swept on construction"
+        !runtime_dir.join("config-99.yaml").exists(),
+        "stale runtime config swept on construction"
     );
 
     manager
@@ -65,25 +64,25 @@ async fn managed_start_injects_the_epoch_endpoint_and_advertises_it() {
         endpoint.contains('1'),
         "endpoint should embed the epoch: {endpoint}"
     );
-    assert!(derived_dir.join("config-100.yaml").exists());
+    assert!(runtime_dir.join("config-100.yaml").exists());
 
     manager.shutdown().await.expect("shutdown");
     assert!(
-        !derived_dir.join("config-100.yaml").exists(),
-        "derived config removed after shutdown"
+        !runtime_dir.join("config-100.yaml").exists(),
+        "runtime config removed after shutdown"
     );
     let _ = Duration::ZERO;
 }
 
 #[tokio::test]
-async fn managed_spawn_error_removes_secret_derived_config() {
+async fn spawn_error_removes_the_secret_runtime_config() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let config = common::write_config(
         &dir,
         "mixed-port: 0\nsecret: test-secret\nx-fake-core:\n  check-fail: boom\n",
     );
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
 
     let error = manager
         .start(common::mihomo_spec(&dir, config))
@@ -97,15 +96,15 @@ async fn managed_spawn_error_removes_secret_derived_config() {
         }
     ));
     assert!(
-        !derived_dir.join("config-1.yaml").exists(),
-        "secret-bearing derived config must be removed"
+        !runtime_dir.join("config-1.yaml").exists(),
+        "secret-bearing runtime config must be removed"
     );
 }
 
 #[tokio::test]
-async fn stop_cleans_derived_config_for_terminal_instance() {
+async fn stop_cleans_the_runtime_config_for_terminal_instance() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let state_file = dir.join("crash-state");
     let config = common::write_config(
         &dir,
@@ -113,7 +112,7 @@ async fn stop_cleans_derived_config_for_terminal_instance() {
             "mixed-port: 0\nx-fake-core:\n  crash-after-ms: 500\n  crash-times: 99\n  state-file: {state_file}\n"
         ),
     );
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
     let mut rx = manager.subscribe();
 
     manager
@@ -138,13 +137,13 @@ async fn stop_cleans_derived_config_for_terminal_instance() {
     .expect("core never exhausted its restart budget");
 
     assert!(
-        derived_dir.join("config-1.yaml").exists(),
-        "derived config must exist before terminal stop cleanup"
+        runtime_dir.join("config-1.yaml").exists(),
+        "runtime config must exist before terminal stop cleanup"
     );
     assert!(matches!(manager.stop().await, Err(Error::NotStarted)));
     assert!(
-        !derived_dir.join("config-1.yaml").exists(),
-        "derived config must be removed after terminal stop"
+        !runtime_dir.join("config-1.yaml").exists(),
+        "runtime config must be removed after terminal stop"
     );
     manager.shutdown().await.expect("shutdown");
 }
@@ -156,7 +155,7 @@ use std::sync::Arc;
 #[tokio::test]
 async fn graceful_switch_overlaps_and_restores_listeners() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let patch_log_b = dir.join("patch-b.log");
 
@@ -168,12 +167,12 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
     )
     .unwrap();
 
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
         .expect("start A");
-    assert!(derived_dir.join("config-1.yaml").exists());
+    assert!(runtime_dir.join("config-1.yaml").exists());
     tokio::net::TcpStream::connect(("127.0.0.1", mixed))
         .await
         .expect("A holds the mixed port");
@@ -240,12 +239,12 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
     );
     assert!(status.controller.is_some());
     assert!(
-        !derived_dir.join("config-1.yaml").exists(),
-        "old derived config must be removed after switch"
+        !runtime_dir.join("config-1.yaml").exists(),
+        "old runtime config must be removed after switch"
     );
     assert!(
-        derived_dir.join("config-2.yaml").exists(),
-        "new derived config must remain active"
+        runtime_dir.join("config-2.yaml").exists(),
+        "new runtime config must remain active"
     );
     manager.shutdown().await.expect("shutdown");
 }
@@ -253,12 +252,12 @@ async fn graceful_switch_overlaps_and_restores_listeners() {
 #[tokio::test]
 async fn graceful_switch_surfaces_installed_but_uncertain_durability() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b = dir.join("config-b.yaml");
     std::fs::write(&config_b, format!("mixed-port: {mixed}\n")).unwrap();
-    let manager = managed_manager(derived_dir).await;
+    let manager = local_ipc_manager(runtime_dir).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -281,7 +280,7 @@ async fn graceful_switch_surfaces_installed_but_uncertain_durability() {
 #[tokio::test]
 async fn graceful_respawn_loads_the_full_committed_runtime_config() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let ports = std::array::from_fn::<_, 5, _>(|_| common::free_port());
     let [port, socks, redir, tproxy, mixed] = ports;
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
@@ -294,7 +293,7 @@ async fn graceful_respawn_loads_the_full_committed_runtime_config() {
     )
     .unwrap();
 
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -347,7 +346,7 @@ async fn graceful_respawn_loads_the_full_committed_runtime_config() {
     assert_eq!(runtime.mixed_port, i64::from(mixed));
     assert!(runtime.tun.enable, "respawn must restore TUN enablement");
 
-    let runtime_file = std::fs::read_to_string(derived_dir.join("config-2.yaml")).unwrap();
+    let runtime_file = std::fs::read_to_string(runtime_dir.join("config-2.yaml")).unwrap();
     assert!(runtime_file.contains(&format!("port: {port}")));
     assert!(runtime_file.contains(&format!("socks-port: {socks}")));
     assert!(runtime_file.contains(&format!("redir-port: {redir}")));
@@ -360,12 +359,12 @@ async fn graceful_respawn_loads_the_full_committed_runtime_config() {
 #[tokio::test]
 async fn graceful_success_publishes_only_the_new_epoch_context() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b = dir.join("config-b.yaml");
     std::fs::write(&config_b, format!("mixed-port: {mixed}\n")).unwrap();
-    let manager = managed_manager(derived_dir).await;
+    let manager = local_ipc_manager(runtime_dir).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -424,7 +423,7 @@ async fn graceful_success_publishes_only_the_new_epoch_context() {
 #[tokio::test]
 async fn graceful_patch_timeout_with_matching_get_is_success() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b = dir.join("config-b.yaml");
@@ -434,11 +433,9 @@ async fn graceful_patch_timeout_with_matching_get_is_success() {
     )
     .unwrap();
     let manager = CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir,
-            controller_template: unique_template(),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(runtime_dir),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: unique_template(),
         control_timeout: Duration::from_millis(50),
         reconcile_timeout: Duration::from_secs(3),
         ..Default::default()
@@ -476,7 +473,7 @@ async fn graceful_patch_timeout_with_matching_get_is_success() {
 #[tokio::test]
 async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b = dir.join("config-b.yaml");
@@ -485,7 +482,7 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
         format!("mixed-port: {mixed}\nx-fake-core:\n  ready-delay-ms: 5000\n"),
     )
     .unwrap();
-    let manager = Arc::new(managed_manager(derived_dir.clone()).await);
+    let manager = Arc::new(local_ipc_manager(runtime_dir.clone()).await);
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -503,13 +500,13 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
     let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let old = nyanpasu_utils::process::read_epoch_pid_file(
-                derived_dir.join("core-1.pid").as_std_path(),
+                runtime_dir.join("core-1.pid").as_std_path(),
             )
             .await
             .ok()
             .flatten();
             let new = nyanpasu_utils::process::read_epoch_pid_file(
-                derived_dir.join("core-2.pid").as_std_path(),
+                runtime_dir.join("core-2.pid").as_std_path(),
             )
             .await
             .ok()
@@ -535,7 +532,7 @@ async fn graceful_overlap_keeps_both_epoch_pid_records_without_miskilling_old() 
 #[tokio::test]
 async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let controller = common::free_port();
     let shared_controller = format!("127.0.0.1:{controller}");
@@ -551,7 +548,7 @@ async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
         ),
     )
     .unwrap();
-    let manager = Arc::new(managed_manager(derived_dir.clone()).await);
+    let manager = Arc::new(local_ipc_manager(runtime_dir.clone()).await);
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -566,13 +563,13 @@ async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
     let (old_record, new_record) = tokio::time::timeout(Duration::from_secs(15), async {
         loop {
             let old = nyanpasu_utils::process::read_epoch_pid_file(
-                derived_dir.join("core-1.pid").as_std_path(),
+                runtime_dir.join("core-1.pid").as_std_path(),
             )
             .await
             .ok()
             .flatten();
             let new = nyanpasu_utils::process::read_epoch_pid_file(
-                derived_dir.join("core-2.pid").as_std_path(),
+                runtime_dir.join("core-2.pid").as_std_path(),
             )
             .await
             .ok()
@@ -588,7 +585,7 @@ async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
     assert_ne!(old_record.pid, new_record.pid);
 
     for epoch in [1, 2] {
-        let runtime = std::fs::read_to_string(derived_dir.join(format!("config-{epoch}.yaml")))
+        let runtime = std::fs::read_to_string(runtime_dir.join(format!("config-{epoch}.yaml")))
             .expect("read overlapping effective config");
         let document: serde_yaml_ng::Mapping =
             serde_yaml_ng::from_str(&runtime).expect("parse effective config");
@@ -612,7 +609,7 @@ async fn graceful_overlap_removes_shared_http_controller_from_both_epochs() {
 #[tokio::test]
 async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let config_a = common::write_config(&dir, "mixed-port: 0\n");
     let config_b = dir.join("config-b.yaml");
     std::fs::write(
@@ -622,11 +619,9 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
     .unwrap();
     let manager = Arc::new(
         CoreManager::new(ManagerOptions {
-            controller_mode: ControllerMode::Managed {
-                derived_dir: derived_dir.clone(),
-                controller_template: unique_template(),
-                local_ipc_policy: LocalIpcPolicy::Force,
-            },
+            runtime_dir: Some(runtime_dir.clone()),
+            local_ipc_policy: LocalIpcPolicy::Force,
+            controller_template: unique_template(),
             stop_timeout: Duration::from_secs(1),
             ..Default::default()
         })
@@ -644,8 +639,8 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
         let manager = manager.clone();
         tokio::spawn(async move { manager.switch(spec_b).await })
     };
-    let first_pid = derived_dir.join("core-1.pid");
-    let second_pid = derived_dir.join("core-2.pid");
+    let first_pid = runtime_dir.join("core-1.pid");
+    let second_pid = runtime_dir.join("core-2.pid");
     tokio::time::timeout(Duration::from_secs(15), async {
         while !second_pid.exists() {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -668,31 +663,31 @@ async fn quarantine_recovery_continues_after_an_independent_epoch_failure() {
         .await
         .expect_err("first epoch must remain uncertain");
     assert!(
-        !derived_dir.join("config-2.yaml").exists(),
+        !runtime_dir.join("config-2.yaml").exists(),
         "a later independent quarantine was not recovered"
     );
     assert!(!second_pid.exists());
-    assert!(derived_dir.join("config-1.yaml").exists());
+    assert!(runtime_dir.join("config-1.yaml").exists());
 
     std::fs::write(&first_pid, first_record).unwrap();
     manager.recover_quarantine().await.unwrap();
-    assert!(!derived_dir.join("config-1.yaml").exists());
+    assert!(!runtime_dir.join("config-1.yaml").exists());
 }
 
 #[tokio::test]
-async fn managed_hard_switch_removes_old_derived_config() {
+async fn hard_switch_removes_the_old_runtime_config() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let config_a = common::write_config(&dir, "mixed-port: 0\n");
     let config_b_path = dir.join("config-b.yaml");
     std::fs::write(&config_b_path, "dns:\n  listen: 127.0.0.1:0\n").unwrap();
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
 
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
         .expect("start A");
-    assert!(derived_dir.join("config-1.yaml").exists());
+    assert!(runtime_dir.join("config-1.yaml").exists());
 
     let outcome = manager
         .switch(common::mihomo_spec(&dir, config_b_path))
@@ -705,10 +700,10 @@ async fn managed_hard_switch_removes_old_derived_config() {
         }
     );
     assert!(
-        !derived_dir.join("config-1.yaml").exists(),
-        "old derived config must be removed after hard switch"
+        !runtime_dir.join("config-1.yaml").exists(),
+        "old runtime config must be removed after hard switch"
     );
-    assert!(derived_dir.join("config-2.yaml").exists());
+    assert!(runtime_dir.join("config-2.yaml").exists());
     assert!(matches!(
         manager.status().state,
         CoreState::Running { epoch: 2, .. }
@@ -719,7 +714,7 @@ async fn managed_hard_switch_removes_old_derived_config() {
 #[tokio::test]
 async fn prefer_http_fallback_degrades_switch_to_hard() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let port = common::free_port();
     let config_a = common::write_config(&dir, &format!("external-controller: 127.0.0.1:{port}\n"));
     let config_b = dir.join("config-b.yaml");
@@ -729,11 +724,9 @@ async fn prefer_http_fallback_degrades_switch_to_hard() {
     )
     .unwrap();
     let manager = CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir,
-            controller_template: unique_template(),
-            local_ipc_policy: LocalIpcPolicy::Prefer,
-        },
+        runtime_dir: Some(runtime_dir),
+        local_ipc_policy: LocalIpcPolicy::Prefer,
+        controller_template: unique_template(),
         ..ManagerOptions::default()
     })
     .await
@@ -770,12 +763,12 @@ async fn prefer_http_fallback_degrades_switch_to_hard() {
 #[tokio::test]
 async fn derive_failure_republishes_old_running_state() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let mixed = common::free_port();
     let config_a = common::write_config(&dir, &format!("mixed-port: {mixed}\n"));
     let config_b_path = dir.join("config-b.yaml");
     std::fs::write(&config_b_path, format!("mixed-port: {mixed}\n1: invalid\n")).unwrap();
-    let manager = managed_manager(derived_dir.clone()).await;
+    let manager = local_ipc_manager(runtime_dir.clone()).await;
 
     manager
         .start(common::mihomo_spec(&dir, config_a))
@@ -810,7 +803,7 @@ async fn derive_failure_republishes_old_running_state() {
 #[tokio::test]
 async fn failed_new_core_while_old_restarting_republishes_actual_state() {
     let (_guard, dir) = common::utf8_tempdir();
-    let derived_dir = dir.join("derived");
+    let runtime_dir = dir.join("runtime");
     let state_file = dir.join("crash-state");
     let config_a = common::write_config(
         &dir,
@@ -822,11 +815,9 @@ async fn failed_new_core_while_old_restarting_republishes_actual_state() {
     std::fs::write(&config_b_path, "mixed-port: 0\n").unwrap();
     let cancel_token = tokio_util::sync::CancellationToken::new();
     let manager = CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir,
-            controller_template: unique_template(),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(runtime_dir),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: unique_template(),
         cancel_token: cancel_token.clone(),
         ..Default::default()
     })
@@ -894,7 +885,7 @@ async fn failed_new_core_rolls_back_without_touching_the_old_one() {
     let config_b_path = dir.join("config-b.yaml");
     std::fs::write(&config_b_path, "x-fake-core:\n  never-ready: true\n").unwrap();
 
-    let manager = managed_manager(dir.join("derived")).await;
+    let manager = local_ipc_manager(dir.join("runtime")).await;
     manager
         .start(common::mihomo_spec(&dir, config_a))
         .await
@@ -953,11 +944,9 @@ async fn rejected_patch_falls_back_to_a_hard_restart() {
         }
     });
     let manager = CoreManager::builder(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir: dir.join("derived"),
-            controller_template: unique_template(),
-            local_ipc_policy: LocalIpcPolicy::Force,
-        },
+        runtime_dir: Some(dir.join("runtime")),
+        local_ipc_policy: LocalIpcPolicy::Force,
+        controller_template: unique_template(),
         ..ManagerOptions::default()
     })
     .readiness_probe(readiness)

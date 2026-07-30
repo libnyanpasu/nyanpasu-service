@@ -9,7 +9,7 @@ use crate::{
     instance::Instance,
     kind::CoreKind,
     probe::ProbePhase,
-    spec::{ControllerMode, InstanceSpec, ResolvedController},
+    spec::{InstanceSpec, ResolvedController},
     state::{ConfigRevision, CoreState},
 };
 
@@ -22,14 +22,10 @@ use super::{
 };
 
 fn graceful_degrade_reason(
-    managed: bool,
     local_controller: bool,
     kind: CoreKind,
     overlap_block: Option<OverlapBlock>,
 ) -> Option<DegradeReason> {
-    if !managed {
-        return Some(DegradeReason::PassthroughMode);
-    }
     if !local_controller {
         return Some(DegradeReason::HttpController);
     }
@@ -91,15 +87,10 @@ impl CoreManager {
         }
 
         let snapshot = ConfigSnapshot::load(&spec.config_path).await?;
-        let managed = matches!(
-            self.inner.options.controller_mode,
-            ControllerMode::Managed { .. }
-        );
         self.validate_launchable(&spec).await?;
         let resolved = self.resolve_features(&spec.core).await?;
         let local_controller = resolved.runtime.contains(RuntimeFeature::LocalIpc);
         match graceful_degrade_reason(
-            managed,
             local_controller,
             spec.core.kind,
             mihomo::overlap_block(snapshot.document()),
@@ -423,7 +414,7 @@ impl CoreManager {
     ) -> Result<PreparedLaunch, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
         let prepared = snapshot.prepare_full(
-            &self.inner.options.controller_mode,
+            self.inner.options.controller_template.as_deref(),
             self.inner.store.dir(),
             epoch,
             resolved.runtime,
@@ -470,13 +461,13 @@ impl CoreManager {
     ) -> Result<PreparedGraceful, Error> {
         debug_assert_eq!(snapshot.source_path(), spec.config_path);
         let full = snapshot.prepare_full(
-            &self.inner.options.controller_mode,
+            self.inner.options.controller_template.as_deref(),
             self.inner.store.dir(),
             epoch,
             resolved.runtime,
         )?;
         let bootstrap = snapshot.prepare_bootstrap(
-            &self.inner.options.controller_mode,
+            self.inner.options.controller_template.as_deref(),
             self.inner.store.dir(),
             epoch,
             resolved.runtime,
@@ -588,24 +579,21 @@ mod tests {
     #[test]
     fn switch_matrix_matches_the_spec() {
         assert_eq!(
-            graceful_degrade_reason(false, false, CoreKind::Mihomo, None),
-            Some(DegradeReason::PassthroughMode)
-        );
-        assert_eq!(
-            graceful_degrade_reason(true, true, CoreKind::ClashRust, None),
-            Some(DegradeReason::UnsupportedKind)
-        );
-        assert_eq!(
-            graceful_degrade_reason(true, true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
-            Some(DegradeReason::DnsListen)
-        );
-        assert_eq!(
-            graceful_degrade_reason(true, false, CoreKind::Mihomo, None),
+            graceful_degrade_reason(false, CoreKind::Mihomo, None),
             Some(DegradeReason::HttpController)
         );
         assert_eq!(
-            graceful_degrade_reason(true, true, CoreKind::Mihomo, None),
-            None
+            graceful_degrade_reason(true, CoreKind::ClashRust, None),
+            Some(DegradeReason::UnsupportedKind)
         );
+        assert_eq!(
+            graceful_degrade_reason(true, CoreKind::Mihomo, Some(OverlapBlock::DnsListen)),
+            Some(DegradeReason::DnsListen)
+        );
+        assert_eq!(
+            graceful_degrade_reason(true, CoreKind::Mihomo, Some(OverlapBlock::InboundSurface)),
+            Some(DegradeReason::InboundConflict)
+        );
+        assert_eq!(graceful_degrade_reason(true, CoreKind::Mihomo, None), None);
     }
 }

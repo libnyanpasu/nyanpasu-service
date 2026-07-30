@@ -10,9 +10,8 @@ use std::{
 };
 
 use nyanpasu_core_manager::{
-    ApplyOutcome, ControllerMode, ControllerVersionProbe, CoreManager, CoreState, Error,
-    HealthProbe, InstanceSpec, LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbePhase,
-    ProbeResult, RevisionId,
+    ApplyOutcome, ControllerVersionProbe, CoreManager, CoreState, Error, HealthProbe, InstanceSpec,
+    LocalIpcPolicy, ManagerOptions, ProbeHandle, ProbePhase, ProbeResult, RevisionId,
 };
 use parking_lot::Mutex;
 
@@ -44,7 +43,7 @@ fn spec(dir: &camino::Utf8Path, path: camino::Utf8PathBuf) -> InstanceSpec {
     common::mihomo_spec(dir, path)
 }
 
-fn passthrough_yaml(port: u16, extra: &str) -> String {
+fn http_controller_yaml(port: u16, extra: &str) -> String {
     format!("external-controller: 127.0.0.1:{port}\nmode: rule\n{extra}")
 }
 
@@ -55,12 +54,12 @@ async fn custom_probe_plan_reaches_desired_replacement_and_rollback() {
     let first = write_named(
         &dir,
         "probe-old.yaml",
-        &passthrough_yaml(port, "x-setting: old\n"),
+        &http_controller_yaml(port, "x-setting: old\n"),
     );
     let desired = write_named(
         &dir,
         "probe-desired.yaml",
-        &passthrough_yaml(port, "x-setting: desired\n"),
+        &http_controller_yaml(port, "x-setting: desired\n"),
     );
     let attempts = Arc::new(Mutex::new(Vec::<(u64, u32)>::new()));
     let readiness = ProbeHandle::from_fn("recorded-readiness", {
@@ -124,7 +123,7 @@ async fn custom_probe_plan_reaches_desired_replacement_and_rollback() {
 async fn apply_noop_keeps_the_current_revision_and_process() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let body = passthrough_yaml(port, "rules:\n  - MATCH,DIRECT\n");
+    let body = http_controller_yaml(port, "rules:\n  - MATCH,DIRECT\n");
     let first = write_named(&dir, "first.yaml", &body);
     let reordered = write_named(
         &dir,
@@ -151,11 +150,11 @@ async fn apply_noop_keeps_the_current_revision_and_process() {
 async fn apply_patch_updates_the_revision_without_restarting() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, ""));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, ""));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, "allow-lan: true\n"),
+        &http_controller_yaml(port, "allow-lan: true\n"),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -178,11 +177,15 @@ async fn apply_patch_updates_the_revision_without_restarting() {
 async fn custom_reconcile_failure_uses_the_existing_restart_path() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let first = write_named(&dir, "reconcile-first.yaml", &passthrough_yaml(port, ""));
+    let first = write_named(
+        &dir,
+        "reconcile-first.yaml",
+        &http_controller_yaml(port, ""),
+    );
     let desired = write_named(
         &dir,
         "reconcile-desired.yaml",
-        &passthrough_yaml(port, "allow-lan: true\n"),
+        &http_controller_yaml(port, "allow-lan: true\n"),
     );
     let saw_reconcile = Arc::new(AtomicBool::new(false));
     let probe = ProbeHandle::from_fn("reconcile-aware", {
@@ -234,11 +237,11 @@ async fn custom_reconcile_failure_uses_the_existing_restart_path() {
 async fn installed_apply_with_parent_sync_failure_reports_real_outcome() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, ""));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, ""));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, "allow-lan: true\n"),
+        &http_controller_yaml(port, "allow-lan: true\n"),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -266,12 +269,12 @@ async fn apply_reload_uses_put_without_restarting() {
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, "rules:\n  - MATCH,DIRECT\n"),
+        &http_controller_yaml(port, "rules:\n  - MATCH,DIRECT\n"),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, "rules:\n  - MATCH,REJECT\n"),
+        &http_controller_yaml(port, "rules:\n  - MATCH,REJECT\n"),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -316,11 +319,9 @@ async fn prefer_http_fallback_keeps_controller_fields_across_patch_and_reload() 
         ),
     );
     let manager = CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir: dir.join("runtime"),
-            controller_template: None,
-            local_ipc_policy: LocalIpcPolicy::Prefer,
-        },
+        runtime_dir: Some(dir.join("runtime")),
+        local_ipc_policy: LocalIpcPolicy::Prefer,
+        controller_template: None,
         reconcile_timeout: Duration::from_secs(5),
         ..ManagerOptions::default()
     })
@@ -374,18 +375,18 @@ async fn prefer_http_fallback_keeps_controller_fields_across_patch_and_reload() 
 }
 
 #[tokio::test]
-async fn apply_unknown_change_restarts_to_the_committed_desired_config() {
+async fn apply_switch_class_change_switches_to_the_committed_desired_config() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, "x-setting: old\n"),
+        &http_controller_yaml(port, "x-setting: old\n"),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, "x-setting: new\n"),
+        &http_controller_yaml(port, "x-setting: new\n"),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -396,7 +397,7 @@ async fn apply_unknown_change_restarts_to_the_committed_desired_config() {
         .await
         .expect("restart");
 
-    assert!(matches!(outcome, ApplyOutcome::Restarted { .. }));
+    assert!(matches!(outcome, ApplyOutcome::Switched { .. }));
     let after = running(&manager);
     assert!(after.0 > before.0, "switch-class change gets a new epoch");
     assert_ne!(after.1, before.1);
@@ -408,11 +409,11 @@ async fn failed_desired_restart_restores_and_restarts_the_old_revision() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let behavior = "x-fake-core:\n  patch-no-effect: true\n  fail-start-when-allow-lan: true\n";
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, behavior));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, behavior));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: true\n{behavior}")),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -449,11 +450,11 @@ async fn desired_and_rollback_commits_preserve_both_durability_warnings() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let behavior = "x-fake-core:\n  patch-no-effect: true\n  fail-start-when-allow-lan: true\n";
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, behavior));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, behavior));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: true\n{behavior}")),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -479,11 +480,11 @@ async fn desired_and_rollback_commits_preserve_both_durability_warnings() {
 async fn revision_conflict_has_zero_process_file_and_status_side_effects() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, ""));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, ""));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, "allow-lan: true\n"),
+        &http_controller_yaml(port, "allow-lan: true\n"),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -526,11 +527,11 @@ async fn patch_timeout_with_verified_effect_does_not_restart() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let behavior = "x-fake-core:\n  patch-delay-ms: 250\n";
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, behavior));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, behavior));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: true\n{behavior}")),
     );
     let manager = manager(&dir, Duration::from_millis(50)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -555,11 +556,11 @@ async fn patch_success_with_get_mismatch_restarts_desired() {
     let (_guard, dir) = common::utf8_tempdir();
     let port = common::free_port();
     let behavior = "x-fake-core:\n  patch-no-effect: true\n";
-    let first = write_named(&dir, "first.yaml", &passthrough_yaml(port, behavior));
+    let first = write_named(&dir, "first.yaml", &http_controller_yaml(port, behavior));
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: true\n{behavior}")),
     );
     let manager = manager(&dir, Duration::from_secs(1)).await;
     manager.start(spec(&dir, first)).await.expect("start");
@@ -594,12 +595,12 @@ async fn source_mutation_during_staged_check_cannot_change_the_apply() {
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, "x-setting: old\n"),
+        &http_controller_yaml(port, "x-setting: old\n"),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!(
                 "x-setting: desired\nx-fake-core:\n  check-delay-ms: 1000\n  check-started-file: '{check_started_path}'\n"
@@ -626,12 +627,12 @@ async fn source_mutation_during_staged_check_cannot_change_the_apply() {
     .expect("staged config check never started");
     std::fs::write(
         &desired,
-        passthrough_yaml(port, "x-setting: mutated\nx-fake-core:\n  exit-code: 91\n"),
+        http_controller_yaml(port, "x-setting: mutated\nx-fake-core:\n  exit-code: 91\n"),
     )
     .unwrap();
 
     let outcome = apply.await.unwrap().expect("snapshot apply");
-    assert!(matches!(outcome, ApplyOutcome::Restarted { .. }));
+    assert!(matches!(outcome, ApplyOutcome::Switched { .. }));
     let runtime =
         std::fs::read_to_string(manager.status().revision.expect("revision").runtime_path).unwrap();
     assert!(runtime.contains("x-setting: desired"));
@@ -652,12 +653,12 @@ async fn desired_and_rollback_restart_failures_report_both_errors() {
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, &format!("x-setting: old\n{behavior}")),
+        &http_controller_yaml(port, &format!("x-setting: old\n{behavior}")),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!("x-setting: desired\n{behavior}  exit-code: 23\n"),
         ),
@@ -699,7 +700,7 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!(
                 "x-setting: old\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n"
@@ -709,7 +710,7 @@ async fn unconfirmed_replacement_stop_never_cleans_or_reuses_its_epoch() {
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!(
                 "x-setting: desired\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n  never-ready: true\n  crash-after-ms: 3000\n  crash-times: 1\n  state-file: '{rejected_state_path}'\n"
@@ -829,7 +830,7 @@ async fn readiness_timeout_with_unconfirmed_stop_preserves_and_quarantines_epoch
     let first = write_named(
         &dir,
         "readiness-timeout-first.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!(
                 "x-setting: old\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n"
@@ -839,7 +840,7 @@ async fn readiness_timeout_with_unconfirmed_stop_preserves_and_quarantines_epoch
     let desired = write_named(
         &dir,
         "readiness-timeout-desired.yaml",
-        &passthrough_yaml(
+        &http_controller_yaml(
             port,
             &format!(
                 "x-setting: desired\nx-fake-core:\n  launch-count-file: '{counter_path}'\n  fail-after-launches: 99\n  never-ready: true\n"
@@ -956,12 +957,12 @@ async fn compensation_publishes_restart_before_replacement_is_ready() {
     let first = write_named(
         &dir,
         "first.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: false\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: false\n{behavior}")),
     );
     let desired = write_named(
         &dir,
         "desired.yaml",
-        &passthrough_yaml(port, &format!("allow-lan: true\n{behavior}")),
+        &http_controller_yaml(port, &format!("allow-lan: true\n{behavior}")),
     );
     let manager = std::sync::Arc::new(manager(&dir, Duration::from_secs(1)).await);
     manager.start(spec(&dir, first)).await.expect("start");

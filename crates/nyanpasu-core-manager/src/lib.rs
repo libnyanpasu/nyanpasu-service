@@ -32,8 +32,7 @@ pub use runtime_store::{
     StagedRuntimeConfig,
 };
 pub use spec::{
-    ControllerMode, CoreSpec, InstanceOptions, InstanceSpec, LocalIpcPolicy, ManagerOptions,
-    ResolvedController,
+    CoreSpec, InstanceOptions, InstanceSpec, LocalIpcPolicy, ManagerOptions, ResolvedController,
 };
 pub use state::{
     ConfigRevision, CoreState, CoreStatus, HealthState, HealthStatus, InstanceState,

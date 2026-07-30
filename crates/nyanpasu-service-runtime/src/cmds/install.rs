@@ -6,7 +6,7 @@ use service_manager::{
 
 use crate::consts::{APP_NAME, SERVICE_LABEL};
 
-use super::CommandError;
+use super::{CommandError, LocalIpcPolicyArg};
 
 /// Every argument may come from its `NYANPASU_*` variable instead; an explicit
 /// flag always wins. Note for callers: `sudo` resets the environment by
@@ -26,6 +26,14 @@ pub struct InstallCommand {
     /// The nyanpasu install directory, allowing to search the sidecar binary
     #[clap(long, env = "NYANPASU_APP_DIR")]
     nyanpasu_app_dir: PathBuf,
+    /// How the installed service reaches the core's control plane
+    #[clap(
+        long,
+        value_enum,
+        default_value = "disable",
+        env = "NYANPASU_LOCAL_IPC_POLICY"
+    )]
+    local_ipc_policy: LocalIpcPolicyArg,
 }
 
 pub fn install(ctx: InstallCommand) -> Result<(), CommandError> {
@@ -123,6 +131,19 @@ pub fn install_with(manager: &dyn ServiceManager, ctx: InstallCommand) -> Result
     Ok(())
 }
 
+/// The kebab-case CLI value the server side parses back.
+///
+/// Spelled out rather than read off `ValueEnum`: this string is written into the
+/// persisted service definition, so it must not change as a side effect of a
+/// derive-macro upgrade. `cmds::tests` pins the round trip.
+pub(super) fn policy_value(policy: LocalIpcPolicyArg) -> &'static str {
+    match policy {
+        LocalIpcPolicyArg::Force => "force",
+        LocalIpcPolicyArg::Prefer => "prefer",
+        LocalIpcPolicyArg::Disable => "disable",
+    }
+}
+
 fn build_install_ctx(
     label: ServiceLabel,
     program: PathBuf,
@@ -141,6 +162,8 @@ fn build_install_ctx(
             ctx.nyanpasu_config_dir.clone().into(),
             OsString::from("--nyanpasu-app-dir"),
             ctx.nyanpasu_app_dir.clone().into(),
+            OsString::from("--local-ipc-policy"),
+            OsString::from(policy_value(ctx.local_ipc_policy)),
             OsString::from("--service"),
         ],
         contents: None,
@@ -167,6 +190,7 @@ mod tests {
                 nyanpasu_data_dir: "data".into(),
                 nyanpasu_config_dir: "config".into(),
                 nyanpasu_app_dir: "app".into(),
+                local_ipc_policy: LocalIpcPolicyArg::Disable,
             },
         );
 
@@ -184,6 +208,7 @@ mod tests {
                 nyanpasu_data_dir: "data".into(),
                 nyanpasu_config_dir: "config".into(),
                 nyanpasu_app_dir: "app".into(),
+                local_ipc_policy: LocalIpcPolicyArg::Disable,
             },
         );
 
@@ -198,6 +223,7 @@ mod tests {
             nyanpasu_data_dir: "data".into(),
             nyanpasu_config_dir: "config".into(),
             nyanpasu_app_dir: "app".into(),
+            local_ipc_policy: LocalIpcPolicyArg::Disable,
         };
         let environment = vec![("HOME".into(), "home".into())];
         let install_ctx = build_install_ctx(
@@ -220,6 +246,8 @@ mod tests {
                 "config",
                 "--nyanpasu-app-dir",
                 "app",
+                "--local-ipc-policy",
+                "disable",
                 "--service",
             ]
             .map(OsString::from)

@@ -19,6 +19,34 @@ mod test_support;
 
 pub use server::SHUTDOWN_TOKEN as SERVER_SHUTDOWN_TOKEN;
 
+/// The CLI spelling of [`nyanpasu_core_manager::LocalIpcPolicy`].
+///
+/// A mirror rather than a `ValueEnum` derive on the manager type: core-manager
+/// is a library the GUI also links, and it must not take a `clap` dependency.
+/// These value names are protocol — `install` writes the chosen one into the
+/// persisted service definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum LocalIpcPolicyArg {
+    /// Require the platform-local transport; refuse to start a core without it.
+    Force,
+    /// Use the platform-local transport when the core supports it, otherwise
+    /// the config's HTTP `external-controller`.
+    Prefer,
+    /// Always use the config's HTTP `external-controller`.
+    Disable,
+}
+
+impl From<LocalIpcPolicyArg> for nyanpasu_core_manager::LocalIpcPolicy {
+    fn from(value: LocalIpcPolicyArg) -> Self {
+        match value {
+            LocalIpcPolicyArg::Force => Self::Force,
+            LocalIpcPolicyArg::Prefer => Self::Prefer,
+            LocalIpcPolicyArg::Disable => Self::Disable,
+        }
+    }
+}
+
 /// Nyanpasu Service, a privileged service for managing the core service.
 ///
 /// The main entry point for the service, Other commands are the control plane for the service.
@@ -266,7 +294,10 @@ mod tests {
             "--nyanpasu-app-dir",
             "app",
         ],
-        // The exact argv `install` writes into the service definition.
+        // The exact argv `install` wrote before S10. It has no
+        // `--local-ipc-policy`, and an upgraded binary must still start from a
+        // service definition containing it — which is what
+        // `the_server_local_ipc_policy_defaults_to_disable` pins.
         &[
             "nyanpasu-service",
             "server",
@@ -357,6 +388,34 @@ mod tests {
             "config.yaml",
         ],
         &["nyanpasu-service", "rpc", "recover-core"],
+        // The exact argv `install` writes after S10.
+        &[
+            "nyanpasu-service",
+            "server",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-app-dir",
+            "app",
+            "--local-ipc-policy",
+            "disable",
+            "--service",
+        ],
+        &[
+            "nyanpasu-service",
+            "install",
+            "--user",
+            "alice",
+            "--nyanpasu-data-dir",
+            "data",
+            "--nyanpasu-config-dir",
+            "config",
+            "--nyanpasu-app-dir",
+            "app",
+            "--local-ipc-policy",
+            "force",
+        ],
     ];
 
     #[test]
@@ -438,6 +497,7 @@ mod tests {
                 ("nyanpasu_data_dir", "NYANPASU_DATA_DIR"),
                 ("nyanpasu_config_dir", "NYANPASU_CONFIG_DIR"),
                 ("nyanpasu_app_dir", "NYANPASU_APP_DIR"),
+                ("local_ipc_policy", "NYANPASU_LOCAL_IPC_POLICY"),
             ]
         );
     }
@@ -502,5 +562,117 @@ mod tests {
             "--nyanpasu-app-dir",
             "app",
         ]));
+    }
+
+    fn server_policy(argv: &[&str]) -> LocalIpcPolicyArg {
+        let cli = Cli::try_parse_from(argv)
+            .unwrap_or_else(|err| panic!("{argv:?} does not parse:\n{err}"));
+        let Some(Commands::Server(ctx)) = cli.command else {
+            panic!("{argv:?} is not a server invocation")
+        };
+        ctx.local_ipc_policy
+    }
+
+    /// The transition default (report §4 P2). Two things ride on it: a service
+    /// definition written before the argument existed keeps starting, and the
+    /// resulting behaviour matches the removed passthrough behavior — the
+    /// config's HTTP controller, never rewritten.
+    #[test]
+    fn the_server_local_ipc_policy_defaults_to_disable() {
+        assert_eq!(
+            server_policy(&[
+                "nyanpasu-service",
+                "server",
+                "--nyanpasu-data-dir",
+                "data",
+                "--nyanpasu-config-dir",
+                "config",
+                "--nyanpasu-app-dir",
+                "app",
+                "--service",
+            ]),
+            LocalIpcPolicyArg::Disable
+        );
+        assert_eq!(
+            nyanpasu_core_manager::LocalIpcPolicy::from(LocalIpcPolicyArg::Disable),
+            nyanpasu_core_manager::LocalIpcPolicy::Disable
+        );
+    }
+
+    /// The CLI value names are kebab-case per the S5 conventions, and each maps
+    /// onto the manager variant of the same name.
+    #[test]
+    fn every_local_ipc_policy_value_parses_and_maps() {
+        use nyanpasu_core_manager::LocalIpcPolicy;
+
+        let cases = [
+            ("force", LocalIpcPolicyArg::Force, LocalIpcPolicy::Force),
+            ("prefer", LocalIpcPolicyArg::Prefer, LocalIpcPolicy::Prefer),
+            (
+                "disable",
+                LocalIpcPolicyArg::Disable,
+                LocalIpcPolicy::Disable,
+            ),
+        ];
+        for (value, arg, manager) in cases {
+            let argv = [
+                "nyanpasu-service",
+                "server",
+                "--nyanpasu-data-dir",
+                "data",
+                "--nyanpasu-config-dir",
+                "config",
+                "--nyanpasu-app-dir",
+                "app",
+                "--local-ipc-policy",
+                value,
+            ];
+            assert_eq!(server_policy(&argv), arg, "{value}");
+            assert_eq!(LocalIpcPolicy::from(arg), manager, "{value}");
+        }
+        assert!(
+            Cli::try_parse_from([
+                "nyanpasu-service",
+                "server",
+                "--nyanpasu-data-dir",
+                "data",
+                "--nyanpasu-config-dir",
+                "config",
+                "--nyanpasu-app-dir",
+                "app",
+                "--local-ipc-policy",
+                "passthrough",
+            ])
+            .is_err(),
+            "an unknown policy must not parse"
+        );
+    }
+
+    /// The string `install` persists into the service definition must be the
+    /// one the server parses back — the two are written out independently on
+    /// purpose (`install::policy_value`).
+    #[test]
+    fn the_persisted_policy_value_is_what_the_server_parses() {
+        for arg in [
+            LocalIpcPolicyArg::Force,
+            LocalIpcPolicyArg::Prefer,
+            LocalIpcPolicyArg::Disable,
+        ] {
+            let value = super::install::policy_value(arg);
+            let argv = [
+                "nyanpasu-service",
+                "server",
+                "--nyanpasu-data-dir",
+                "data",
+                "--nyanpasu-config-dir",
+                "config",
+                "--nyanpasu-app-dir",
+                "app",
+                "--local-ipc-policy",
+                value,
+                "--service",
+            ];
+            assert_eq!(server_policy(&argv), arg, "{value}");
+        }
     }
 }
