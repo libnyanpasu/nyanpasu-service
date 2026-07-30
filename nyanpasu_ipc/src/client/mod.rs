@@ -48,6 +48,9 @@ pub enum ClientError {
         operation: &'static str,
         code: ResponseCode,
         msg: String,
+        /// The envelope's `error_kind`, when the service classified the
+        /// failure. See [`crate::api::error_kind`].
+        error_kind: Option<String>,
     },
     #[error("IPC request `{operation}` succeeded but carried no data")]
     EmptyData { operation: &'static str },
@@ -136,6 +139,7 @@ impl Client {
                 operation,
                 code: envelope.code,
                 msg: envelope.msg.into_owned(),
+                error_kind: envelope.error_kind.map(|kind| kind.into_owned()),
             });
         }
         let body =
@@ -180,6 +184,7 @@ impl Client {
                 operation: Op::PATH,
                 code: envelope.code,
                 msg: envelope.msg.into_owned(),
+                error_kind: envelope.error_kind.map(|kind| kind.into_owned()),
             });
         }
         Ok(envelope)

@@ -10,6 +10,7 @@ use consts::RuntimeInfos;
 pub use events::EventHub;
 pub use logger::Logger;
 pub use manager_bridge::CoreManagerService as CoreManager;
+use nyanpasu_core_manager::LocalIpcPolicy;
 use nyanpasu_ipc::{
     SERVICE_PLACEHOLDER,
     api::ws::events::{Event as WsEvent, TraceLog},
@@ -24,6 +25,7 @@ const SERVER_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 #[instrument(skip(runtime))]
 pub async fn run(
     runtime: RuntimeInfos,
+    local_ipc_policy: LocalIpcPolicy,
     token: CancellationToken,
     #[cfg(windows)] sids: &[&str],
     #[cfg(not(windows))] sids: (),
@@ -31,7 +33,7 @@ pub async fn run(
     let runtime_dir =
         camino::Utf8PathBuf::from_path_buf(crate::utils::dirs::service_core_runtime_dir())
             .map_err(|path| anyhow::anyhow!("core runtime dir is not UTF-8: {}", path.display()))?;
-    let core_manager = CoreManager::new(runtime_dir).await?;
+    let core_manager = CoreManager::new(runtime_dir, local_ipc_policy).await?;
     let hub = EventHub::new();
     core_manager.spawn_bridges(hub.clone());
 

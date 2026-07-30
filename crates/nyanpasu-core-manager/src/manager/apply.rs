@@ -158,7 +158,7 @@ impl CoreManager {
         let resolved = self.resolve_features(&input.core).await?;
         let epoch = current.revision.epoch;
         let prepared = snapshot.prepare_full(
-            &self.inner.options.controller_mode,
+            self.inner.options.controller_template.as_deref(),
             self.inner.store.dir(),
             epoch,
             resolved.runtime,
@@ -528,7 +528,7 @@ impl CoreManager {
                 if let Err(error) = self.inner.store.cleanup_epoch(old_epoch).await {
                     tracing::warn!("failed to clean switched-out epoch: {error}");
                 }
-                Ok(ApplyOutcome::Restarted { revision })
+                Ok(ApplyOutcome::Switched { revision })
             }
             Err(error @ Error::StopUnconfirmed(_)) => {
                 Err(self.latch_quarantine(ctrl, desired.revision.epoch, error))

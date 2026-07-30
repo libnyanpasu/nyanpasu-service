@@ -13,7 +13,7 @@ use specta::Type;
 
 use crate::{
     Error,
-    spec::{ControllerMode, CoreSpec, LocalIpcPolicy},
+    spec::{CoreSpec, LocalIpcPolicy},
 };
 
 /// Functionality the manager actually enabled for an epoch.
@@ -123,7 +123,7 @@ async fn probe_version(binary_path: &camino::Utf8Path) -> Result<String, Error> 
 pub(crate) async fn resolve_features(
     cache: &VersionCache,
     core: &CoreSpec,
-    mode: &ControllerMode,
+    policy: LocalIpcPolicy,
 ) -> Result<ResolvedFeatures, Error> {
     let (capabilities, version) = if core.kind.potential_features().is_empty() {
         (EnumSet::new(), core.version.clone())
@@ -134,7 +134,7 @@ pub(crate) async fn resolve_features(
             Some(version),
         )
     };
-    let runtime = resolve_runtime(mode, core, capabilities, version.as_deref())?;
+    let runtime = resolve_runtime(policy, core, capabilities, version.as_deref())?;
     Ok(ResolvedFeatures {
         capabilities,
         runtime,
@@ -146,19 +146,13 @@ pub(crate) async fn resolve_features(
 /// — before any config is staged, checked, or spawned — when the core cannot
 /// satisfy the platform transport.
 fn resolve_runtime(
-    mode: &ControllerMode,
+    policy: LocalIpcPolicy,
     core: &CoreSpec,
     capabilities: EnumSet<Feature>,
     resolved_version: Option<&str>,
 ) -> Result<EnumSet<RuntimeFeature>, Error> {
-    let ControllerMode::Managed {
-        local_ipc_policy, ..
-    } = mode
-    else {
-        return Ok(EnumSet::new());
-    };
     let local_supported = capabilities.contains(crate::config::LOCAL_TRANSPORT_FEATURE);
-    match (*local_ipc_policy, local_supported) {
+    match (policy, local_supported) {
         (LocalIpcPolicy::Force, false) => Err(Error::RequiredLocalIpcUnsupported {
             kind: core.kind,
             version: resolved_version

@@ -57,7 +57,7 @@ impl EventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nyanpasu_ipc::api::status::CoreState;
+    use nyanpasu_ipc::api::status::{CoreInfos, CoreState, CoreStateDetail};
     use tokio::sync::broadcast::error::TryRecvError;
 
     fn state_event(state: CoreState) -> Event {
@@ -147,6 +147,33 @@ mod tests {
         assert_eq!(
             String::from_utf8(frame).unwrap(),
             r#"{"CoreStateChanged":"Running"}"#
+        );
+    }
+
+    /// The status snapshot frame as `simd_json` writes it. Pinned separately
+    /// from the ipc crate's golden because this is the serializer that actually
+    /// feeds the socket, and the client decodes with `serde_json`: the two must
+    /// agree.
+    #[test]
+    fn ws_status_frames_are_pinned() {
+        let event = Event::new_core_status_changed(CoreInfos {
+            r#type: None,
+            state: CoreState::Stopped(None),
+            state_changed_at: 42,
+            config_path: None,
+            controller: None,
+            health: None,
+            revision: None,
+            detail: Some(CoreStateDetail::Stopped { reason: None }),
+        });
+        let frame = simd_json::to_vec(&event).unwrap();
+        assert_eq!(
+            String::from_utf8(frame).unwrap(),
+            concat!(
+                r#"{"CoreStatusChanged":{"type":null,"state":{"Stopped":null},"#,
+                r#""state_changed_at":42,"config_path":null,"#,
+                r#""detail":{"Stopped":{"reason":null}}}}"#
+            )
         );
     }
 }

@@ -42,13 +42,20 @@ use nyanpasu_ipc::{
     api::{
         RBuilder, ResponseCode,
         core::{
+            apply::{
+                ApplyOutcomeKind, CORE_APPLY_ENDPOINT, CoreApplyData, CoreApplyReq, CoreApplyRes,
+            },
             restart::{CORE_RESTART_ENDPOINT, CoreRestartRes},
             start::{CORE_START_ENDPOINT, CoreStartReq, CoreStartRes},
             stop::{CORE_STOP_ENDPOINT, CoreStopRes},
         },
+        error_kind,
         log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT, LogsRes, LogsResBody},
         network::set_dns::{NETWORK_SET_DNS_ENDPOINT, NetworkSetDnsReq, NetworkSetDnsRes},
-        status::{CoreInfos, CoreState, RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody},
+        status::{
+            ConfigRevisionInfo, CoreInfos, CoreState, CoreStateDetail, RevisionIdInfo,
+            RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody,
+        },
         ws::events::{EVENT_URI, Event, TraceLog},
     },
     client::{Client, ClientError},
@@ -203,6 +210,10 @@ fn test_status_body() -> StatusResBody<'static> {
             state: CoreState::Running,
             state_changed_at: 42,
             config_path: None,
+            controller: None,
+            health: None,
+            revision: None,
+            detail: None,
         },
         runtime_infos: RuntimeInfos {
             service_data_dir: Cow::Owned(PathBuf::from("/srv/data")),
@@ -289,9 +300,13 @@ async fn set_dns_handler(
     (StatusCode::OK, Json(RBuilder::success(())))
 }
 
+/// Mirrors the service's stream: every connection is greeted with one full
+/// snapshot frame, then the live events. No query is inspected — there is no
+/// version to negotiate.
 async fn ws_handler(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(|mut socket: WebSocket| async move {
         let events = [
+            Event::new_core_status_changed(test_snapshot()),
             Event::new_log(TraceLog {
                 timestamp: "2026-01-01T00:00:00Z".to_owned(),
                 level: "INFO".to_owned(),
@@ -312,6 +327,24 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
     })
 }
 
+/// A crash loop: the lossy `state` says stopped, the faithful `detail` says
+/// restarting.
+fn test_snapshot() -> CoreInfos {
+    CoreInfos {
+        r#type: Some(CoreType::Clash(ClashCoreType::Mihomo)),
+        state: CoreState::Stopped(None),
+        state_changed_at: 42,
+        config_path: None,
+        controller: None,
+        health: None,
+        revision: None,
+        detail: Some(CoreStateDetail::Restarting {
+            epoch: 3,
+            attempt: 2,
+        }),
+    }
+}
+
 async fn status_fails_with_500() -> (StatusCode, Json<StatusRes<'static>>) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -324,6 +357,53 @@ async fn status_fails_in_envelope() -> (StatusCode, Json<StatusRes<'static>>) {
         StatusCode::OK,
         Json(RBuilder::other_error(Cow::Borrowed("boom-envelope"))),
     )
+}
+
+async fn apply_config_handler(
+    State(capture): State<SharedCapture>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> (StatusCode, Json<CoreApplyRes<'static>>) {
+    *capture.lock().unwrap() = Some(CapturedRequest {
+        content_type: headers.get(CONTENT_TYPE).cloned(),
+        body,
+    });
+    (
+        StatusCode::OK,
+        Json(RBuilder::success(CoreApplyData {
+            outcome: ApplyOutcomeKind::RolledBack,
+            revision: ConfigRevisionInfo {
+                epoch: 3,
+                generation: 7,
+                source_hash: "src".to_owned(),
+                effective_hash: "eff".to_owned(),
+            },
+            warning: Some("directory sync failed".to_owned()),
+            failed_apply: Some("core failed to start".to_owned()),
+        })),
+    )
+}
+
+async fn apply_config_conflict_handler() -> (StatusCode, Json<CoreApplyRes<'static>>) {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Json(RBuilder::other_error_with_kind(
+            Cow::Borrowed("config revision conflict"),
+            Some(Cow::Borrowed(error_kind::REVISION_CONFLICT)),
+        )),
+    )
+}
+
+fn apply_payload() -> CoreApplyReq<'static> {
+    CoreApplyReq {
+        core_type: Cow::Owned(CoreType::Clash(ClashCoreType::Mihomo)),
+        config_file: Cow::Owned(PathBuf::from("/etc/nyanpasu/config.yaml")),
+        expected_revision: Some(RevisionIdInfo {
+            epoch: 3,
+            generation: 7,
+            effective_hash: "eff".to_owned(),
+        }),
+    }
 }
 
 fn test_router(state: Shared) -> Router {
@@ -428,6 +508,11 @@ async fn rest_roundtrip() {
     cleanup(&placeholder);
 }
 
+/// The event stream end to end over the real transport: the snapshot the
+/// service pushes on connect arrives first and decodes through the unchanged
+/// `EventStream` path, and both legacy variants keep flowing behind it — the
+/// dual emission the GUI still consumes. A regression that reintroduced a
+/// version parameter would fail here first: `events()` requests the bare URI.
 #[tokio::test]
 async fn events_roundtrip() {
     let placeholder = format!("nyanpasu-ipc-test-{}-events", std::process::id());
@@ -441,8 +526,27 @@ async fn events_roundtrip() {
     let event = events
         .next()
         .await
-        .expect("stream should yield a first event")
-        .expect("first event should decode");
+        .expect("stream should yield a snapshot first")
+        .expect("snapshot should decode");
+    match event {
+        Event::CoreStatusChanged(infos) => {
+            assert!(matches!(infos.state, CoreState::Stopped(None)));
+            assert_eq!(
+                infos.detail,
+                Some(CoreStateDetail::Restarting {
+                    epoch: 3,
+                    attempt: 2
+                })
+            );
+        }
+        other => panic!("expected a status snapshot, got: {other:?}"),
+    }
+
+    let event = events
+        .next()
+        .await
+        .expect("stream should yield the log event")
+        .expect("log event should decode");
     match event {
         Event::Log(log) => {
             assert_eq!(log.message, "hello events");
@@ -455,8 +559,8 @@ async fn events_roundtrip() {
     let event = events
         .next()
         .await
-        .expect("stream should yield a second event")
-        .expect("second event should decode");
+        .expect("stream should yield the legacy state event")
+        .expect("legacy state event should decode");
     match event {
         Event::CoreStateChanged(CoreState::Stopped(Some(reason))) => {
             assert_eq!(reason, "bye");
@@ -563,6 +667,70 @@ async fn json_posts_send_the_exact_payload() {
     );
     let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
     assert_eq!(body, serde_json::to_value(&payload).unwrap());
+
+    let _ = shutdown.send(());
+    cleanup(&placeholder);
+}
+
+/// A rolled-back apply crosses the transport as a success carrying the old
+/// revision — the client must not need the envelope code to tell it apart.
+#[tokio::test]
+async fn apply_config_roundtrip() {
+    let placeholder = format!("nyanpasu-ipc-test-{}-apply", std::process::id());
+    let capture = SharedCapture::default();
+    let router = Router::new()
+        .route(STATUS_ENDPOINT, get(status_handler))
+        .route(CORE_APPLY_ENDPOINT, post(apply_config_handler))
+        .with_state(capture.clone());
+    let Some((shutdown, client)) = run_server(&placeholder, router).await else {
+        return;
+    };
+    let payload = apply_payload();
+
+    let data = client
+        .apply_config(&payload)
+        .await
+        .expect("apply_config should succeed");
+    assert_eq!(data.outcome, ApplyOutcomeKind::RolledBack);
+    assert_eq!(data.revision.generation, 7);
+    assert_eq!(data.warning.as_deref(), Some("directory sync failed"));
+    assert_eq!(data.failed_apply.as_deref(), Some("core failed to start"));
+
+    let captured = capture.lock().unwrap();
+    let request = captured.as_ref().expect("request should be captured");
+    let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+    assert_eq!(body, serde_json::to_value(&payload).unwrap());
+    drop(captured);
+
+    let _ = shutdown.send(());
+    cleanup(&placeholder);
+}
+
+/// The envelope's `error_kind` has to reach the caller, or classifying failures
+/// server-side buys nothing.
+#[tokio::test]
+async fn a_server_error_kind_reaches_the_client() {
+    let placeholder = format!("nyanpasu-ipc-test-{}-kind", std::process::id());
+    let router = Router::new()
+        .route(STATUS_ENDPOINT, get(status_handler))
+        .route(CORE_APPLY_ENDPOINT, post(apply_config_conflict_handler));
+    let Some((shutdown, client)) = run_server(&placeholder, router).await else {
+        return;
+    };
+
+    match client.apply_config(&apply_payload()).await {
+        Err(ClientError::Server {
+            code,
+            msg,
+            error_kind,
+            ..
+        }) => {
+            assert_eq!(code, ResponseCode::OtherError);
+            assert_eq!(msg, "config revision conflict");
+            assert_eq!(error_kind.as_deref(), Some("revision_conflict"));
+        }
+        other => panic!("expected a classified server error, got: {other:?}"),
+    }
 
     let _ = shutdown.send(());
     cleanup(&placeholder);

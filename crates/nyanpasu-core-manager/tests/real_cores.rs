@@ -59,7 +59,7 @@ fn write_proxy_config(bed: &TestBed, extra: &str) -> Utf8PathBuf {
 async fn start_bed(core: &RealCore, policy: LocalIpcPolicy) -> (TestBed, CoreManager) {
     let bed = bed().await;
     let config = write_proxy_config(&bed, "");
-    let manager = real::managed_manager(&bed.dir, policy).await;
+    let manager = real::manager_with_policy(&bed.dir, policy).await;
     manager
         .start(real::real_spec(core, &bed.dir, config))
         .await
@@ -225,8 +225,8 @@ async fn config_update(core: RealCore) {
             "mihomo log-level change should patch in place, got {outcome:?}"
         ),
         _ => assert!(
-            matches!(outcome, ApplyOutcome::Restarted { .. }),
-            "{} log-level change should restart, got {outcome:?}",
+            matches!(outcome, ApplyOutcome::Switched { .. }),
+            "{} log-level change should switch, got {outcome:?}",
             core.name
         ),
     }
@@ -265,8 +265,8 @@ async fn config_update(core: RealCore) {
             "mihomo mixed-port change should patch in place, got {outcome:?}"
         ),
         _ => assert!(
-            matches!(outcome, ApplyOutcome::Restarted { .. }),
-            "{} mixed-port change should restart, got {outcome:?}",
+            matches!(outcome, ApplyOutcome::Switched { .. }),
+            "{} mixed-port change should switch, got {outcome:?}",
             core.name
         ),
     }
@@ -326,7 +326,7 @@ async fn ipc_mode_start(core: RealCore, policy: LocalIpcPolicy, expect_local: bo
             "got {outcome:?}"
         ),
         _ => assert!(
-            matches!(outcome, ApplyOutcome::Restarted { .. }),
+            matches!(outcome, ApplyOutcome::Switched { .. }),
             "got {outcome:?}"
         ),
     }
@@ -339,7 +339,7 @@ async fn ipc_mode_force_rejected(core: RealCore) {
     let _serial = real::serial_lock().await;
     let bed = bed().await;
     let config = write_proxy_config(&bed, "");
-    let manager = real::managed_manager(&bed.dir, LocalIpcPolicy::Force).await;
+    let manager = real::manager_with_policy(&bed.dir, LocalIpcPolicy::Force).await;
     let error = manager
         .start(real::real_spec(&core, &bed.dir, config))
         .await

@@ -9,8 +9,8 @@ use std::{
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
-    ControllerMode, CoreKind, CoreManager, CoreState, Error, Feature, Host, LocalIpcPolicy,
-    ManagerOptions, RuntimeFeature,
+    CoreKind, CoreManager, CoreState, Error, Feature, Host, LocalIpcPolicy, ManagerOptions,
+    RuntimeFeature,
 };
 
 fn unique_template() -> Option<String> {
@@ -25,17 +25,15 @@ fn unique_template() -> Option<String> {
     }
     #[cfg(not(windows))]
     {
-        None
+        None // unix default derives the socket under the runtime dir (already unique)
     }
 }
 
-async fn managed_manager(runtime_dir: Utf8PathBuf, policy: LocalIpcPolicy) -> CoreManager {
+async fn manager_with_policy(runtime_dir: Utf8PathBuf, policy: LocalIpcPolicy) -> CoreManager {
     CoreManager::new(ManagerOptions {
-        controller_mode: ControllerMode::Managed {
-            derived_dir: runtime_dir,
-            controller_template: unique_template(),
-            local_ipc_policy: policy,
-        },
+        runtime_dir: Some(runtime_dir),
+        local_ipc_policy: policy,
+        controller_template: unique_template(),
         ..ManagerOptions::default()
     })
     .await
@@ -120,7 +118,7 @@ async fn force_rejects_unsupported_mihomo_before_staging_check_or_spawn() {
     );
     let mut spec = common::mihomo_spec(&dir, config);
     spec.core.version = Some(unsupported_mihomo_version().into());
-    let manager = managed_manager(runtime.clone(), LocalIpcPolicy::Force).await;
+    let manager = manager_with_policy(runtime.clone(), LocalIpcPolicy::Force).await;
 
     let error = manager.start(spec).await.expect_err("Force must reject");
 
@@ -151,7 +149,7 @@ async fn force_rejects_clash_premium_without_probing_its_version() {
     spec.core.kind = CoreKind::ClashPremium;
     spec.core.binary_path = binary.clone();
     spec.core.version = None;
-    let manager = managed_manager(runtime.clone(), LocalIpcPolicy::Force).await;
+    let manager = manager_with_policy(runtime.clone(), LocalIpcPolicy::Force).await;
 
     let error = manager.start(spec).await.expect_err("Force must reject");
 
@@ -180,7 +178,7 @@ async fn prefer_falls_back_to_the_upstream_http_controller_and_secret() {
     );
     let mut spec = common::mihomo_spec(&dir, config);
     spec.core.version = Some(unsupported_mihomo_version().into());
-    let manager = managed_manager(runtime, LocalIpcPolicy::Prefer).await;
+    let manager = manager_with_policy(runtime, LocalIpcPolicy::Prefer).await;
 
     manager.start(spec).await.expect("Prefer HTTP fallback");
 
@@ -210,7 +208,7 @@ async fn disable_uses_http_even_when_local_ipc_is_supported() {
             source_local_controller(&dir)
         ),
     );
-    let manager = managed_manager(dir.join("runtime"), LocalIpcPolicy::Disable).await;
+    let manager = manager_with_policy(dir.join("runtime"), LocalIpcPolicy::Disable).await;
 
     manager
         .start(common::mihomo_spec(&dir, config))
@@ -234,7 +232,7 @@ async fn force_uses_only_local_ipc_and_retains_the_secret() {
         &dir,
         &format!("external-controller: 127.0.0.1:{port}\nsecret: retained-secret\n"),
     );
-    let manager = managed_manager(dir.join("runtime"), LocalIpcPolicy::Force).await;
+    let manager = manager_with_policy(dir.join("runtime"), LocalIpcPolicy::Force).await;
 
     manager
         .start(common::mihomo_spec(&dir, config))
@@ -273,7 +271,7 @@ async fn version_probe_is_cached_by_path_and_mtime_and_supplied_versions_skip_it
     let mut probed = common::mihomo_spec(&dir, config.clone());
     probed.core.binary_path = binary.clone();
     probed.core.version = None;
-    let manager = managed_manager(dir.join("runtime"), LocalIpcPolicy::Force).await;
+    let manager = manager_with_policy(dir.join("runtime"), LocalIpcPolicy::Force).await;
 
     manager.start(probed.clone()).await.unwrap();
     manager.stop().await.unwrap();
@@ -299,7 +297,7 @@ async fn version_probe_is_cached_by_path_and_mtime_and_supplied_versions_skip_it
     let mut supplied = common::mihomo_spec(&dir, config);
     supplied.core.binary_path = supplied_binary.clone();
     let supplied_manager =
-        managed_manager(dir.join("supplied-runtime"), LocalIpcPolicy::Force).await;
+        manager_with_policy(dir.join("supplied-runtime"), LocalIpcPolicy::Force).await;
     supplied_manager.start(supplied).await.unwrap();
     supplied_manager.shutdown().await.unwrap();
     assert_eq!(probe_count(&supplied_binary), 0);
