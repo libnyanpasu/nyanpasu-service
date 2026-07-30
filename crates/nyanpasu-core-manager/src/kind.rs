@@ -1,8 +1,9 @@
 //! Core kinds, launch profiles, and config checking.
 
-use std::ffi::OsString;
+use std::{ffi::OsString, time::Duration};
 
 use camino::Utf8Path;
+use nyanpasu_utils::process::ProcessError;
 
 use crate::{error::Error, log::summarize_output};
 
@@ -74,9 +75,37 @@ pub fn mihomo_safe_paths(working_dir: &Utf8Path, config_dir: &Utf8Path) -> Strin
     [working_dir.as_str(), config_dir.as_str()].join(SAFE_PATHS_SEPARATOR)
 }
 
+/// Upper bound on a single `-t` validation run.
+///
+/// A `-t` run parses a config and exits; it never serves traffic, so a core that
+/// has not answered in this long is wedged, not slow. The bound covers every
+/// caller — `/core/check`, the staged check inside `apply_config`
+/// (`manager/apply.rs:174`) and the pre-flight checks on the start and switch
+/// paths (`manager/switching.rs:431,492,496`, which run while the control lock
+/// is held) — and sits far enough under the service's 120s request bound
+/// (`routing/middleware.rs:31`) that the caller receives this error rather than
+/// a dropped future.
+pub const CHECK_CONFIG_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// One-shot `-t` config validation, replacing the legacy `check_config_`.
-/// A non-zero exit becomes [`Error::ConfigCheckFailed`] with a condensed message.
+/// A non-zero exit becomes [`Error::ConfigCheckFailed`] with a condensed message,
+/// and so does a run that exceeds [`CHECK_CONFIG_TIMEOUT`].
 pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error> {
+    run_check(spec, CHECK_CONFIG_TIMEOUT).await
+}
+
+/// [`check_config`] with an explicit bound. Public only under `test-hooks`:
+/// production has exactly one bound, and a test that had to wait
+/// [`CHECK_CONFIG_TIMEOUT`] to observe the timeout would not be worth running.
+#[cfg(feature = "test-hooks")]
+pub async fn check_config_within(
+    spec: &crate::spec::InstanceSpec,
+    timeout: Duration,
+) -> Result<(), Error> {
+    run_check(spec, timeout).await
+}
+
+async fn run_check(spec: &crate::spec::InstanceSpec, timeout: Duration) -> Result<(), Error> {
     let config_dir = spec
         .config_path
         .parent()
@@ -88,8 +117,20 @@ pub async fn check_config(spec: &crate::spec::InstanceSpec) -> Result<(), Error>
             mihomo_safe_paths(&spec.working_dir, config_dir),
         )
         .env(CLICOLOR_FORCE_ENV_NAME, "0")
+        .timeout(timeout)
         .output()
-        .await?;
+        .await
+        .map_err(|error| match error {
+            // The process tree is already killed by the time this arrives
+            // (`Command::timeout`). Reported as a check failure rather than a
+            // process error because that is what the caller asked about: the
+            // config did not validate. Same wire kind (`config_check_failed`),
+            // and the message names the bound so a slow core is diagnosable.
+            ProcessError::Timeout { after } => {
+                Error::ConfigCheckFailed(format!("config check timed out after {after:?}"))
+            }
+            other => Error::Process(other),
+        })?;
     if output.success() {
         return Ok(());
     }

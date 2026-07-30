@@ -390,8 +390,8 @@ async fn applying_to_a_stopped_core_reports_not_started_with_its_kind() {
 }
 
 /// An unresolvable config path is answered in the envelope, not by a panic the
-/// catch layer has to convert — and with no kind, because there is no manager
-/// error to classify.
+/// catch layer has to convert — and with the kind that says which of the two
+/// paths in the request was the bad one.
 #[tokio::test]
 async fn checking_an_unresolvable_config_answers_in_the_envelope() {
     let env = TestEnv::new().await;
@@ -411,10 +411,44 @@ async fn checking_an_unresolvable_config_answers_in_the_envelope() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let envelope: CoreCheckRes<'static> = body_of(response).await;
     assert_eq!(envelope.code, ResponseCode::OtherError);
-    assert!(envelope.error_kind.is_none());
+    assert_eq!(envelope.error_kind.as_deref(), Some("config_not_found"));
     assert!(
         envelope.msg.contains("nope.yaml"),
         "the failure must name the path: {}",
+        envelope.msg
+    );
+}
+
+/// The mirror image of the fixture above: the config resolves and the binary
+/// does not. Both failures reach the client through the same envelope, and the
+/// kind is what tells them apart without parsing the message.
+#[tokio::test]
+async fn applying_without_a_core_binary_reports_binary_not_found() {
+    let env = TestEnv::new().await;
+    let core_type = CoreType::Clash(ClashCoreType::Mihomo);
+    let data_dir = &env.state.runtime.nyanpasu_data_dir;
+    std::fs::create_dir_all(data_dir).unwrap();
+    let config = data_dir.join("config.yaml");
+    std::fs::write(&config, b"mixed-port: 7890\n").unwrap();
+
+    let response = post_json(
+        env.state.clone(),
+        CoreApply::PATH,
+        &CoreApplyReq {
+            core_type: Cow::Borrowed(&core_type),
+            config_file: Cow::Borrowed(&config),
+            expected_revision: None,
+        },
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let envelope: CoreApplyRes<'static> = body_of(response).await;
+    assert_eq!(envelope.code, ResponseCode::OtherError);
+    assert_eq!(envelope.error_kind.as_deref(), Some("binary_not_found"));
+    assert!(
+        envelope.msg.contains(core_type.get_executable_name()),
+        "the failure must name the binary: {}",
         envelope.msg
     );
 }

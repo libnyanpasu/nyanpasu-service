@@ -22,14 +22,21 @@ use nyanpasu_ipc::api::{
     ws::events::Event as WsEvent,
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
-use parking_lot::RwLock;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::{Semaphore, broadcast::error::RecvError, watch};
 use tracing::instrument;
 
 use super::{consts::RuntimeInfos, events::EventHub};
 
 const CORE_LOG_TARGET: &str = "nyanpasu_service::core";
+
+/// Concurrent `/core/check` operations a service will run. Each one spawns a
+/// core binary, so this is a resource bound, not a fairness knob: two lets an
+/// honest client fire a second check while the first is running, and refuses
+/// the flood a third would begin. Per-service rather than a `static` so the
+/// bound is testable without the runtime crate's tests interfering with each
+/// other.
+const MAX_CONCURRENT_CHECKS: usize = 2;
 
 /// Legacy wire strings the GUI branches on. These are protocol, not
 /// diagnostics: changing any of them is a breaking change to clash-nyanpasu.
@@ -54,6 +61,15 @@ impl OpError {
     fn plain(message: impl Into<String>) -> Self {
         Self {
             kind: None,
+            message: message.into(),
+        }
+    }
+
+    /// A failure the service *can* classify, where the classification is a fact
+    /// about the failure and not a guess about its cause.
+    fn with_kind(kind: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            kind: Some(kind),
             message: message.into(),
         }
     }
@@ -91,13 +107,18 @@ impl From<anyhow::Error> for OpError {
 struct Inner {
     manager: Manager,
     /// Wire-type echo: the manager knows nothing about the alpha variants.
-    /// Behind an `Arc` so the state bridge can read it without capturing the
-    /// whole adapter — an `Arc<Inner>` inside that task would keep the manager
-    /// alive, so its watch channel would never close and the task would never
-    /// exit.
-    requested_core: Arc<RwLock<Option<CoreType>>>,
+    ///
+    /// A watch channel rather than a lock, because committing the echo has to be
+    /// *observable*: it is the only signal a connected v2 client has that the
+    /// type it was last told about changed, and the manager will not publish a
+    /// transition on its behalf. The bridge task holds only a receiver — an
+    /// `Arc<Inner>` inside that task would keep the manager alive, so its watch
+    /// channel would never close and the task would never exit.
+    requested_core: watch::Sender<Option<CoreType>>,
     /// Serializes adapter-level control ops and carries the closing latch.
     control: tokio::sync::Mutex<ControlState>,
+    /// F2 lands here too; see §2.2.
+    check_slots: Semaphore,
 }
 
 struct ControlState {
@@ -123,49 +144,21 @@ impl CoreManagerService {
         Ok(Self {
             inner: Arc::new(Inner {
                 manager,
-                requested_core: Arc::new(RwLock::new(None)),
+                requested_core: watch::Sender::new(None),
                 control: tokio::sync::Mutex::new(ControlState { closing: false }),
+                check_slots: Semaphore::new(MAX_CONCURRENT_CHECKS),
             }),
         })
     }
 
     /// State → ws events and core logs → tracing.
     pub fn spawn_bridges(&self, hub: EventHub) {
-        let mut states = self.inner.manager.subscribe();
-        // Only the echo is cloned in, never the whole adapter: see `Inner`.
-        let requested_core = self.inner.requested_core.clone();
-        tokio::spawn(async move {
-            let raw = states.borrow_and_update().clone();
-            let mut last = map_core_state(&raw.state);
-            while states.changed().await.is_ok() {
-                let raw = states.borrow_and_update().clone();
-                let next = map_core_state(&raw.state);
-                // v2 leads and is never suppressed: it carries every manager
-                // transition, including the ones the two-valued v1 state cannot
-                // express (Starting, Restarting, and the Stopping/Switching
-                // arrivals the guards below drop). Emitting it here rather than
-                // after the guards is what keeps the v1 path below untouched.
-                // Deliberately no `tracing::info!` for it — that would re-enter
-                // the hub as an `Event::Log` and change what v1 streams carry.
-                let requested = requested_core.read().clone();
-                hub.send(WsEvent::new_core_status_changed(project_core_infos(
-                    &raw, requested,
-                )));
-                if matches!(
-                    raw.state,
-                    ManagerCoreState::Stopping { .. } | ManagerCoreState::Switching { .. }
-                ) && matches!(last, CoreState::Stopped(_))
-                {
-                    continue;
-                }
-                if same_ipc_state(&last, &next) {
-                    continue;
-                }
-                tracing::info!("State changed: {:?}", next);
-                hub.send(WsEvent::new_core_state_changed(next.clone()));
-                last = next;
-            }
-        });
+        // Only the two receivers are moved in, never the adapter: see `Inner`.
+        tokio::spawn(status_bridge(
+            self.inner.manager.subscribe(),
+            self.inner.requested_core.subscribe(),
+            hub,
+        ));
 
         let mut logs = self.inner.manager.subscribe_logs();
         tokio::spawn(async move {
@@ -216,7 +209,9 @@ impl CoreManagerService {
         ) {
             anyhow::bail!(MSG_CORE_ALREADY_RUNNING);
         }
-        let spec = self.instance_spec(infos, core_type, config_path)?;
+        let spec = self
+            .instance_spec(infos, core_type, config_path)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
         tracing::info!(
             core_type = %core_type,
             kind = %spec.core.kind,
@@ -226,7 +221,7 @@ impl CoreManagerService {
             "Starting Core"
         );
         self.inner.manager.start(spec).await?;
-        *self.inner.requested_core.write() = Some(core_type.clone());
+        self.publish_requested_core(Some(core_type));
         Ok(())
     }
 
@@ -272,7 +267,7 @@ impl CoreManagerService {
         if control.closing {
             return Err(OpError::plain("service is shutting down"));
         }
-        let config_path = canonical_config_path(config_file)?;
+        let config_path = canonical_config_path(config_file).await?;
         let spec = self.instance_spec(infos, core_type, config_path)?;
         let outcome = self
             .inner
@@ -287,10 +282,11 @@ impl CoreManagerService {
             "Applied config"
         );
         // A rollback put the *old* spec back, so the wire echo must not claim
-        // the core type that was asked for.
-        if data.outcome != ApplyOutcomeKind::RolledBack {
-            *self.inner.requested_core.write() = Some(core_type.clone());
-        }
+        // the core type that was asked for — but the snapshot still moved, so
+        // publish either way.
+        self.publish_requested_core(
+            (data.outcome != ApplyOutcomeKind::RolledBack).then_some(core_type),
+        );
         Ok(data)
     }
 
@@ -311,7 +307,15 @@ impl CoreManagerService {
                 return Err(OpError::plain("service is shutting down"));
             }
         }
-        let config_path = canonical_config_path(config_file)?;
+        // Refused, not queued: waiting would convert a flood into a backlog of
+        // futures that each still intend to spawn a core, and the caller would
+        // learn nothing until its request timed out.
+        let _slot = self.inner.check_slots.try_acquire().map_err(|_| {
+            OpError::plain(format!(
+                "at most {MAX_CONCURRENT_CHECKS} config checks may run at once; retry"
+            ))
+        })?;
+        let config_path = canonical_config_path(config_file).await?;
         let spec = self.instance_spec(infos, core_type, config_path)?;
         self.inner.manager.check_config(&spec).await?;
         Ok(())
@@ -332,23 +336,57 @@ impl CoreManagerService {
     pub async fn status(&self) -> CoreInfos {
         project_core_infos(
             &self.inner.manager.status(),
-            self.inner.requested_core.read().clone(),
+            self.inner.requested_core.borrow().clone(),
         )
     }
 
+    /// Publish the wire-type echo the bridge projects into v2 snapshots.
+    ///
+    /// `Some` commits a new type, `None` republishes the current one; either way
+    /// the send notifies, which is the point. A rolled-back apply must not move
+    /// the echo but still moved the revision and possibly the state, so its
+    /// clients need the fresh snapshot too.
+    ///
+    /// `send_modify`, never `send`: `send` fails when nothing is subscribed and
+    /// does not store the value, so a service whose bridges were never spawned
+    /// would silently lose the echo and report `"type": null` from `/status`
+    /// forever.
+    fn publish_requested_core(&self, committed: Option<&CoreType>) {
+        self.inner.requested_core.send_modify(|echo| {
+            if let Some(core_type) = committed {
+                *echo = Some(core_type.clone());
+            }
+        });
+    }
+
+    /// The manager-facing spec for a wire request.
+    ///
+    /// Returns `OpError` rather than `anyhow::Error` because this is where the
+    /// binary lookup fails, and `find_binary_path`'s only possible error is a
+    /// missing binary (`:601-616`) — a fact worth classifying. The other two
+    /// failures here (a non-UTF-8 directory, an unsupported core kind) stay
+    /// unclassified on purpose.
     fn instance_spec(
         &self,
         infos: &RuntimeInfos,
         core_type: &CoreType,
         config_path: Utf8PathBuf,
-    ) -> Result<InstanceSpec, anyhow::Error> {
+    ) -> Result<InstanceSpec, OpError> {
         let working_dir =
             Utf8PathBuf::from_path_buf(infos.nyanpasu_data_dir.clone()).map_err(|path| {
-                anyhow::anyhow!("nyanpasu data dir is not UTF-8: {}", path.display())
+                OpError::plain(format!(
+                    "nyanpasu data dir is not UTF-8: {}",
+                    path.display()
+                ))
             })?;
-        let binary_path = Utf8PathBuf::from_path_buf(find_binary_path(infos, core_type)?)
-            .map_err(|path| anyhow::anyhow!("core binary path is not UTF-8: {}", path.display()))?;
-        let kind = core_kind(core_type)?;
+        let binary_path = find_binary_path(infos, core_type)
+            .map_err(|error| OpError::with_kind(error_kind::BINARY_NOT_FOUND, error.to_string()))
+            .and_then(|path| {
+                Utf8PathBuf::from_path_buf(path).map_err(|path| {
+                    OpError::plain(format!("core binary path is not UTF-8: {}", path.display()))
+                })
+            })?;
+        let kind = core_kind(core_type).map_err(|error| OpError::plain(error.to_string()))?;
         Ok(InstanceSpec {
             core: CoreSpec {
                 kind,
@@ -362,6 +400,85 @@ impl CoreManagerService {
             pid_file: None,
             options: InstanceOptions::default(),
         })
+    }
+}
+
+/// Manager transitions and requested-type commits → ws events.
+///
+/// Two sources, one emitter. `states` carries the manager's own snapshots and is
+/// the sole input to the v1 `CoreStateChanged` stream, whose guards below are
+/// unchanged. `requested_core` carries the adapter's wire-type echo, which the
+/// manager knows nothing about: without watching it, a client connected over v2
+/// would keep the type it was last told about until the manager's next
+/// transition, because committing the echo publishes nothing by itself.
+///
+/// Ordering, stated honestly: every frame is a snapshot of state observed at or
+/// after the change that woke this task, and after any quiescent moment the last
+/// frame carries the committed values. It is not a 1:1 log of changes — `watch`
+/// coalesces, and when both sources move at once the two arms can emit two
+/// `CoreStatusChanged` frames carrying the same status. Snapshots are
+/// idempotent, so that is harmless.
+///
+/// This is a free function, not a closure, for two reasons: it must not capture
+/// `Arc<Inner>` (its only exit condition is the manager's watch channel closing,
+/// which cannot happen while the manager is alive), and a test can drive it with
+/// hand-built channels.
+async fn status_bridge(
+    mut states: watch::Receiver<CoreStatus>,
+    mut requested_core: watch::Receiver<Option<CoreType>>,
+    hub: EventHub,
+) {
+    let raw = states.borrow_and_update().clone();
+    let mut last = map_core_state(&raw.state);
+    loop {
+        tokio::select! {
+            changed = states.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                let raw = states.borrow_and_update().clone();
+                let next = map_core_state(&raw.state);
+                // v2 leads and is never suppressed: it carries every manager
+                // transition, including the ones the two-valued v1 state cannot
+                // express (Starting, Restarting, and the Stopping/Switching
+                // arrivals the guards below drop). Emitting it here rather than
+                // after the guards is what keeps the v1 path below untouched.
+                // Deliberately no `tracing::info!` for it — that would re-enter
+                // the hub as an `Event::Log` and change what v1 streams carry.
+                let requested = requested_core.borrow_and_update().clone();
+                hub.send(WsEvent::new_core_status_changed(project_core_infos(
+                    &raw, requested,
+                )));
+                if matches!(
+                    raw.state,
+                    ManagerCoreState::Stopping { .. } | ManagerCoreState::Switching { .. }
+                ) && matches!(last, CoreState::Stopped(_))
+                {
+                    continue;
+                }
+                if same_ipc_state(&last, &next) {
+                    continue;
+                }
+                tracing::info!("State changed: {:?}", next);
+                hub.send(WsEvent::new_core_state_changed(next.clone()));
+                last = next;
+            }
+            changed = requested_core.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                // The echo moved without the manager moving, so this refreshes
+                // the v2 snapshot and nothing else — v1 carries no type and has
+                // no transition to report. `states.borrow()`, never
+                // `borrow_and_update`: marking a manager transition seen here
+                // would swallow it from the v1 path above.
+                let raw = states.borrow().clone();
+                let requested = requested_core.borrow_and_update().clone();
+                hub.send(WsEvent::new_core_status_changed(project_core_infos(
+                    &raw, requested,
+                )));
+            }
+        }
     }
 }
 
@@ -620,21 +737,36 @@ fn find_binary_path(infos: &RuntimeInfos, core_type: &CoreType) -> std::io::Resu
 /// Same shape as `start`'s inline version: canonicalizing makes the source path
 /// a stable identity, and `dunce::simplified` strips the Windows `\\?\` prefix
 /// the core's own command line cannot use. Canonicalization is also the
-/// existence check.
-fn canonical_config_path(config_file: &Path) -> Result<Utf8PathBuf, OpError> {
-    let canonical = config_file.canonicalize().map_err(|error| {
-        OpError::plain(format!(
-            "failed to resolve config path {}: {error}",
-            config_file.display()
-        ))
-    })?;
+/// existence check, which is why `NotFound` is classified here and nothing else
+/// is: any other io error is a permission or device failure this layer cannot
+/// name without guessing. The path stays in the message — the caller supplied
+/// it and it is the only way to tell which of two paths failed.
+async fn canonical_config_path(config_file: &Path) -> Result<Utf8PathBuf, OpError> {
+    let canonical = tokio::fs::canonicalize(config_file)
+        .await
+        .map_err(|error| {
+            let message = format!(
+                "failed to resolve config path {}: {error}",
+                config_file.display()
+            );
+            match error.kind() {
+                std::io::ErrorKind::NotFound => {
+                    OpError::with_kind(error_kind::CONFIG_NOT_FOUND, message)
+                }
+                _ => OpError::plain(message),
+            }
+        })?;
     Utf8PathBuf::from_path_buf(dunce::simplified(&canonical).to_path_buf())
         .map_err(|path| OpError::plain(format!("config path is not UTF-8: {}", path.display())))
 }
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use nyanpasu_core_manager::StopReason;
+    use nyanpasu_ipc::api::ws::events::Event as TestEvent;
+    use tokio::sync::watch;
 
     use super::*;
 
@@ -1148,6 +1280,214 @@ mod tests {
             controller: None,
             revision: None,
         }
+    }
+
+    fn mihomo() -> CoreType {
+        CoreType::Clash(ClashCoreType::Mihomo)
+    }
+
+    /// The `type` a `CoreStatusChanged` frame carries, or a panic naming what
+    /// arrived instead.
+    fn status_frame_type(event: TestEvent) -> Option<CoreType> {
+        match event {
+            TestEvent::CoreStatusChanged(infos) => infos.r#type,
+            other => panic!("expected a CoreStatusChanged frame, got {other:?}"),
+        }
+    }
+
+    async fn test_service() -> (tempfile::TempDir, CoreManagerService) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let runtime_dir = Utf8PathBuf::from_path_buf(dir.path().join("core-runtime"))
+            .expect("temp path is UTF-8");
+        let service = CoreManagerService::new(runtime_dir, LocalIpcPolicy::Disable)
+            .await
+            .expect("the manager builds on a fresh runtime dir");
+        (dir, service)
+    }
+
+    fn test_infos(root: &std::path::Path) -> RuntimeInfos {
+        RuntimeInfos {
+            service_data_dir: root.join("service-data"),
+            service_config_dir: root.join("service-config"),
+            nyanpasu_config_dir: root.join("nyanpasu-config"),
+            nyanpasu_data_dir: root.join("nyanpasu-data"),
+            nyanpasu_app_dir: root.join("nyanpasu-app"),
+        }
+    }
+
+    /// The review finding, pinned: committing the echo has to reach a client
+    /// that is already connected. The manager publishes nothing when the
+    /// adapter's wire-type echo moves, so before this the frames from a
+    /// cross-core apply carried the *previous* type until the next transition.
+    #[tokio::test]
+    async fn committing_the_requested_type_publishes_a_fresh_v2_snapshot() {
+        let states = watch::Sender::new(status_of(ManagerCoreState::Stopped { reason: None }));
+        let requested = watch::Sender::new(None);
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let task = tokio::spawn(status_bridge(
+            states.subscribe(),
+            requested.subscribe(),
+            hub.clone(),
+        ));
+        tokio::task::yield_now().await;
+
+        // A manager transition with no echo yet: v2 leads, v1 follows.
+        states.send_replace(status_of(ManagerCoreState::Running { epoch: 1, pid: 7 }));
+        assert_eq!(status_frame_type(events.recv().await.unwrap()), None);
+        assert!(matches!(
+            events.recv().await.unwrap(),
+            TestEvent::CoreStateChanged(CoreState::Running)
+        ));
+
+        // The commit: one v2 snapshot carrying the committed type, and no v1
+        // frame — v1 has no type and no transition to report.
+        requested.send_replace(Some(mihomo()));
+        assert_eq!(
+            status_frame_type(events.recv().await.unwrap()),
+            Some(mihomo())
+        );
+
+        // Closing the manager's channel ends the task, so anything it was going
+        // to send has been sent: the emptiness below is a fact, not a race.
+        drop(states);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the bridge must exit when the manager drops")
+            .expect("the bridge must not panic");
+        assert!(
+            events.try_recv().is_err(),
+            "the echo commit must not produce a v1 frame"
+        );
+    }
+
+    /// A rolled-back apply must not move the echo, but its clients still need
+    /// the snapshot: the revision moved even though the type did not. The
+    /// adapter republishes the unchanged value, which `send_modify` notifies on.
+    #[tokio::test]
+    async fn republishing_an_unchanged_echo_still_refreshes_the_snapshot() {
+        let states = watch::Sender::new(status_of(ManagerCoreState::Running { epoch: 1, pid: 7 }));
+        let requested = watch::Sender::new(Some(mihomo()));
+        let hub = EventHub::new();
+        let mut events = hub.subscribe();
+        let task = tokio::spawn(status_bridge(
+            states.subscribe(),
+            requested.subscribe(),
+            hub.clone(),
+        ));
+
+        requested.send_modify(|_| {});
+        assert_eq!(
+            status_frame_type(events.recv().await.unwrap()),
+            Some(mihomo())
+        );
+
+        drop(states);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the bridge must exit when the manager drops")
+            .expect("the bridge must not panic");
+    }
+
+    /// The invariant behind `Inner`'s comment: the task exits when the manager's
+    /// watch channel closes. It must not be kept alive by the echo channel,
+    /// which outlives nothing — a task that survives its manager would hold a
+    /// subscription forever and never emit again.
+    #[tokio::test]
+    async fn the_status_bridge_exits_with_the_manager_even_while_the_echo_lives() {
+        let states = watch::Sender::new(status_of(ManagerCoreState::Stopped { reason: None }));
+        let requested = watch::Sender::new(None);
+        let task = tokio::spawn(status_bridge(
+            states.subscribe(),
+            requested.subscribe(),
+            EventHub::new(),
+        ));
+        drop(states);
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("the bridge must exit when the manager drops")
+            .expect("the bridge must not panic");
+        // The echo channel is still open and still writable; nobody is listening.
+        requested.send_modify(|_| {});
+    }
+
+    /// `watch::Sender::send` fails when nothing is subscribed and drops the
+    /// value on the floor. A service whose bridges were never spawned — every
+    /// route test, and the window before `run` spawns them — would then report
+    /// `"type": null` from `/status` forever.
+    #[tokio::test]
+    async fn the_echo_survives_a_service_with_no_bridge_subscribed() {
+        let (_dir, service) = test_service().await;
+        assert!(service.status().await.r#type.is_none());
+        service.publish_requested_core(Some(&mihomo()));
+        assert_eq!(service.status().await.r#type, Some(mihomo()));
+    }
+
+    /// Each check spawns a core binary, so the overflow is refused rather than
+    /// queued. The permit is taken before the path is resolved, which is what
+    /// makes the refusal observable here — and what proves an unresolvable path
+    /// is *not* what produced it: with a slot free, the same call reaches the
+    /// path and reports it with its kind.
+    #[tokio::test]
+    async fn a_third_concurrent_check_is_refused_before_it_can_spawn_a_core() {
+        let (dir, service) = test_service().await;
+        let infos = test_infos(dir.path());
+        let missing = dir.path().join("nope.yaml");
+
+        let held: Vec<_> = (0..MAX_CONCURRENT_CHECKS)
+            .map(|_| {
+                service
+                    .inner
+                    .check_slots
+                    .try_acquire()
+                    .expect("a fresh service has every slot free")
+            })
+            .collect();
+        let refused = service
+            .check(&infos, &mihomo(), &missing)
+            .await
+            .expect_err("the overflow must be refused");
+        assert!(
+            refused.message.contains("config checks may run at once"),
+            "unexpected refusal: {}",
+            refused.message
+        );
+        assert!(refused.kind.is_none(), "a refusal is not a manager error");
+
+        drop(held);
+        let resolved = service
+            .check(&infos, &mihomo(), &missing)
+            .await
+            .expect_err("the path does not exist");
+        assert_eq!(resolved.kind, Some(error_kind::CONFIG_NOT_FOUND));
+        assert!(
+            resolved.message.contains("nope.yaml"),
+            "the failure must name the path: {}",
+            resolved.message
+        );
+    }
+
+    /// A missing core binary is the only failure `find_binary_path` can produce,
+    /// so `apply`/`check` classify it instead of sending an unclassified
+    /// envelope the GUI has to string-match.
+    #[tokio::test]
+    async fn a_missing_core_binary_is_classified_on_the_check_path() {
+        let (dir, service) = test_service().await;
+        let infos = test_infos(dir.path());
+        std::fs::create_dir_all(&infos.nyanpasu_data_dir).unwrap();
+        let config = infos.nyanpasu_data_dir.join("config.yaml");
+        std::fs::write(&config, b"mixed-port: 7890\n").unwrap();
+
+        let error = service
+            .check(&infos, &mihomo(), &config)
+            .await
+            .expect_err("no binary exists under either dir");
+        assert_eq!(error.kind, Some(error_kind::BINARY_NOT_FOUND));
+        assert!(
+            error.message.contains(mihomo().get_executable_name()),
+            "the failure must name the binary: {}",
+            error.message
+        );
     }
 
     /// Mirrors the restructured bridge loop: what a v1 connection receives

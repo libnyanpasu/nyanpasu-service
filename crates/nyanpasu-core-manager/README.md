@@ -477,7 +477,9 @@ needed to eliminate that residual gap.
 
 ### One-shot config validation
 
-Runs the core with `-t` and condenses a failure into `Error::ConfigCheckFailed`:
+Runs the core with `-t` and condenses a failure into `Error::ConfigCheckFailed`.
+A run that exceeds `kind::CHECK_CONFIG_TIMEOUT` (30s) is killed, process tree
+included, and reported as the same error with a message naming the bound:
 
 ```rust
 manager.check_config(spec).await?;
