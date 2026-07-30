@@ -150,9 +150,10 @@ mod tests {
         );
     }
 
-    /// The v2 frame as `simd_json` writes it. Pinned separately from the ipc
-    /// crate's golden because this is the serializer that actually feeds the
-    /// socket, and the client decodes with `serde_json`: the two must agree.
+    /// The status snapshot frame as `simd_json` writes it. Pinned separately
+    /// from the ipc crate's golden because this is the serializer that actually
+    /// feeds the socket, and the client decodes with `serde_json`: the two must
+    /// agree.
     #[test]
     fn ws_status_frames_are_pinned() {
         let event = Event::new_core_status_changed(CoreInfos {

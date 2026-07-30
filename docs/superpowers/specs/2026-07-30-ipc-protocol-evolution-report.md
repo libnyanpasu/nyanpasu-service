@@ -147,6 +147,7 @@ pub struct CoreApplyData {
 
 - 新增变体 `Event::CoreStatusChanged(CoreStatusPayload)`,载荷 = P0-A 的完整快照(六态 detail + controller + revision + health)。**推送即快照**,对齐 manager 的 watch 语义;
 - 兼容策略:已确认旧 client 库遇未知变体仅单条 `Err(Decode)`、流不断;但 GUI 消费侧行为未验证 → 采用 **ws 版本协商**(`/ws/events?v=2`;无参数 = v1 只发旧两变体),一个过渡版本后 GUI 升级完毕再默认 v2。旧 `CoreStateChanged` 在 v2 下仍双发一版,给脚本类消费者缓冲;
+  - **2026-07-31 修订（owner 指令，S11 实施）**：ws 版本协商**已撤销**。服务二进制与 GUI 同版本分发，不存在独立/第三方消费者，`?v=2` 这一层协商是没有受益方的复杂度。现状：`/ws/events` 只有一种协议——全量事件集（含 `CoreStatusChanged`）、连接即快照、`Lagged` 后补发快照，查询串一律忽略、不解析、不拒绝；`EVENT_VERSION_PARAM`、`EVENT_VERSION_V2`、`Event::is_protocol_v1()`、`Client::events_v2()` 与服务端 `EventProtocol` 过滤器全部删除，`events()` 即快照流（client API 破坏性变更）。旧 `CoreStateChanged` 的**双发保留不变**——GUI 仍在消费，本次只删协商层，不动变体。
 - **连接即快照**(snapshot-on-connect):ws 建立后先推一帧当前 `CoreStatusChanged`,消除"断线重连后必须轮询 /status"的重同步竞态,`Lagged` 后 `resubscribe()` 同样补发一帧;
 - 顺带修正语义缺陷:v2 载荷中 `Starting/Restarting` 不再伪装成 `Stopped(None)`(旧 v1 映射不动,保持兼容)。
 
@@ -194,7 +195,7 @@ pub struct CoreApplyData {
 
 | # | 问题 | 处置建议 |
 |---|---|---|
-| R1 | GUI 消费侧对单条事件解码错误的容错未验证 | S9 前在 GUI 仓实测;ws 版本协商本身已兜底 |
+| R1 | GUI 消费侧对单条事件解码错误的容错未验证 | S9 前在 GUI 仓实测；ws 版本协商本身已兜底。**2026-07-31（S11）**：协商已撤销，该兜底不复存在——服务与 GUI 同版本分发，兼容性改由发布协调保证 |
 | R2 | `apply` 在核心停止态的语义(报错 vs 隐式 start) | 倾向报错,保持 start 显式;实施时与 GUI 确认交互预期 |
 | R3 | envelope 加 `error_kind` 字段对第三方脚本消费者的影响 | serde 默认忽略未知字段;wire golden 会暴露任何意外 |
 | R4 | Managed 模式下若未来自动生成 secret | 独立决策,需分发与权限设计;本轮明确不做 |
@@ -202,4 +203,4 @@ pub struct CoreApplyData {
 | R6 | 存量用法:用户自声明 pipe/unix controller;第三方面板依赖 `external-controller` 直连 | 前者随 S10 放弃(小众,发布说明标注);后者文档化"显式 `Disable`",GUI 侧可评估面板流量代理作为后续增强 |
 | R7 | S10 删除 `ControllerMode` 是 core-manager 公开 API 破坏性变更 | "crates/* 不改动"约束自 S10 起解除;与 GUI 进程内复用(如有)同版本协调 |
 | R8 | `/core/start`、`/core/apply`、`/core/check` 均接受调用方任意路径,组内成员可指向任何 root 可读文件 | **接受并记录**:socket ACL 是本服务唯一的授权边界,自 `/core/start` 起一贯如此,本轮 S8 新端点未扩大该面。若日后要收窄,应做成显式的路径白名单策略,而不是在各端点里零散校验 |
-| R9 | v2 事件与 v1 共用 256 槽广播环(`server/events.rs:6`),v2 帧更密,v1 客户端在启动抖动期可能略早触发 `Lagged` | **接受并记录**:稳态下事件稀疏;服务端日志记录 skipped 条数(该告警被过滤不入 EventHub);v2 连接重订阅后补发快照;v1 连接跳到实时尾部,需自行轮询 `/status` 重新同步(`events.rs` 的 `lag_recovery_with_feedback_reaches_the_tail` 已固定该路径)。若实测有压力,提高容量比拆分通道便宜 |
+| R9 | 事件流为单一协议，快照帧比旧的两变体更密，且与日志共用 256 槽广播环（`server/events.rs:6`），启动抖动期可能略早触发 `Lagged` | **接受并记录**：稳态下事件稀疏；服务端日志记录 skipped 条数（该告警被过滤，不入 EventHub）。**2026-07-31 更新（S11）**：协商撤销后不再有连接类别之分——任何连接 `resubscribe()` 之后一律补发一帧快照，"跳到实时尾部、需自行轮询 `/status` 重新同步"的情形已消失（`events.rs` 的 `lag_recovery_with_feedback_reaches_the_tail` 已固定该路径）。若实测有压力，提高容量比拆分通道便宜 |

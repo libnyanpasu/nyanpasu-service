@@ -26,7 +26,7 @@ use nyanpasu_ipc::api::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
         CoreState, CoreStateDetail, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
-    ws::events::{EVENT_URI, EVENT_VERSION_PARAM, EVENT_VERSION_V2, Event, TraceLog},
+    ws::events::{EVENT_URI, Event, TraceLog},
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 
@@ -108,7 +108,7 @@ fn minimal_core_infos() -> CoreInfos {
 }
 
 #[test]
-fn the_v2_status_event_is_pinned() {
+fn the_status_event_is_pinned() {
     assert_eq!(
         serde_json::to_string(&Event::new_core_status_changed(enriched_core_infos())).unwrap(),
         concat!(
@@ -135,10 +135,10 @@ fn the_v2_status_event_is_pinned() {
 }
 
 /// The defect the variant exists to fix (report §1.2): a crash loop reports
-/// `Stopped(None)` on the v1 field and `Restarting` on the faithful one, in the
+/// `Stopped(None)` on the lossy field and `Restarting` on the faithful one, in
 /// same frame.
 #[test]
-fn the_v2_payload_distinguishes_a_crash_loop_from_a_stop() {
+fn the_status_payload_distinguishes_a_crash_loop_from_a_stop() {
     let mut infos = minimal_core_infos();
     infos.r#type = Some(CoreType::Clash(ClashCoreType::Mihomo));
     infos.detail = Some(CoreStateDetail::Restarting {
@@ -158,38 +158,26 @@ fn the_v2_payload_distinguishes_a_crash_loop_from_a_stop() {
 /// Push *is* snapshot: the frame's payload is the same object `/status` puts in
 /// `core_infos`, byte for byte. A client decodes one with the other's decoder.
 #[test]
-fn the_v2_payload_is_the_status_core_infos() {
+fn the_status_payload_is_the_status_core_infos() {
     let infos = enriched_core_infos();
     let payload = serde_json::to_string(&infos).unwrap();
     let frame = serde_json::to_string(&Event::new_core_status_changed(infos)).unwrap();
     assert_eq!(frame, format!(r#"{{"CoreStatusChanged":{payload}}}"#));
 }
 
-/// The compatibility gate: v1 is exactly the two legacy variants, and the
-/// negotiation is opt-in.
+/// The endpoint string is protocol: the GUI builds the URL from it. There is
+/// no version parameter left to pin — the stream is unversioned, and the
+/// service ignores whatever query it is handed.
 #[test]
-fn only_the_legacy_variants_belong_to_protocol_v1() {
-    let log = Event::new_log(TraceLog {
-        timestamp: "2026-01-01T00:00:00Z".to_owned(),
-        level: "INFO".to_owned(),
-        message: "hello".to_owned(),
-        target: "nyanpasu_service::core".to_owned(),
-        fields: IndexMap::new(),
-    });
-    assert!(log.is_protocol_v1());
-    assert!(Event::new_core_state_changed(CoreState::Running).is_protocol_v1());
-    assert!(!Event::new_core_status_changed(minimal_core_infos()).is_protocol_v1());
-    // These three strings are protocol: the GUI builds the URL from them.
+fn the_event_endpoint_is_pinned() {
     assert_eq!(EVENT_URI, "/ws/events");
-    assert_eq!(EVENT_VERSION_PARAM, "v");
-    assert_eq!(EVENT_VERSION_V2, "2");
 }
 
-/// The other half: a v2 frame decodes back, and a frame written by a *newer*
-/// service — one extra field in the payload — still decodes instead of killing
-/// the stream.
+/// The other half: a status frame decodes back, and a frame written by a
+/// *newer* service — one extra field in the payload — still decodes instead of
+/// killing the stream.
 #[test]
-fn a_v2_status_frame_decodes_back() {
+fn a_status_frame_decodes_back() {
     let frame =
         serde_json::to_string(&Event::new_core_status_changed(enriched_core_infos())).unwrap();
     match serde_json::from_str::<Event>(&frame).unwrap() {

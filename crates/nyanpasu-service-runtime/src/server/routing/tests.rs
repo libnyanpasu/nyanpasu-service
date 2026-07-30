@@ -476,9 +476,9 @@ async fn recovering_without_a_quarantine_succeeds() {
     assert!(envelope.data.is_none());
 }
 
-/// The version query is a hint, never a gate: whatever `v` says — including the
-/// duplicated parameter that a `Query` extractor would reject with 400 — the
-/// handshake gets exactly as far as it does without one.
+/// The query string is not protocol: `/ws/events` takes no parameters and must
+/// ignore whatever it is handed — including the duplicated key that a `Query`
+/// extractor would reject with 400, which is the regression this pins.
 ///
 /// 426 is as far as it can get here: `tower::oneshot` hands the router no hyper
 /// upgrade state, so `WebSocketUpgrade` rejects with `ConnectionNotUpgradable`
@@ -486,14 +486,9 @@ async fn recovering_without_a_quarantine_succeeds() {
 /// assertion — a 400 would mean the query string was rejected, a 404/405 that
 /// the route moved.
 #[tokio::test]
-async fn the_event_stream_accepts_any_version_query() {
+async fn the_event_stream_ignores_any_query() {
     let env = TestEnv::new().await;
-    for uri in [
-        EVENT_URI,
-        "/ws/events?v=2",
-        "/ws/events?v=nonsense",
-        "/ws/events?v=1&v=2",
-    ] {
+    for uri in [EVENT_URI, "/ws/events?v=1&v=2"] {
         let response = create_router(env.state.clone())
             .oneshot(
                 Request::builder()

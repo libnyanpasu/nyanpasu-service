@@ -15,7 +15,7 @@ use crate::api::{
     core::apply::{CORE_APPLY_ENDPOINT, CoreApplyData},
     log::{LOGS_INSPECT_ENDPOINT, LOGS_RETRIEVE_ENDPOINT},
     status::STATUS_ENDPOINT,
-    ws::events::{EVENT_URI, EVENT_VERSION_PARAM, EVENT_VERSION_V2, Event},
+    ws::events::{EVENT_URI, Event},
 };
 
 use super::{ClientError, Result};
@@ -97,35 +97,19 @@ impl Client {
 
     /// Subscribe to the events pushed by the service over `/ws/events`.
     ///
-    /// The v1 stream: [`Event::Log`] and [`Event::CoreStateChanged`] only, no
-    /// frame until something happens. Unchanged since it shipped — see
-    /// [`Self::events_v2`] for the snapshot stream.
-    pub async fn events(&self) -> Result<EventStream> {
-        self.event_stream(EVENT_URI.to_owned()).await
-    }
-
-    /// Subscribe to the v2 event stream.
+    /// Snapshot first: the service pushes one [`Event::CoreStatusChanged`] the
+    /// moment the socket opens, one after every dropped-event recovery, and one
+    /// per manager transition — including the `Starting`/`Restarting`
+    /// transitions the two-valued [`Event::CoreStateChanged`] cannot express.
+    /// There is nothing to negotiate and no version parameter to pass; the
+    /// service ignores the query string.
     ///
-    /// Adds [`Event::CoreStatusChanged`]: one full snapshot the moment the
-    /// socket opens, one after every dropped-event recovery, and one per manager
-    /// transition — including the `Starting`/`Restarting` transitions the v1
-    /// state cannot express. [`Event::CoreStateChanged`] keeps arriving
-    /// alongside it during the transition (report §4 P1-A), so a consumer of
-    /// both sees each transition twice; the snapshot is idempotent, so the
-    /// simplest correct handling is to let the last frame win.
-    pub async fn events_v2(&self) -> Result<EventStream> {
-        self.event_stream(format!(
-            "{EVENT_URI}?{EVENT_VERSION_PARAM}={EVENT_VERSION_V2}"
-        ))
-        .await
-    }
-
-    /// The shared upgrade + decode path. `operation` stays [`EVENT_URI`] for
-    /// both versions: the version is a parameter of one endpoint, not a second
-    /// endpoint.
-    async fn event_stream(&self, endpoint: String) -> Result<EventStream> {
+    /// [`Event::CoreStateChanged`] keeps arriving alongside the snapshots, so a
+    /// consumer of both sees each transition twice. The snapshot is idempotent,
+    /// so the simplest correct handling is to let the last frame win.
+    pub async fn events(&self) -> Result<EventStream> {
         let response = self
-            .get(&endpoint)
+            .get(EVENT_URI)
             .upgrade()
             .send()
             .await

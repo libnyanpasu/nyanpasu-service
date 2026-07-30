@@ -25,7 +25,7 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{
-        RawQuery, State,
+        State,
         ws::{Message, WebSocket, WebSocketUpgrade},
     },
     http::{HeaderMap, HeaderValue, StatusCode, header::CONTENT_TYPE},
@@ -300,25 +300,22 @@ async fn set_dns_handler(
     (StatusCode::OK, Json(RBuilder::success(())))
 }
 
-/// Mirrors the service's negotiation: a v2 connection is greeted with one full
-/// snapshot frame, a v1 connection never sees that variant at all.
-async fn ws_handler(RawQuery(query): RawQuery, ws: WebSocketUpgrade) -> Response {
-    let v2 = query.as_deref() == Some("v=2");
-    ws.on_upgrade(move |mut socket: WebSocket| async move {
-        let mut events = Vec::new();
-        if v2 {
-            events.push(Event::new_core_status_changed(test_snapshot()));
-        }
-        events.push(Event::new_log(TraceLog {
-            timestamp: "2026-01-01T00:00:00Z".to_owned(),
-            level: "INFO".to_owned(),
-            message: "hello events".to_owned(),
-            target: "roundtrip".to_owned(),
-            fields: IndexMap::new(),
-        }));
-        events.push(Event::new_core_state_changed(CoreState::Stopped(Some(
-            "bye".to_owned(),
-        ))));
+/// Mirrors the service's stream: every connection is greeted with one full
+/// snapshot frame, then the live events. No query is inspected — there is no
+/// version to negotiate.
+async fn ws_handler(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(|mut socket: WebSocket| async move {
+        let events = [
+            Event::new_core_status_changed(test_snapshot()),
+            Event::new_log(TraceLog {
+                timestamp: "2026-01-01T00:00:00Z".to_owned(),
+                level: "INFO".to_owned(),
+                message: "hello events".to_owned(),
+                target: "roundtrip".to_owned(),
+                fields: IndexMap::new(),
+            }),
+            Event::new_core_state_changed(CoreState::Stopped(Some("bye".to_owned()))),
+        ];
         for event in events {
             let bytes = serde_json::to_vec(&event).unwrap();
             if socket.send(Message::binary(bytes)).await.is_err() {
@@ -330,7 +327,8 @@ async fn ws_handler(RawQuery(query): RawQuery, ws: WebSocketUpgrade) -> Response
     })
 }
 
-/// A crash loop: the v1 `state` says stopped, the v2 `detail` says restarting.
+/// A crash loop: the lossy `state` says stopped, the faithful `detail` says
+/// restarting.
 fn test_snapshot() -> CoreInfos {
     CoreInfos {
         r#type: Some(CoreType::Clash(ClashCoreType::Mihomo)),
@@ -510,6 +508,11 @@ async fn rest_roundtrip() {
     cleanup(&placeholder);
 }
 
+/// The event stream end to end over the real transport: the snapshot the
+/// service pushes on connect arrives first and decodes through the unchanged
+/// `EventStream` path, and both legacy variants keep flowing behind it — the
+/// dual emission the GUI still consumes. A regression that reintroduced a
+/// version parameter would fail here first: `events()` requests the bare URI.
 #[tokio::test]
 async fn events_roundtrip() {
     let placeholder = format!("nyanpasu-ipc-test-{}-events", std::process::id());
@@ -519,51 +522,6 @@ async fn events_roundtrip() {
     };
 
     let mut events = client.events().await.expect("events should connect");
-
-    let event = events
-        .next()
-        .await
-        .expect("stream should yield a first event")
-        .expect("first event should decode");
-    match event {
-        Event::Log(log) => {
-            assert_eq!(log.message, "hello events");
-            assert_eq!(log.target, "roundtrip");
-            assert_eq!(log.level, "INFO");
-        }
-        other => panic!("expected a log event, got: {other:?}"),
-    }
-
-    let event = events
-        .next()
-        .await
-        .expect("stream should yield a second event")
-        .expect("second event should decode");
-    match event {
-        Event::CoreStateChanged(CoreState::Stopped(Some(reason))) => {
-            assert_eq!(reason, "bye");
-        }
-        other => panic!("expected a core state changed event, got: {other:?}"),
-    }
-
-    let _ = shutdown.send(());
-    cleanup(&placeholder);
-}
-
-/// The v2 stream, end to end over the real transport: `events_v2()` has to
-/// actually ask for it (the handler branches on the query, so a missing `?v=2`
-/// yields a log frame first and fails the first assertion), the new variant has
-/// to decode through the unchanged `EventStream` path, and the legacy variants
-/// have to keep flowing behind it — the transitional double-send.
-#[tokio::test]
-async fn events_v2_roundtrip() {
-    let placeholder = format!("nyanpasu-ipc-test-{}-events-v2", std::process::id());
-    let Some((shutdown, client)) = run_server(&placeholder, test_router(Shared::default())).await
-    else {
-        return;
-    };
-
-    let mut events = client.events_v2().await.expect("events_v2 should connect");
 
     let event = events
         .next()
@@ -589,20 +547,26 @@ async fn events_v2_roundtrip() {
         .await
         .expect("stream should yield the log event")
         .expect("log event should decode");
-    assert!(matches!(event, Event::Log(_)), "got: {event:?}");
+    match event {
+        Event::Log(log) => {
+            assert_eq!(log.message, "hello events");
+            assert_eq!(log.target, "roundtrip");
+            assert_eq!(log.level, "INFO");
+        }
+        other => panic!("expected a log event, got: {other:?}"),
+    }
 
     let event = events
         .next()
         .await
         .expect("stream should yield the legacy state event")
         .expect("legacy state event should decode");
-    assert!(
-        matches!(
-            event,
-            Event::CoreStateChanged(CoreState::Stopped(Some(ref reason))) if reason == "bye"
-        ),
-        "got: {event:?}"
-    );
+    match event {
+        Event::CoreStateChanged(CoreState::Stopped(Some(reason))) => {
+            assert_eq!(reason, "bye");
+        }
+        other => panic!("expected a core state changed event, got: {other:?}"),
+    }
 
     let _ = shutdown.send(());
     cleanup(&placeholder);

@@ -109,7 +109,7 @@ struct Inner {
     /// Wire-type echo: the manager knows nothing about the alpha variants.
     ///
     /// A watch channel rather than a lock, because committing the echo has to be
-    /// *observable*: it is the only signal a connected v2 client has that the
+    /// *observable*: it is the only signal a connected client has that the
     /// type it was last told about changed, and the manager will not publish a
     /// transition on its behalf. The bridge task holds only a receiver — an
     /// `Arc<Inner>` inside that task would keep the manager alive, so its watch
@@ -340,7 +340,7 @@ impl CoreManagerService {
         )
     }
 
-    /// Publish the wire-type echo the bridge projects into v2 snapshots.
+    /// Publish the wire-type echo the bridge projects into status snapshots.
     ///
     /// `Some` commits a new type, `None` republishes the current one; either way
     /// the send notifies, which is the point. A rolled-back apply must not move
@@ -406,9 +406,9 @@ impl CoreManagerService {
 /// Manager transitions and requested-type commits → ws events.
 ///
 /// Two sources, one emitter. `states` carries the manager's own snapshots and is
-/// the sole input to the v1 `CoreStateChanged` stream, whose guards below are
-/// unchanged. `requested_core` carries the adapter's wire-type echo, which the
-/// manager knows nothing about: without watching it, a client connected over v2
+/// the sole input to the legacy `CoreStateChanged` stream, whose guards below
+/// are unchanged. `requested_core` carries the adapter's wire-type echo, which
+/// the manager knows nothing about: without watching it, a connected client
 /// would keep the type it was last told about until the manager's next
 /// transition, because committing the echo publishes nothing by itself.
 ///
@@ -438,13 +438,14 @@ async fn status_bridge(
                 }
                 let raw = states.borrow_and_update().clone();
                 let next = map_core_state(&raw.state);
-                // v2 leads and is never suppressed: it carries every manager
-                // transition, including the ones the two-valued v1 state cannot
-                // express (Starting, Restarting, and the Stopping/Switching
-                // arrivals the guards below drop). Emitting it here rather than
-                // after the guards is what keeps the v1 path below untouched.
-                // Deliberately no `tracing::info!` for it — that would re-enter
-                // the hub as an `Event::Log` and change what v1 streams carry.
+                // The snapshot leads and is never suppressed: it carries every
+                // manager transition, including the ones the two-valued legacy
+                // state cannot express (Starting, Restarting, and the
+                // Stopping/Switching arrivals the guards below drop). Emitting
+                // it here rather than after the guards is what keeps the legacy
+                // path below untouched. Deliberately no `tracing::info!` for it
+                // — that would re-enter the hub as an `Event::Log` and change
+                // what the legacy stream carries.
                 let requested = requested_core.borrow_and_update().clone();
                 hub.send(WsEvent::new_core_status_changed(project_core_infos(
                     &raw, requested,
@@ -468,10 +469,11 @@ async fn status_bridge(
                     break;
                 }
                 // The echo moved without the manager moving, so this refreshes
-                // the v2 snapshot and nothing else — v1 carries no type and has
-                // no transition to report. `states.borrow()`, never
-                // `borrow_and_update`: marking a manager transition seen here
-                // would swallow it from the v1 path above.
+                // the status snapshot and nothing else — the legacy state
+                // carries no type and has no transition to report.
+                // `states.borrow()`, never `borrow_and_update`: marking a
+                // manager transition seen here would swallow it from the legacy
+                // path above.
                 let raw = states.borrow().clone();
                 let requested = requested_core.borrow_and_update().clone();
                 hub.send(WsEvent::new_core_status_changed(project_core_infos(
@@ -678,10 +680,10 @@ fn same_ipc_state(previous: &CoreState, next: &CoreState) -> bool {
 
 /// The wire projection of a manager snapshot.
 ///
-/// One function so `/status` and the v2 `CoreStatusChanged` frame cannot drift:
+/// One function so `/status` and the `CoreStatusChanged` frame cannot drift:
 /// the event *is* the snapshot (report §4 P1-A). `state` stays the lossy
-/// two-valued field v1 clients depend on; `detail` is the faithful six-state
-/// view beside it.
+/// two-valued field the GUI has always consumed; `detail` is the faithful
+/// six-state view beside it.
 fn project_core_infos(status: &CoreStatus, requested_core: Option<CoreType>) -> CoreInfos {
     CoreInfos {
         r#type: requested_core,
@@ -1320,7 +1322,7 @@ mod tests {
     /// adapter's wire-type echo moves, so before this the frames from a
     /// cross-core apply carried the *previous* type until the next transition.
     #[tokio::test]
-    async fn committing_the_requested_type_publishes_a_fresh_v2_snapshot() {
+    async fn committing_the_requested_type_publishes_a_fresh_status_snapshot() {
         let states = watch::Sender::new(status_of(ManagerCoreState::Stopped { reason: None }));
         let requested = watch::Sender::new(None);
         let hub = EventHub::new();
@@ -1340,7 +1342,8 @@ mod tests {
             .expect("the event hub must stay open");
         assert_eq!(status_frame_type(handshake), None);
 
-        // A manager transition with no echo yet: v2 leads, v1 follows.
+        // A manager transition with no echo yet: the snapshot leads, the legacy
+        // state follows.
         states.send_replace(status_of(ManagerCoreState::Running { epoch: 1, pid: 7 }));
         let status = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
@@ -1356,8 +1359,9 @@ mod tests {
             TestEvent::CoreStateChanged(CoreState::Running)
         ));
 
-        // The commit: one v2 snapshot carrying the committed type, and no v1
-        // frame — v1 has no type and no transition to report.
+        // The commit: one status snapshot carrying the committed type, and no
+        // legacy frame — the legacy state carries no type and has no transition
+        // to report.
         requested.send_replace(Some(mihomo()));
         let committed = tokio::time::timeout(Duration::from_secs(5), events.recv())
             .await
@@ -1374,7 +1378,7 @@ mod tests {
             .expect("the bridge must not panic");
         assert!(
             events.try_recv().is_err(),
-            "the echo commit must not produce a v1 frame"
+            "the echo commit must not produce a legacy state frame"
         );
     }
 
@@ -1508,16 +1512,16 @@ mod tests {
         );
     }
 
-    /// Mirrors the restructured bridge loop: what a v1 connection receives
-    /// (after the unchanged suppression rules) and what a v2 connection
-    /// receives (one snapshot per manager transition, none suppressed).
+    /// Mirrors the restructured bridge loop: what the legacy `CoreStateChanged`
+    /// stream carries (after the unchanged suppression rules) and what the
+    /// snapshot stream carries (one per manager transition, none suppressed).
     fn simulate_both(statuses: &[CoreStatus]) -> (Vec<String>, Vec<Option<CoreStateDetail>>) {
         let mut last = CoreState::Stopped(None);
-        let mut v1 = Vec::new();
-        let mut v2 = Vec::new();
+        let mut legacy = Vec::new();
+        let mut snapshots = Vec::new();
         for raw in statuses {
             let next = map_core_state(&raw.state);
-            v2.push(project_core_infos(raw, None).detail);
+            snapshots.push(project_core_infos(raw, None).detail);
             if matches!(
                 raw.state,
                 ManagerCoreState::Stopping { .. } | ManagerCoreState::Switching { .. }
@@ -1528,18 +1532,18 @@ mod tests {
             if same_ipc_state(&last, &next) {
                 continue;
             }
-            v1.push(format!("{next:?}"));
+            legacy.push(format!("{next:?}"));
             last = next;
         }
-        (v1, v2)
+        (legacy, snapshots)
     }
 
-    /// The point of S9: the v1 stream keeps suppressing exactly what it always
-    /// suppressed, while the v2 stream carries every transition — including the
-    /// crash-loop and start-up ones the two-valued v1 state cannot express
-    /// (report §1.2).
+    /// The point of S9, restated after S11: the legacy stream keeps suppressing
+    /// exactly what it always suppressed, while the snapshot stream carries
+    /// every transition — including the crash-loop and start-up ones the
+    /// two-valued legacy state cannot express (report §1.2).
     #[test]
-    fn the_v2_stream_carries_every_transition_the_v1_stream_suppresses() {
+    fn the_snapshot_stream_carries_every_transition_the_legacy_stream_suppresses() {
         let states = [
             ManagerCoreState::Starting { epoch: 1 },
             ManagerCoreState::Running { epoch: 1, pid: 42 },
@@ -1554,12 +1558,12 @@ mod tests {
             },
         ];
         let statuses: Vec<CoreStatus> = states.iter().cloned().map(status_of).collect();
-        let (v1, v2) = simulate_both(&statuses);
+        let (legacy, snapshots) = simulate_both(&statuses);
 
-        // The lossy v1 stream, defect included: the restart in the middle is
-        // reported as a stop, which is why S9 exists.
+        // The lossy legacy stream, defect included: the restart in the middle
+        // is reported as a stop, which is why the snapshot variant exists.
         assert_eq!(
-            v1,
+            legacy,
             [
                 "Running",
                 "Stopped(None)",
@@ -1567,11 +1571,11 @@ mod tests {
                 r#"Stopped(Some("stopped by user"))"#,
             ]
         );
-        // …and the mirror above agrees with the untouched v1 helper.
-        assert_eq!(v1, simulate(&states));
+        // …and the mirror above agrees with the untouched legacy helper.
+        assert_eq!(legacy, simulate(&states));
         // One faithful frame per manager transition, none dropped.
         assert_eq!(
-            v2,
+            snapshots,
             [
                 Some(CoreStateDetail::Starting { epoch: 1 }),
                 Some(CoreStateDetail::Running { epoch: 1, pid: 42 }),
@@ -1588,11 +1592,11 @@ mod tests {
         );
     }
 
-    /// The v2 payload is the S7 projection unchanged: `state` stays the lossy
-    /// field the v1 wire has always carried, `detail` is the faithful one, and
-    /// the type echo comes from the adapter rather than the manager.
+    /// The snapshot payload is the S7 projection unchanged: `state` stays the
+    /// lossy field the wire has always carried, `detail` is the faithful one,
+    /// and the type echo comes from the adapter rather than the manager.
     #[test]
-    fn the_v2_payload_keeps_the_lossy_state_and_adds_the_faithful_detail() {
+    fn the_snapshot_payload_keeps_the_lossy_state_and_adds_the_faithful_detail() {
         let infos = project_core_infos(
             &status_of(ManagerCoreState::Restarting {
                 epoch: 3,
