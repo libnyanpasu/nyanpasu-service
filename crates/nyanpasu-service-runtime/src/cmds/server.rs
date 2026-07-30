@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf, sync::OnceLock};
+use std::{collections::BTreeSet, path::PathBuf, sync::OnceLock};
 
 #[cfg(windows)]
 use anyhow::Context;
@@ -54,9 +54,14 @@ pub async fn server_inner(
     tracing::info!("nyanpasu data dir: {:?}", ctx.nyanpasu_data_dir);
     tracing::info!("local ipc policy: {:?}", ctx.local_ipc_policy);
 
-    // Print current envs
-    let envs: BTreeMap<String, String> = std::env::vars().collect();
-    tracing::info!(environments = ?envs, "collected current envs.");
+    // Names only, never values: this buffer is served by /logs and
+    // /logs/inspect to every socket-ACL user, and the environment routinely
+    // carries proxy credentials and tokens. The names are what the log was ever
+    // for — confirming what a service manager handed the process.
+    let env_names: BTreeSet<String> = std::env::vars_os()
+        .map(|(name, _)| name.to_string_lossy().into_owned())
+        .collect();
+    tracing::info!(environment_names = ?env_names, "collected current env names.");
 
     // check dirs accessibility
     let nyanpasu_config_dir = dunce::canonicalize(&ctx.nyanpasu_config_dir)?;
