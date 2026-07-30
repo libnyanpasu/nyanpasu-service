@@ -13,7 +13,7 @@ use nyanpasu_ipc::api::{
         Status as StatusOp,
     },
     core::stop::{CORE_STOP_ENDPOINT, CoreStopRes},
-    status::{CoreState, STATUS_ENDPOINT, StatusRes},
+    status::{CoreState, CoreStateDetail, STATUS_ENDPOINT, StatusRes},
 };
 use serde::de::DeserializeOwned;
 use tempfile::TempDir;
@@ -290,4 +290,33 @@ async fn responses_carry_a_request_id() {
         .await
         .unwrap();
     assert_eq!(echoed.headers().get(&header).unwrap(), "caller-supplied");
+}
+
+#[tokio::test]
+async fn status_projects_the_new_fields_from_the_manager_snapshot() {
+    let env = TestEnv::new().await;
+    let response = create_router(env.state.clone())
+        .oneshot(
+            Request::builder()
+                .uri(STATUS_ENDPOINT)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let envelope: StatusRes<'static> = body_of(response).await;
+    let body = envelope.data.unwrap();
+    // A never-started core: the manager has no instance to report an
+    // endpoint, health observation or revision for.
+    assert!(body.core_infos.controller.is_none());
+    assert!(body.core_infos.health.is_none());
+    assert!(body.core_infos.revision.is_none());
+    // `detail` is populated even when the others are not, and unlike the
+    // two-valued `state` it names the stop reason slot explicitly.
+    assert_eq!(
+        body.core_infos.detail,
+        Some(CoreStateDetail::Stopped { reason: None })
+    );
 }

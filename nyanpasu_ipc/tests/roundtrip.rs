@@ -203,6 +203,10 @@ fn test_status_body() -> StatusResBody<'static> {
             state: CoreState::Running,
             state_changed_at: 42,
             config_path: None,
+            controller: None,
+            health: None,
+            revision: None,
+            detail: None,
         },
         runtime_infos: RuntimeInfos {
             service_data_dir: Cow::Owned(PathBuf::from("/srv/data")),

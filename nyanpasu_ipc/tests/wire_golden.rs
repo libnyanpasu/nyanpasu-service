@@ -17,7 +17,10 @@ use nyanpasu_ipc::api::{
     core::start::CoreStartReq,
     log::LogsResBody,
     network::set_dns::NetworkSetDnsReq,
-    status::{CoreInfos, CoreState, RuntimeInfos, StatusResBody},
+    status::{
+        ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
+        CoreState, CoreStateDetail, RuntimeInfos, StatusResBody,
+    },
     ws::events::{Event, TraceLog},
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
@@ -147,6 +150,7 @@ fn the_logs_response_is_pinned() {
     );
 }
 
+/// The absent S7 fields keep this pre-S7 JSON byte-identical.
 #[test]
 fn the_status_response_is_pinned() {
     let body = StatusResBody {
@@ -156,6 +160,10 @@ fn the_status_response_is_pinned() {
             state: CoreState::Running,
             state_changed_at: 42,
             config_path: Some(PathBuf::from("/etc/nyanpasu/config.yaml")),
+            controller: None,
+            health: None,
+            revision: None,
+            detail: None,
         },
         runtime_infos: RuntimeInfos {
             service_data_dir: Cow::Owned(PathBuf::from("/srv/data")),
@@ -227,4 +235,205 @@ fn the_error_envelope_decodes_back() {
     assert_eq!(decoded.msg, "core is already stopped");
     assert!(decoded.data.is_none());
     assert_eq!(decoded.ts, TS);
+}
+
+#[test]
+fn the_controller_infos_are_pinned() {
+    // JSON escapes every backslash, so each one in a named pipe path doubles.
+    assert_eq!(
+        serde_json::to_string(&CoreControllerInfo::NamedPipe(PathBuf::from(
+            r"\\.\pipe\nyanpasu\core-1"
+        )))
+        .unwrap(),
+        r#"{"NamedPipe":"\\\\.\\pipe\\nyanpasu\\core-1"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&CoreControllerInfo::UnixSocket(PathBuf::from(
+            "/run/nyanpasu/core-1.sock"
+        )))
+        .unwrap(),
+        r#"{"UnixSocket":"/run/nyanpasu/core-1.sock"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&CoreControllerInfo::Http(
+            "http://127.0.0.1:9090/".to_owned()
+        ))
+        .unwrap(),
+        r#"{"Http":"http://127.0.0.1:9090/"}"#
+    );
+}
+
+#[test]
+fn the_core_state_details_are_pinned() {
+    for (value, expected) in [
+        (
+            CoreStateDetail::Stopped { reason: None },
+            r#"{"Stopped":{"reason":null}}"#,
+        ),
+        (
+            CoreStateDetail::Stopped {
+                reason: Some("boom".to_owned()),
+            },
+            r#"{"Stopped":{"reason":"boom"}}"#,
+        ),
+        (
+            CoreStateDetail::Starting { epoch: 3 },
+            r#"{"Starting":{"epoch":3}}"#,
+        ),
+        (
+            CoreStateDetail::Running {
+                epoch: 3,
+                pid: 4242,
+            },
+            r#"{"Running":{"epoch":3,"pid":4242}}"#,
+        ),
+        (
+            CoreStateDetail::Restarting {
+                epoch: 3,
+                attempt: 2,
+            },
+            r#"{"Restarting":{"epoch":3,"attempt":2}}"#,
+        ),
+        (
+            CoreStateDetail::Switching {
+                from: Some(2),
+                to: 3,
+            },
+            r#"{"Switching":{"from":2,"to":3}}"#,
+        ),
+        (
+            CoreStateDetail::Switching { from: None, to: 1 },
+            r#"{"Switching":{"from":null,"to":1}}"#,
+        ),
+        (
+            CoreStateDetail::Stopping { epoch: 3 },
+            r#"{"Stopping":{"epoch":3}}"#,
+        ),
+    ] {
+        assert_eq!(serde_json::to_string(&value).unwrap(), expected);
+    }
+}
+
+#[test]
+fn the_core_health_infos_are_pinned() {
+    for (value, expected) in [
+        (CoreHealthState::Starting, r#""Starting""#),
+        (CoreHealthState::Healthy, r#""Healthy""#),
+        (CoreHealthState::Unhealthy, r#""Unhealthy""#),
+    ] {
+        assert_eq!(serde_json::to_string(&value).unwrap(), expected);
+    }
+    assert_eq!(
+        serde_json::to_string(&CoreHealthInfo {
+            state: CoreHealthState::Unhealthy,
+            changed_at: 1_700_000_000_123,
+            consecutive_failures: 3,
+            last_error: Some("probe timed out".to_owned()),
+            last_success_at: Some(1_700_000_000_000),
+        })
+        .unwrap(),
+        concat!(
+            r#"{"state":"Unhealthy","changed_at":1700000000123,"#,
+            r#""consecutive_failures":3,"last_error":"probe timed out","#,
+            r#""last_success_at":1700000000000}"#
+        )
+    );
+}
+
+#[test]
+fn the_config_revision_info_is_pinned() {
+    assert_eq!(
+        serde_json::to_string(&ConfigRevisionInfo {
+            epoch: 3,
+            generation: 7,
+            source_hash: "0123456789abcdef".to_owned(),
+            effective_hash: "fedcba9876543210".to_owned(),
+        })
+        .unwrap(),
+        concat!(
+            r#"{"epoch":3,"generation":7,"source_hash":"0123456789abcdef","#,
+            r#""effective_hash":"fedcba9876543210"}"#
+        )
+    );
+}
+
+/// The S7 fields, all populated, inside the production envelope.
+#[test]
+fn the_enriched_status_response_is_pinned() {
+    let body = StatusResBody {
+        version: Cow::Borrowed("9.9.9-golden"),
+        core_infos: CoreInfos {
+            r#type: Some(CoreType::Clash(ClashCoreType::Mihomo)),
+            state: CoreState::Running,
+            state_changed_at: 42,
+            config_path: Some(PathBuf::from("/etc/nyanpasu/config.yaml")),
+            controller: Some(CoreControllerInfo::Http(
+                "http://127.0.0.1:9090/".to_owned(),
+            )),
+            health: Some(CoreHealthInfo {
+                state: CoreHealthState::Healthy,
+                changed_at: 1_700_000_000_123,
+                consecutive_failures: 0,
+                last_error: None,
+                last_success_at: Some(1_700_000_000_000),
+            }),
+            revision: Some(ConfigRevisionInfo {
+                epoch: 3,
+                generation: 7,
+                source_hash: "0123456789abcdef".to_owned(),
+                effective_hash: "fedcba9876543210".to_owned(),
+            }),
+            detail: Some(CoreStateDetail::Running {
+                epoch: 3,
+                pid: 4242,
+            }),
+        },
+        runtime_infos: RuntimeInfos {
+            service_data_dir: Cow::Owned(PathBuf::from("/srv/data")),
+            service_config_dir: Cow::Owned(PathBuf::from("/srv/config")),
+            nyanpasu_config_dir: Cow::Owned(PathBuf::from("/home/config")),
+            nyanpasu_data_dir: Cow::Owned(PathBuf::from("/home/data")),
+        },
+    };
+    assert_eq!(
+        serde_json::to_string(&ok_envelope(body)).unwrap(),
+        concat!(
+            r#"{"code":"Ok","msg":"ok","data":{"version":"9.9.9-golden","#,
+            r#""core_infos":{"type":{"clash":"mihomo"},"state":"Running","#,
+            r#""state_changed_at":42,"config_path":"/etc/nyanpasu/config.yaml","#,
+            r#""controller":{"Http":"http://127.0.0.1:9090/"},"#,
+            r#""health":{"state":"Healthy","changed_at":1700000000123,"#,
+            r#""consecutive_failures":0,"last_error":null,"#,
+            r#""last_success_at":1700000000000},"#,
+            r#""revision":{"epoch":3,"generation":7,"#,
+            r#""source_hash":"0123456789abcdef","#,
+            r#""effective_hash":"fedcba9876543210"},"#,
+            r#""detail":{"Running":{"epoch":3,"pid":4242}}},"#,
+            r#""runtime_infos":{"service_data_dir":"/srv/data","#,
+            r#""service_config_dir":"/srv/config","#,
+            r#""nyanpasu_config_dir":"/home/config","#,
+            r#""nyanpasu_data_dir":"/home/data"}},"ts":1700000000}"#
+        )
+    );
+}
+
+/// The other half of the compatibility gate: a payload written by a pre-S7
+/// service must still decode, with the new fields absent rather than an error.
+#[test]
+fn a_pre_s7_status_payload_still_decodes() {
+    let legacy = concat!(
+        r#"{"code":"Ok","msg":"ok","data":{"version":"1.4.5","#,
+        r#""core_infos":{"type":{"clash":"mihomo"},"state":"Running","#,
+        r#""state_changed_at":42,"config_path":"/etc/nyanpasu/config.yaml"},"#,
+        r#""runtime_infos":{"service_data_dir":"/srv/data","#,
+        r#""service_config_dir":"/srv/config","#,
+        r#""nyanpasu_config_dir":"/home/config","#,
+        r#""nyanpasu_data_dir":"/home/data"}},"ts":1700000000}"#
+    );
+    let decoded: R<'static, StatusResBody<'static>> = serde_json::from_str(legacy).unwrap();
+    let core_infos = decoded.data.unwrap().core_infos;
+    assert!(core_infos.controller.is_none());
+    assert!(core_infos.health.is_none());
+    assert!(core_infos.revision.is_none());
+    assert!(core_infos.detail.is_none());
 }

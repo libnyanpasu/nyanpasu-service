@@ -2,11 +2,15 @@ use std::{path::PathBuf, sync::Arc};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
-    ControllerMode, CoreKind, CoreManager as Manager, CoreSpec, CoreState as ManagerCoreState,
-    Error as ManagerError, InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions,
+    ConfigRevision, ControllerMode, CoreKind, CoreManager as Manager, CoreSpec,
+    CoreState as ManagerCoreState, Error as ManagerError, HealthState, HealthStatus, Host,
+    InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions,
 };
 use nyanpasu_ipc::api::{
-    status::{CoreInfos, CoreState},
+    status::{
+        ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
+        CoreState, CoreStateDetail,
+    },
     ws::events::Event as WsEvent,
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
@@ -169,6 +173,10 @@ impl CoreManagerService {
             state: map_core_state(&status.state),
             state_changed_at: status.changed_at,
             config_path: status.spec.map(|spec| spec.config_path.into_std_path_buf()),
+            controller: status.controller.as_ref().and_then(map_controller),
+            health: status.health.as_ref().map(map_health),
+            revision: status.revision.as_ref().map(map_revision),
+            detail: map_state_detail(&status.state),
         }
     }
 
@@ -236,6 +244,82 @@ fn map_core_state(state: &ManagerCoreState) -> CoreState {
         }
         // `CoreState` is `#[non_exhaustive]`; an unknown state is not proven running.
         _ => CoreState::Stopped(None),
+    }
+}
+
+/// The controller endpoint, minus anything credential-bearing.
+///
+/// The manager never publishes the secret (only `ResolvedController.host`
+/// reaches the watch channel), but an HTTP endpoint is parsed from the
+/// caller's own `external-controller` value, which can carry userinfo — so
+/// strip it here rather than trusting the shape of that string.
+fn map_controller(host: &Host) -> Option<CoreControllerInfo> {
+    match host {
+        Host::NamedPipe(path) => Some(CoreControllerInfo::NamedPipe(path.clone())),
+        Host::UnixSocket(path) => Some(CoreControllerInfo::UnixSocket(path.clone())),
+        Host::Http(url) => {
+            let mut url = url.clone();
+            let _ = url.set_username("");
+            let _ = url.set_password(None);
+            Some(CoreControllerInfo::Http(url.to_string()))
+        }
+        // `Host` is `#[non_exhaustive]`; an unknown transport is reported as
+        // absent rather than guessed at.
+        _ => None,
+    }
+}
+
+fn map_health(health: &HealthStatus) -> CoreHealthInfo {
+    CoreHealthInfo {
+        state: match health.state {
+            HealthState::Starting => CoreHealthState::Starting,
+            HealthState::Healthy => CoreHealthState::Healthy,
+            HealthState::Unhealthy => CoreHealthState::Unhealthy,
+            // `HealthState` is `#[non_exhaustive]`; an unknown state is not
+            // proven healthy.
+            _ => CoreHealthState::Unhealthy,
+        },
+        changed_at: health.changed_at,
+        consecutive_failures: health.consecutive_failures,
+        last_error: health.last_error.clone(),
+        last_success_at: health.last_success_at,
+    }
+}
+
+/// `runtime_path` is dropped on purpose: it points inside the manager's
+/// 0o700 runtime directory, which the client cannot read.
+fn map_revision(revision: &ConfigRevision) -> ConfigRevisionInfo {
+    ConfigRevisionInfo {
+        epoch: revision.epoch,
+        generation: revision.generation,
+        source_hash: revision.source_hash.clone(),
+        effective_hash: revision.effective_hash.clone(),
+    }
+}
+
+/// The lossless counterpart to `map_core_state`.
+fn map_state_detail(state: &ManagerCoreState) -> Option<CoreStateDetail> {
+    match state {
+        ManagerCoreState::Stopped { reason } => Some(CoreStateDetail::Stopped {
+            reason: reason.as_ref().map(ToString::to_string),
+        }),
+        ManagerCoreState::Starting { epoch } => Some(CoreStateDetail::Starting { epoch: *epoch }),
+        ManagerCoreState::Running { epoch, pid } => Some(CoreStateDetail::Running {
+            epoch: *epoch,
+            pid: *pid,
+        }),
+        ManagerCoreState::Restarting { epoch, attempt } => Some(CoreStateDetail::Restarting {
+            epoch: *epoch,
+            attempt: *attempt,
+        }),
+        ManagerCoreState::Switching { from, to } => Some(CoreStateDetail::Switching {
+            from: *from,
+            to: *to,
+        }),
+        ManagerCoreState::Stopping { epoch } => Some(CoreStateDetail::Stopping { epoch: *epoch }),
+        // `CoreState` is `#[non_exhaustive]`; an unknown state has no faithful
+        // projection, so it is reported as absent.
+        _ => None,
     }
 }
 
@@ -456,6 +540,161 @@ mod tests {
                 r#"Stopped(Some("stopped by user"))"#,
             ]
         );
+    }
+
+    #[test]
+    fn manager_states_map_onto_the_wire_state_detail() {
+        let cases = [
+            (
+                ManagerCoreState::Stopped { reason: None },
+                CoreStateDetail::Stopped { reason: None },
+            ),
+            (
+                ManagerCoreState::Stopped {
+                    reason: Some(StopReason::User),
+                },
+                CoreStateDetail::Stopped {
+                    reason: Some("stopped by user".to_owned()),
+                },
+            ),
+            (
+                ManagerCoreState::Starting { epoch: 1 },
+                CoreStateDetail::Starting { epoch: 1 },
+            ),
+            (
+                ManagerCoreState::Running { epoch: 1, pid: 42 },
+                CoreStateDetail::Running { epoch: 1, pid: 42 },
+            ),
+            (
+                ManagerCoreState::Restarting {
+                    epoch: 1,
+                    attempt: 2,
+                },
+                CoreStateDetail::Restarting {
+                    epoch: 1,
+                    attempt: 2,
+                },
+            ),
+            (
+                ManagerCoreState::Switching {
+                    from: Some(1),
+                    to: 2,
+                },
+                CoreStateDetail::Switching {
+                    from: Some(1),
+                    to: 2,
+                },
+            ),
+            (
+                ManagerCoreState::Stopping { epoch: 2 },
+                CoreStateDetail::Stopping { epoch: 2 },
+            ),
+        ];
+        for (raw, expected) in cases {
+            assert_eq!(map_state_detail(&raw), Some(expected));
+        }
+    }
+
+    /// The detail projection must disagree with the lossy wire state exactly
+    /// where the report says it does: a crash loop and a start-up both look
+    /// stopped on the old field.
+    #[test]
+    fn the_detail_field_recovers_what_the_wire_state_flattens() {
+        let restarting = ManagerCoreState::Restarting {
+            epoch: 1,
+            attempt: 3,
+        };
+        assert!(matches!(
+            map_core_state(&restarting),
+            CoreState::Stopped(None)
+        ));
+        assert_eq!(
+            map_state_detail(&restarting),
+            Some(CoreStateDetail::Restarting {
+                epoch: 1,
+                attempt: 3,
+            })
+        );
+    }
+
+    #[test]
+    fn controller_hosts_map_onto_the_wire_controller() {
+        assert_eq!(
+            map_controller(&Host::named_pipe(r"\\.\pipe\nyanpasu\core-1")),
+            Some(CoreControllerInfo::NamedPipe(std::path::PathBuf::from(
+                r"\\.\pipe\nyanpasu\core-1"
+            )))
+        );
+        assert_eq!(
+            map_controller(&Host::unix_socket("/run/nyanpasu/core-1.sock")),
+            Some(CoreControllerInfo::UnixSocket(std::path::PathBuf::from(
+                "/run/nyanpasu/core-1.sock"
+            )))
+        );
+        assert_eq!(
+            map_controller(&Host::http("127.0.0.1:9090").unwrap()),
+            Some(CoreControllerInfo::Http(
+                "http://127.0.0.1:9090/".to_owned()
+            ))
+        );
+    }
+
+    /// The HTTP endpoint is parsed from the caller's own config value; if that
+    /// value carried userinfo, it must not reach the wire.
+    #[test]
+    fn http_controller_credentials_never_reach_the_wire() {
+        for raw in [
+            "http://user:pass@127.0.0.1:9090",
+            "http://user@127.0.0.1:9090",
+        ] {
+            assert_eq!(
+                map_controller(&Host::http(raw).unwrap()),
+                Some(CoreControllerInfo::Http(
+                    "http://127.0.0.1:9090/".to_owned()
+                )),
+                "raw = {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_revision_projection_drops_the_runtime_path() {
+        let revision = ConfigRevision {
+            epoch: 3,
+            generation: 7,
+            source_hash: "0123456789abcdef".to_owned(),
+            effective_hash: "fedcba9876543210".to_owned(),
+            runtime_path: "/srv/data/core-runtime/config-3.yaml".into(),
+        };
+        assert_eq!(
+            map_revision(&revision),
+            ConfigRevisionInfo {
+                epoch: 3,
+                generation: 7,
+                source_hash: "0123456789abcdef".to_owned(),
+                effective_hash: "fedcba9876543210".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn health_states_map_onto_the_wire_health() {
+        // `HealthStatus::starting()` is `pub(crate)` to the manager
+        // (`state.rs:41`) and unreachable from here, but all five fields are
+        // `pub` and the struct is not `#[non_exhaustive]`.
+        let health = HealthStatus {
+            state: HealthState::Unhealthy,
+            changed_at: 1_700_000_000_123,
+            consecutive_failures: 4,
+            last_error: Some("probe timed out".to_owned()),
+            last_success_at: Some(1_700_000_000_000),
+        };
+        let mapped = map_health(&health);
+        assert_eq!(mapped.state, CoreHealthState::Unhealthy);
+        assert_eq!(mapped.changed_at, 1_700_000_000_123);
+        assert_eq!(mapped.consecutive_failures, 4);
+        assert_eq!(mapped.last_error.as_deref(), Some("probe timed out"));
+        assert_eq!(mapped.last_success_at, Some(1_700_000_000_000));
     }
 }
 

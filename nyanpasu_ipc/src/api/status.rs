@@ -17,6 +17,81 @@ impl Default for CoreState {
     }
 }
 
+/// The core's control endpoint, as the manager resolved it.
+///
+/// A deliberately separate type from `clash_api::Host`: clash-api is an
+/// internal dependency of the core manager and must not leak into the wire
+/// dependency tree. The controller secret is never carried here — it comes
+/// from the caller's own config, and the IPC transport's only gate is the
+/// socket ACL.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum CoreControllerInfo {
+    NamedPipe(PathBuf),
+    UnixSocket(PathBuf),
+    /// Normalized base URL with any credentials removed.
+    Http(String),
+}
+
+/// Health observation state for the active core.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum CoreHealthState {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
+/// The manager's health observation for the active core. Absent while the
+/// core is stopping or stopped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct CoreHealthInfo {
+    pub state: CoreHealthState,
+    /// Unix milliseconds of the last health-state transition.
+    pub changed_at: i64,
+    pub consecutive_failures: u32,
+    /// Last probe failure detail, capped by the manager at 512 bytes.
+    pub last_error: Option<String>,
+    /// Unix milliseconds of the last successful probe.
+    pub last_success_at: Option<i64>,
+}
+
+/// Identity of the config the running core actually adopted.
+///
+/// `source_hash` is computed over the caller's own file and `effective_hash`
+/// over the canonical form the core is running, both FNV-1a over canonical
+/// YAML. A caller that holds the source file can therefore confirm the
+/// service read the same bytes it wrote, without reimplementing the hash.
+/// The manager's private runtime copy path is deliberately not exposed: it
+/// lives in a 0o700 directory the caller cannot read, so it would only
+/// mislead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub struct ConfigRevisionInfo {
+    pub epoch: u64,
+    pub generation: u64,
+    pub source_hash: String,
+    pub effective_hash: String,
+}
+
+/// The core's full lifecycle state.
+///
+/// [`CoreState`] is a two-valued projection kept for wire compatibility: it
+/// reports `Starting` and `Restarting` as `Stopped(None)`, so a crash loop is
+/// indistinguishable from a real stop. This is the faithful view; prefer it
+/// when present.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
+pub enum CoreStateDetail {
+    Stopped { reason: Option<String> },
+    Starting { epoch: u64 },
+    Running { epoch: u64, pid: u32 },
+    Restarting { epoch: u64, attempt: u32 },
+    Switching { from: Option<u64>, to: u64 },
+    Stopping { epoch: u64 },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct CoreInfos {
@@ -24,6 +99,16 @@ pub struct CoreInfos {
     pub state: CoreState,
     pub state_changed_at: i64,
     pub config_path: Option<PathBuf>,
+    /// Omitted rather than null when absent, so a payload carrying none of
+    /// the fields below is byte-identical to the pre-S7 wire format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<CoreControllerInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<CoreHealthInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<ConfigRevisionInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<CoreStateDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -35,7 +120,6 @@ pub struct RuntimeInfos<'a> {
     pub nyanpasu_data_dir: Cow<'a, PathBuf>,
 }
 
-// TODO: more health check fields
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct StatusResBody<'a> {

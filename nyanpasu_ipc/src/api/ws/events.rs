@@ -6,6 +6,7 @@ use crate::api::status::CoreState;
 pub const EVENT_URI: &str = "/ws/events";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct TraceLog {
     pub timestamp: String,
     pub level: String,
@@ -15,6 +16,7 @@ pub struct TraceLog {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "specta", derive(specta::Type))]
 pub enum Event {
     Log(TraceLog),
     CoreStateChanged(CoreState),
