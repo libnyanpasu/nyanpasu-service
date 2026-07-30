@@ -1330,23 +1330,40 @@ mod tests {
             requested.subscribe(),
             hub.clone(),
         ));
-        tokio::task::yield_now().await;
+
+        // A no-op echo notification proves the bridge has consumed its initial
+        // manager snapshot before the transition below can be published.
+        requested.send_modify(|_| {});
+        let handshake = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for the bridge readiness snapshot")
+            .expect("the event hub must stay open");
+        assert_eq!(status_frame_type(handshake), None);
 
         // A manager transition with no echo yet: v2 leads, v1 follows.
         states.send_replace(status_of(ManagerCoreState::Running { epoch: 1, pid: 7 }));
-        assert_eq!(status_frame_type(events.recv().await.unwrap()), None);
+        let status = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for the manager status snapshot")
+            .expect("the event hub must stay open");
+        assert_eq!(status_frame_type(status), None);
+        let state = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for the legacy state transition")
+            .expect("the event hub must stay open");
         assert!(matches!(
-            events.recv().await.unwrap(),
+            state,
             TestEvent::CoreStateChanged(CoreState::Running)
         ));
 
         // The commit: one v2 snapshot carrying the committed type, and no v1
         // frame — v1 has no type and no transition to report.
         requested.send_replace(Some(mihomo()));
-        assert_eq!(
-            status_frame_type(events.recv().await.unwrap()),
-            Some(mihomo())
-        );
+        let committed = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for the committed type snapshot")
+            .expect("the event hub must stay open");
+        assert_eq!(status_frame_type(committed), Some(mihomo()));
 
         // Closing the manager's channel ends the task, so anything it was going
         // to send has been sent: the emptiness below is a fact, not a race.
@@ -1377,10 +1394,11 @@ mod tests {
         ));
 
         requested.send_modify(|_| {});
-        assert_eq!(
-            status_frame_type(events.recv().await.unwrap()),
-            Some(mihomo())
-        );
+        let refreshed = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            .await
+            .expect("timed out waiting for the refreshed status snapshot")
+            .expect("the event hub must stay open");
+        assert_eq!(status_frame_type(refreshed), Some(mihomo()));
 
         drop(states);
         tokio::time::timeout(Duration::from_secs(5), task)

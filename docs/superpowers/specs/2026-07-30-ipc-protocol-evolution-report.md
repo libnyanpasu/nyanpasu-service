@@ -202,4 +202,4 @@ pub struct CoreApplyData {
 | R6 | 存量用法:用户自声明 pipe/unix controller;第三方面板依赖 `external-controller` 直连 | 前者随 S10 放弃(小众,发布说明标注);后者文档化"显式 `Disable`",GUI 侧可评估面板流量代理作为后续增强 |
 | R7 | S10 删除 `ControllerMode` 是 core-manager 公开 API 破坏性变更 | "crates/* 不改动"约束自 S10 起解除;与 GUI 进程内复用(如有)同版本协调 |
 | R8 | `/core/start`、`/core/apply`、`/core/check` 均接受调用方任意路径,组内成员可指向任何 root 可读文件 | **接受并记录**:socket ACL 是本服务唯一的授权边界,自 `/core/start` 起一贯如此,本轮 S8 新端点未扩大该面。若日后要收窄,应做成显式的路径白名单策略,而不是在各端点里零散校验 |
-| R9 | v2 事件与 v1 共用 256 槽广播环(`server/events.rs:6`),v2 帧更密,v1 客户端在启动抖动期可能略早触发 `Lagged` | **接受并记录**:稳态下事件稀疏;`Lagged` 已由 ws 处理器的 resubscribe 兜底并告知丢失条数(`events.rs` 的 `lag_recovery_with_feedback_reaches_the_tail` 已固定该路径)。若实测有压力,提高容量比拆分通道便宜 |
+| R9 | v2 事件与 v1 共用 256 槽广播环(`server/events.rs:6`),v2 帧更密,v1 客户端在启动抖动期可能略早触发 `Lagged` | **接受并记录**:稳态下事件稀疏;服务端日志记录 skipped 条数(该告警被过滤不入 EventHub);v2 连接重订阅后补发快照;v1 连接跳到实时尾部,需自行轮询 `/status` 重新同步(`events.rs` 的 `lag_recovery_with_feedback_reaches_the_tail` 已固定该路径)。若实测有压力,提高容量比拆分通道便宜 |
