@@ -26,7 +26,7 @@ use nyanpasu_ipc::api::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
         CoreState, CoreStateDetail, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
-    ws::events::{Event, TraceLog},
+    ws::events::{EVENT_URI, EVENT_VERSION_PARAM, EVENT_VERSION_V2, Event, TraceLog},
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 
@@ -59,6 +59,158 @@ where
         RBuilder::other_error_with_kind(Cow::Borrowed(msg), Some(Cow::Borrowed(kind)));
     envelope.ts = TS;
     envelope
+}
+
+/// The S7-enriched snapshot, the same value `the_enriched_status_response_is_pinned`
+/// carries — so a diff between the two literals is a real drift, not a fixture
+/// that fell behind.
+fn enriched_core_infos() -> CoreInfos {
+    CoreInfos {
+        r#type: Some(CoreType::Clash(ClashCoreType::Mihomo)),
+        state: CoreState::Running,
+        state_changed_at: 42,
+        config_path: Some(PathBuf::from("/etc/nyanpasu/config.yaml")),
+        controller: Some(CoreControllerInfo::Http(
+            "http://127.0.0.1:9090/".to_owned(),
+        )),
+        health: Some(CoreHealthInfo {
+            state: CoreHealthState::Healthy,
+            changed_at: 1_700_000_000_123,
+            consecutive_failures: 0,
+            last_error: None,
+            last_success_at: Some(1_700_000_000_000),
+        }),
+        revision: Some(ConfigRevisionInfo {
+            epoch: 3,
+            generation: 7,
+            source_hash: "0123456789abcdef".to_owned(),
+            effective_hash: "fedcba9876543210".to_owned(),
+        }),
+        detail: Some(CoreStateDetail::Running {
+            epoch: 3,
+            pid: 4242,
+        }),
+    }
+}
+
+/// A never-started core: every S7 field absent, `detail` still populated.
+fn minimal_core_infos() -> CoreInfos {
+    CoreInfos {
+        r#type: None,
+        state: CoreState::Stopped(None),
+        state_changed_at: 42,
+        config_path: None,
+        controller: None,
+        health: None,
+        revision: None,
+        detail: Some(CoreStateDetail::Stopped { reason: None }),
+    }
+}
+
+#[test]
+fn the_v2_status_event_is_pinned() {
+    assert_eq!(
+        serde_json::to_string(&Event::new_core_status_changed(enriched_core_infos())).unwrap(),
+        concat!(
+            r#"{"CoreStatusChanged":{"type":{"clash":"mihomo"},"state":"Running","#,
+            r#""state_changed_at":42,"config_path":"/etc/nyanpasu/config.yaml","#,
+            r#""controller":{"Http":"http://127.0.0.1:9090/"},"#,
+            r#""health":{"state":"Healthy","changed_at":1700000000123,"#,
+            r#""consecutive_failures":0,"last_error":null,"#,
+            r#""last_success_at":1700000000000},"#,
+            r#""revision":{"epoch":3,"generation":7,"#,
+            r#""source_hash":"0123456789abcdef","#,
+            r#""effective_hash":"fedcba9876543210"},"#,
+            r#""detail":{"Running":{"epoch":3,"pid":4242}}}}"#
+        )
+    );
+    assert_eq!(
+        serde_json::to_string(&Event::new_core_status_changed(minimal_core_infos())).unwrap(),
+        concat!(
+            r#"{"CoreStatusChanged":{"type":null,"state":{"Stopped":null},"#,
+            r#""state_changed_at":42,"config_path":null,"#,
+            r#""detail":{"Stopped":{"reason":null}}}}"#
+        )
+    );
+}
+
+/// The defect the variant exists to fix (report §1.2): a crash loop reports
+/// `Stopped(None)` on the v1 field and `Restarting` on the faithful one, in the
+/// same frame.
+#[test]
+fn the_v2_payload_distinguishes_a_crash_loop_from_a_stop() {
+    let mut infos = minimal_core_infos();
+    infos.r#type = Some(CoreType::Clash(ClashCoreType::Mihomo));
+    infos.detail = Some(CoreStateDetail::Restarting {
+        epoch: 3,
+        attempt: 2,
+    });
+    assert_eq!(
+        serde_json::to_string(&Event::new_core_status_changed(infos)).unwrap(),
+        concat!(
+            r#"{"CoreStatusChanged":{"type":{"clash":"mihomo"},"#,
+            r#""state":{"Stopped":null},"state_changed_at":42,"config_path":null,"#,
+            r#""detail":{"Restarting":{"epoch":3,"attempt":2}}}}"#
+        )
+    );
+}
+
+/// Push *is* snapshot: the frame's payload is the same object `/status` puts in
+/// `core_infos`, byte for byte. A client decodes one with the other's decoder.
+#[test]
+fn the_v2_payload_is_the_status_core_infos() {
+    let infos = enriched_core_infos();
+    let payload = serde_json::to_string(&infos).unwrap();
+    let frame = serde_json::to_string(&Event::new_core_status_changed(infos)).unwrap();
+    assert_eq!(frame, format!(r#"{{"CoreStatusChanged":{payload}}}"#));
+}
+
+/// The compatibility gate: v1 is exactly the two legacy variants, and the
+/// negotiation is opt-in.
+#[test]
+fn only_the_legacy_variants_belong_to_protocol_v1() {
+    let log = Event::new_log(TraceLog {
+        timestamp: "2026-01-01T00:00:00Z".to_owned(),
+        level: "INFO".to_owned(),
+        message: "hello".to_owned(),
+        target: "nyanpasu_service::core".to_owned(),
+        fields: IndexMap::new(),
+    });
+    assert!(log.is_protocol_v1());
+    assert!(Event::new_core_state_changed(CoreState::Running).is_protocol_v1());
+    assert!(!Event::new_core_status_changed(minimal_core_infos()).is_protocol_v1());
+    // These three strings are protocol: the GUI builds the URL from them.
+    assert_eq!(EVENT_URI, "/ws/events");
+    assert_eq!(EVENT_VERSION_PARAM, "v");
+    assert_eq!(EVENT_VERSION_V2, "2");
+}
+
+/// The other half: a v2 frame decodes back, and a frame written by a *newer*
+/// service — one extra field in the payload — still decodes instead of killing
+/// the stream.
+#[test]
+fn a_v2_status_frame_decodes_back() {
+    let frame =
+        serde_json::to_string(&Event::new_core_status_changed(enriched_core_infos())).unwrap();
+    match serde_json::from_str::<Event>(&frame).unwrap() {
+        Event::CoreStatusChanged(infos) => {
+            assert!(matches!(infos.state, CoreState::Running));
+            assert_eq!(
+                infos.detail,
+                Some(CoreStateDetail::Running {
+                    epoch: 3,
+                    pid: 4242
+                })
+            );
+            assert_eq!(infos.revision.unwrap().generation, 7);
+        }
+        other => panic!("expected a status snapshot, got: {other:?}"),
+    }
+    let forward = concat!(
+        r#"{"CoreStatusChanged":{"type":null,"state":"Running","#,
+        r#""state_changed_at":1,"config_path":null,"future_field":7}}"#
+    );
+    assert!(serde_json::from_str::<Event>(forward).is_ok());
 }
 
 #[test]

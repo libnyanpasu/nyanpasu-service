@@ -7,8 +7,8 @@ use std::{
 use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
     ApplyOutcome, ConfigRevision, ControllerMode, CoreKind, CoreManager as Manager, CoreSpec,
-    CoreState as ManagerCoreState, Error as ManagerError, HealthState, HealthStatus, Host,
-    InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions, RevisionId,
+    CoreState as ManagerCoreState, CoreStatus, Error as ManagerError, HealthState, HealthStatus,
+    Host, InstanceOptions, InstanceSpec, LogFrame, LogStream, ManagerOptions, RevisionId,
 };
 use nyanpasu_ipc::api::{
     R, RBuilder,
@@ -90,7 +90,11 @@ impl From<anyhow::Error> for OpError {
 struct Inner {
     manager: Manager,
     /// Wire-type echo: the manager knows nothing about the alpha variants.
-    requested_core: RwLock<Option<CoreType>>,
+    /// Behind an `Arc` so the state bridge can read it without capturing the
+    /// whole adapter — an `Arc<Inner>` inside that task would keep the manager
+    /// alive, so its watch channel would never close and the task would never
+    /// exit.
+    requested_core: Arc<RwLock<Option<CoreType>>>,
     /// Serializes adapter-level control ops and carries the closing latch.
     control: tokio::sync::Mutex<ControlState>,
 }
@@ -115,7 +119,7 @@ impl CoreManagerService {
         Ok(Self {
             inner: Arc::new(Inner {
                 manager,
-                requested_core: RwLock::new(None),
+                requested_core: Arc::new(RwLock::new(None)),
                 control: tokio::sync::Mutex::new(ControlState { closing: false }),
             }),
         })
@@ -124,12 +128,25 @@ impl CoreManagerService {
     /// State → ws events and core logs → tracing.
     pub fn spawn_bridges(&self, hub: EventHub) {
         let mut states = self.inner.manager.subscribe();
+        // Only the echo is cloned in, never the whole adapter: see `Inner`.
+        let requested_core = self.inner.requested_core.clone();
         tokio::spawn(async move {
             let raw = states.borrow_and_update().clone();
             let mut last = map_core_state(&raw.state);
             while states.changed().await.is_ok() {
                 let raw = states.borrow_and_update().clone();
                 let next = map_core_state(&raw.state);
+                // v2 leads and is never suppressed: it carries every manager
+                // transition, including the ones the two-valued v1 state cannot
+                // express (Starting, Restarting, and the Stopping/Switching
+                // arrivals the guards below drop). Emitting it here rather than
+                // after the guards is what keeps the v1 path below untouched.
+                // Deliberately no `tracing::info!` for it — that would re-enter
+                // the hub as an `Event::Log` and change what v1 streams carry.
+                let requested = requested_core.read().clone();
+                hub.send(WsEvent::new_core_status_changed(project_core_infos(
+                    &raw, requested,
+                )));
                 if matches!(
                     raw.state,
                     ManagerCoreState::Stopping { .. } | ManagerCoreState::Switching { .. }
@@ -309,17 +326,10 @@ impl CoreManagerService {
     }
 
     pub async fn status(&self) -> CoreInfos {
-        let status = self.inner.manager.status();
-        CoreInfos {
-            r#type: self.inner.requested_core.read().clone(),
-            state: map_core_state(&status.state),
-            state_changed_at: status.changed_at,
-            config_path: status.spec.map(|spec| spec.config_path.into_std_path_buf()),
-            controller: status.controller.as_ref().and_then(map_controller),
-            health: status.health.as_ref().map(map_health),
-            revision: status.revision.as_ref().map(map_revision),
-            detail: map_state_detail(&status.state),
-        }
+        project_core_infos(
+            &self.inner.manager.status(),
+            self.inner.requested_core.read().clone(),
+        )
     }
 
     fn instance_spec(
@@ -542,6 +552,28 @@ fn same_ipc_state(previous: &CoreState, next: &CoreState) -> bool {
         (CoreState::Running, CoreState::Running) => true,
         (CoreState::Stopped(previous), CoreState::Stopped(next)) => previous == next,
         _ => false,
+    }
+}
+
+/// The wire projection of a manager snapshot.
+///
+/// One function so `/status` and the v2 `CoreStatusChanged` frame cannot drift:
+/// the event *is* the snapshot (report §4 P1-A). `state` stays the lossy
+/// two-valued field v1 clients depend on; `detail` is the faithful six-state
+/// view beside it.
+fn project_core_infos(status: &CoreStatus, requested_core: Option<CoreType>) -> CoreInfos {
+    CoreInfos {
+        r#type: requested_core,
+        state: map_core_state(&status.state),
+        state_changed_at: status.changed_at,
+        config_path: status
+            .spec
+            .as_ref()
+            .map(|spec| spec.config_path.as_std_path().to_path_buf()),
+        controller: status.controller.as_ref().and_then(map_controller),
+        health: status.health.as_ref().map(map_health),
+        revision: status.revision.as_ref().map(map_revision),
+        detail: map_state_detail(&status.state),
     }
 }
 
@@ -1095,6 +1127,128 @@ mod tests {
                 effective_hash: "fedcba9876543210".to_owned(),
             }
         );
+    }
+
+    fn status_of(state: ManagerCoreState) -> CoreStatus {
+        CoreStatus {
+            state,
+            changed_at: 42,
+            health: None,
+            spec: None,
+            controller: None,
+            revision: None,
+        }
+    }
+
+    /// Mirrors the restructured bridge loop: what a v1 connection receives
+    /// (after the unchanged suppression rules) and what a v2 connection
+    /// receives (one snapshot per manager transition, none suppressed).
+    fn simulate_both(statuses: &[CoreStatus]) -> (Vec<String>, Vec<Option<CoreStateDetail>>) {
+        let mut last = CoreState::Stopped(None);
+        let mut v1 = Vec::new();
+        let mut v2 = Vec::new();
+        for raw in statuses {
+            let next = map_core_state(&raw.state);
+            v2.push(project_core_infos(raw, None).detail);
+            if matches!(
+                raw.state,
+                ManagerCoreState::Stopping { .. } | ManagerCoreState::Switching { .. }
+            ) && matches!(last, CoreState::Stopped(_))
+            {
+                continue;
+            }
+            if same_ipc_state(&last, &next) {
+                continue;
+            }
+            v1.push(format!("{next:?}"));
+            last = next;
+        }
+        (v1, v2)
+    }
+
+    /// The point of S9: the v1 stream keeps suppressing exactly what it always
+    /// suppressed, while the v2 stream carries every transition — including the
+    /// crash-loop and start-up ones the two-valued v1 state cannot express
+    /// (report §1.2).
+    #[test]
+    fn the_v2_stream_carries_every_transition_the_v1_stream_suppresses() {
+        let states = [
+            ManagerCoreState::Starting { epoch: 1 },
+            ManagerCoreState::Running { epoch: 1, pid: 42 },
+            ManagerCoreState::Restarting {
+                epoch: 1,
+                attempt: 2,
+            },
+            ManagerCoreState::Running { epoch: 1, pid: 43 },
+            ManagerCoreState::Stopping { epoch: 1 },
+            ManagerCoreState::Stopped {
+                reason: Some(StopReason::User),
+            },
+        ];
+        let statuses: Vec<CoreStatus> = states.iter().cloned().map(status_of).collect();
+        let (v1, v2) = simulate_both(&statuses);
+
+        // The lossy v1 stream, defect included: the restart in the middle is
+        // reported as a stop, which is why S9 exists.
+        assert_eq!(
+            v1,
+            [
+                "Running",
+                "Stopped(None)",
+                "Running",
+                r#"Stopped(Some("stopped by user"))"#,
+            ]
+        );
+        // …and the mirror above agrees with the untouched v1 helper.
+        assert_eq!(v1, simulate(&states));
+        // One faithful frame per manager transition, none dropped.
+        assert_eq!(
+            v2,
+            [
+                Some(CoreStateDetail::Starting { epoch: 1 }),
+                Some(CoreStateDetail::Running { epoch: 1, pid: 42 }),
+                Some(CoreStateDetail::Restarting {
+                    epoch: 1,
+                    attempt: 2,
+                }),
+                Some(CoreStateDetail::Running { epoch: 1, pid: 43 }),
+                Some(CoreStateDetail::Stopping { epoch: 1 }),
+                Some(CoreStateDetail::Stopped {
+                    reason: Some("stopped by user".to_owned()),
+                }),
+            ]
+        );
+    }
+
+    /// The v2 payload is the S7 projection unchanged: `state` stays the lossy
+    /// field the v1 wire has always carried, `detail` is the faithful one, and
+    /// the type echo comes from the adapter rather than the manager.
+    #[test]
+    fn the_v2_payload_keeps_the_lossy_state_and_adds_the_faithful_detail() {
+        let infos = project_core_infos(
+            &status_of(ManagerCoreState::Restarting {
+                epoch: 3,
+                attempt: 2,
+            }),
+            Some(CoreType::Clash(ClashCoreType::MihomoAlpha)),
+        );
+        assert!(matches!(infos.state, CoreState::Stopped(None)));
+        assert_eq!(
+            infos.detail,
+            Some(CoreStateDetail::Restarting {
+                epoch: 3,
+                attempt: 2
+            })
+        );
+        assert_eq!(
+            infos.r#type,
+            Some(CoreType::Clash(ClashCoreType::MihomoAlpha))
+        );
+        assert_eq!(infos.state_changed_at, 42);
+        assert!(infos.controller.is_none());
+        assert!(infos.health.is_none());
+        assert!(infos.revision.is_none());
+        assert!(infos.config_path.is_none());
     }
 }
 

@@ -4,7 +4,9 @@ use axum::{
     body::{Body, to_bytes},
     http::{
         Method, Request, StatusCode,
-        header::{CONTENT_TYPE, HeaderName},
+        header::{
+            CONNECTION, CONTENT_TYPE, HeaderName, SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_VERSION, UPGRADE,
+        },
     },
     response::Response,
 };
@@ -22,6 +24,7 @@ use nyanpasu_ipc::api::{
         stop::{CORE_STOP_ENDPOINT, CoreStopRes},
     },
     status::{CoreState, CoreStateDetail, STATUS_ENDPOINT, StatusRes},
+    ws::events::EVENT_URI,
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 use serde::de::DeserializeOwned;
@@ -434,4 +437,41 @@ async fn recovering_without_a_quarantine_succeeds() {
     assert_eq!(envelope.code, ResponseCode::Ok);
     assert!(envelope.error_kind.is_none());
     assert!(envelope.data.is_none());
+}
+
+/// The version query is a hint, never a gate: whatever `v` says — including the
+/// duplicated parameter that a `Query` extractor would reject with 400 — the
+/// handshake gets exactly as far as it does without one.
+///
+/// 426 is as far as it can get here: `tower::oneshot` hands the router no hyper
+/// upgrade state, so `WebSocketUpgrade` rejects with `ConnectionNotUpgradable`
+/// after every header check has passed. That is what makes it a useful
+/// assertion — a 400 would mean the query string was rejected, a 404/405 that
+/// the route moved.
+#[tokio::test]
+async fn the_event_stream_accepts_any_version_query() {
+    let env = TestEnv::new().await;
+    for uri in [
+        EVENT_URI,
+        "/ws/events?v=2",
+        "/ws/events?v=nonsense",
+        "/ws/events?v=1&v=2",
+    ] {
+        let response = create_router(env.state.clone())
+            .oneshot(
+                Request::builder()
+                    .method(Method::GET)
+                    .uri(uri)
+                    .header(CONNECTION, "upgrade")
+                    .header(UPGRADE, "websocket")
+                    .header(SEC_WEBSOCKET_VERSION, "13")
+                    .header(SEC_WEBSOCKET_KEY, "dGhlIHNhbXBsZSBub25jZQ==")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UPGRADE_REQUIRED, "{uri}");
+    }
 }
