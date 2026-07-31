@@ -169,6 +169,20 @@ mod tests {
         assert!(error.to_string().contains("not a plain directory"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_is_rejected_as_the_service_log_directory() {
+        let guard = tempfile::tempdir().unwrap();
+        let real = guard.path().join("real");
+        let path = guard.path().join("logs");
+        fs::create_dir(&real).unwrap();
+        std::os::unix::fs::symlink(&real, &path).unwrap();
+
+        let error = ensure_plain_dir(&path).unwrap_err();
+
+        assert!(error.to_string().contains("not a plain directory"));
+    }
+
     /// The directory `/status` advertises must not be world-readable. The
     /// Windows half also pins why the call is explicit: `verify` rejects an
     /// inherited DACL, so a directory that merely sits inside a protected

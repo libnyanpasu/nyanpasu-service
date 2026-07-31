@@ -539,53 +539,57 @@ impl CoreManager {
     /// Like [`Self::stop`], shutdown intentionally bypasses the quarantine
     /// gate and never treats an unrelated uncertain epoch as recovered.
     pub async fn shutdown(&self) -> Result<(), Error> {
-        let mut ctrl = self.inner.ctrl.lock().await;
-        if let Some(active) = ctrl.current.take() {
-            let Active {
-                instance,
-                forwarder,
-                source_spec,
-                revision,
-                capabilities,
-                runtime_features,
-                ..
-            } = active;
-            abort_and_await(forwarder).await;
-            let epoch = instance.epoch();
-            self.inner.publish(
-                CoreState::Stopping { epoch },
-                Some(spec_summary(&source_spec, capabilities, runtime_features)),
-                Some(instance.controller().host.clone()),
-                Some(revision),
-            );
-            if let Err(error) = instance
-                .stop_and_confirm_dead(self.inner.options.stop_timeout)
-                .await
-            {
-                if matches!(error, Error::StopUnconfirmed(_)) {
-                    return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+        let result: Result<(), Error> = async {
+            let mut ctrl = self.inner.ctrl.lock().await;
+            if let Some(active) = ctrl.current.take() {
+                let Active {
+                    instance,
+                    forwarder,
+                    source_spec,
+                    revision,
+                    capabilities,
+                    runtime_features,
+                    ..
+                } = active;
+                abort_and_await(forwarder).await;
+                let epoch = instance.epoch();
+                self.inner.publish(
+                    CoreState::Stopping { epoch },
+                    Some(spec_summary(&source_spec, capabilities, runtime_features)),
+                    Some(instance.controller().host.clone()),
+                    Some(revision),
+                );
+                if let Err(error) = instance
+                    .stop_and_confirm_dead(self.inner.options.stop_timeout)
+                    .await
+                {
+                    if matches!(error, Error::StopUnconfirmed(_)) {
+                        return Err(self.latch_quarantine(&mut ctrl, epoch, error));
+                    }
+                    self.publish_terminal_error(&error);
+                    return Err(error);
                 }
-                self.publish_terminal_error(&error);
-                return Err(error);
+                if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
+                    self.publish_terminal_error(&error);
+                    return Err(error);
+                }
+                self.inner.publish(
+                    CoreState::Stopped {
+                        reason: Some(StopReason::User),
+                    },
+                    None,
+                    None,
+                    None,
+                );
             }
-            if let Err(error) = self.inner.store.cleanup_epoch(epoch).await {
-                self.publish_terminal_error(&error);
-                return Err(error);
-            }
-            self.inner.publish(
-                CoreState::Stopped {
-                    reason: Some(StopReason::User),
-                },
-                None,
-                None,
-                None,
-            );
+            Ok(())
         }
+        .await;
         let log_sink = self.inner.log_sink.lock().await.take();
         if let Some(log_sink) = log_sink {
             log_sink.shutdown().await;
         }
-        Ok(())
+        result
     }
 
     fn next_epoch(&self) -> u64 {

@@ -79,13 +79,17 @@ pub(crate) struct SinkHandle {
 }
 
 impl SinkHandle {
-    pub(crate) async fn shutdown(self) {
+    /// An aborted writer can cut the final batch mid-write, the same contract
+    /// as a crash; readers already discard a truncated last line.
+    pub(crate) async fn shutdown(mut self) {
         self.cancel.cancel();
-        if tokio::time::timeout(std::time::Duration::from_secs(5), self.task)
-            .await
-            .is_err()
-        {
-            tracing::warn!("timed out waiting for the core log sink to shut down");
+        match tokio::time::timeout(std::time::Duration::from_secs(5), &mut self.task).await {
+            Ok(_) => {}
+            Err(_) => {
+                tracing::warn!("timed out waiting for the core log sink to shut down");
+                self.task.abort();
+                let _ = self.task.await;
+            }
         }
     }
 }
@@ -343,7 +347,7 @@ impl Writer {
         // record. One file also means one run, which is a useful boundary when
         // somebody hands you a log directory.
         let seq = next_seq(&dir).await?;
-        prune_dir(&dir, options.max_files - 1).await;
+        prune_dir(&dir, options.max_files.saturating_sub(1), None).await;
         let file = create(&dir, seq).await?;
         Ok(Self {
             dir,
@@ -413,14 +417,23 @@ impl Writer {
         buffer.clear();
     }
 
+    /// A single-file budget briefly permits the old and new files to coexist:
+    /// the active file is never deleted, and retention converges after the
+    /// successful switch closes it.
     async fn rotate(&mut self) {
         let seq = self.seq + 1;
-        prune_dir(&self.dir, self.options.max_files - 1).await;
+        prune_dir(
+            &self.dir,
+            self.options.max_files.saturating_sub(1),
+            Some(self.seq),
+        )
+        .await;
         match create(&self.dir, seq).await {
             Ok(file) => {
                 self.file = file;
                 self.seq = seq;
                 self.written = 0;
+                prune_dir(&self.dir, self.options.max_files, Some(self.seq)).await;
             }
             // Keep writing into the oversized file rather than losing the
             // stream; the next record's pre-check retries.
@@ -431,10 +444,10 @@ impl Writer {
     }
 }
 
-/// Deletes everything past the newest `keep` files. A delete that fails — a
-/// file held open by an editor, which Windows refuses to unlink — is logged and
-/// retried on the next rollover.
-async fn prune_dir(dir: &Utf8Path, keep: usize) {
+/// Deletes everything past the newest `keep` files except `protect`. A delete
+/// that fails — a file held open by an editor, which Windows refuses to unlink
+/// — is logged and retried on the next rollover.
+async fn prune_dir(dir: &Utf8Path, keep: usize, protect: Option<u64>) {
     let existing = match read_seqs(dir).await {
         Ok(seqs) => seqs,
         Err(error) => {
@@ -442,7 +455,10 @@ async fn prune_dir(dir: &Utf8Path, keep: usize) {
             return;
         }
     };
-    for seq in prune_targets(existing, keep) {
+    for seq in prune_targets(existing, keep)
+        .into_iter()
+        .filter(|seq| Some(*seq) != protect)
+    {
         let path = dir.join(file_name(seq));
         if let Err(error) = tokio::fs::remove_file(&path).await {
             tracing::warn!("failed to prune the rotated core log file {path}: {error}");
@@ -742,6 +758,28 @@ mod tests {
         // max_bytes = 1 means every write after the first starts by rotating
         // (the pre-record check sees a full file); only the newest two survive.
         assert_eq!(names(&dir), ["core-000003.jsonl", "core-000004.jsonl"]);
+    }
+
+    #[tokio::test]
+    async fn a_single_file_budget_never_deletes_the_active_file() {
+        let (_guard, dir) = temp_dir();
+        let mut writer = Writer::open(dir.clone(), options(1, 1)).await.unwrap();
+        for index in 0..4 {
+            let message = format!("line {index}");
+            writer.write(&[Entry::Log(frame(&message))]).await;
+
+            let newest = dir.join(file_name(writer.seq));
+            assert!(newest.exists(), "the active file disappeared");
+            assert_eq!(lines(&newest).last().unwrap()["message"], message);
+        }
+        assert!(writer.seq >= 3, "the writer did not rotate at least twice");
+        drop(writer);
+
+        let remaining = names(&dir);
+        assert_eq!(remaining.len(), 1);
+        let records = lines(&dir.join(&remaining[0]));
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0]["message"], "line 3");
     }
 
     /// One oversized batch must not land in one oversized file: the limit is
