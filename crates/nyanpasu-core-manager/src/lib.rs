@@ -10,6 +10,7 @@ mod health;
 pub mod instance;
 pub mod kind;
 mod log;
+mod log_sink;
 pub mod manager;
 pub mod spec;
 pub mod state;

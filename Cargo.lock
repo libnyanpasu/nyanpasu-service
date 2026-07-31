@@ -1950,6 +1950,7 @@ dependencies = [
  "parking_lot",
  "schemars",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "specta",
  "tempfile",

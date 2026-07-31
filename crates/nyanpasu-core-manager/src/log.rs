@@ -16,7 +16,8 @@ const MAX_LOGICAL_FRAME_BYTES: usize = 16 * 1024;
 
 /// Normalized severity. Go's `fatal` and `panic` both terminate the process, so
 /// they collapse into `Fatal`; the original spelling survives in [`LogFrame::raw`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     Trace,
     Debug,
@@ -26,13 +27,14 @@ pub enum LogLevel {
     Fatal,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum LogStream {
     Stdout,
     Stderr,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LogTimestamp {
     /// Exactly as the core printed it.
     pub raw: String,
@@ -43,7 +45,7 @@ pub struct LogTimestamp {
     pub inferred: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct LogFrame {
     pub epoch: u64,
     pub kind: CoreKind,

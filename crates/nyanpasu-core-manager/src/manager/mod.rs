@@ -22,6 +22,7 @@ use crate::{
     error::Error,
     instance::Instance,
     log::{LOG_CHANNEL_CAPACITY, LogFrame},
+    log_sink::{self, SinkOptions},
     probe::ProbeHandle,
     runtime_store::{RuntimeConfigStore, RuntimeDirectoryLock, StagedRuntimeConfig},
     spec::{CoreSpec, InstanceSpec, LocalIpcPolicy, ManagerOptions, ResolvedController},
@@ -110,6 +111,10 @@ struct Inner {
     log_tx: broadcast::Sender<LogFrame>,
     epoch: AtomicU64,
     version_cache: VersionCache,
+    /// `Some` while the JSONL sink is running. `None` means the caller turned it
+    /// off, and there is deliberately no path to report — nothing will ever
+    /// appear there.
+    log_dir: Option<camino::Utf8PathBuf>,
     // Declared last so ordinary Inner destruction drops instances/tasks before
     // releasing directory ownership.
     _runtime_lock: RuntimeDirectoryLock,
@@ -229,8 +234,40 @@ impl CoreManager {
                 )));
             }
         }
+        // Validated whether or not the sink is enabled, for the same reason the
+        // controller template above is validated under every policy:
+        // construction is the caller's last chance to hear about it.
+        if options.log_max_bytes == 0 {
+            return Err(Error::InvalidManagerOptions(
+                "log_max_bytes must be greater than zero".into(),
+            ));
+        }
+        if options.log_max_files == 0 {
+            return Err(Error::InvalidManagerOptions(
+                "log_max_files must be greater than zero".into(),
+            ));
+        }
         let max_epoch = sweep_orphans(&store).await?;
         let (status_tx, _) = watch::channel(CoreStatus::initial());
+        let (log_tx, _) = broadcast::channel(LOG_CHANNEL_CAPACITY);
+        // Subscribed here rather than inside the task, and before any instance
+        // can exist, so the sink cannot miss the start-up burst.
+        let log_dir = if options.log_sink_enabled {
+            let dir = log_sink::prepare_dir(store.dir()).await?;
+            log_sink::spawn(
+                dir.clone(),
+                SinkOptions {
+                    max_bytes: options.log_max_bytes,
+                    max_files: options.log_max_files,
+                },
+                log_tx.subscribe(),
+                options.cancel_token.clone(),
+            )
+            .await?;
+            Some(dir)
+        } else {
+            None
+        };
         Ok(Self {
             inner: Arc::new(Inner {
                 options,
@@ -238,9 +275,10 @@ impl CoreManager {
                 store,
                 ctrl: tokio::sync::Mutex::default(),
                 status_tx,
-                log_tx: broadcast::channel(LOG_CHANNEL_CAPACITY).0,
+                log_tx,
                 epoch: AtomicU64::new(max_epoch),
                 version_cache: VersionCache::default(),
+                log_dir,
                 _runtime_lock: runtime_lock,
             }),
         })
@@ -252,6 +290,14 @@ impl CoreManager {
 
     pub fn subscribe_logs(&self) -> broadcast::Receiver<LogFrame> {
         self.inner.log_tx.subscribe()
+    }
+
+    /// Where the JSONL core-log archive is written, or `None` when the sink is
+    /// disabled. Constant for the manager's lifetime, which is why it is an
+    /// accessor and not a field on the status snapshot: putting it there would
+    /// republish an unchanging string on every transition.
+    pub fn log_dir(&self) -> Option<&camino::Utf8Path> {
+        self.inner.log_dir.as_deref()
     }
 
     pub fn status(&self) -> CoreStatus {
