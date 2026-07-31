@@ -57,6 +57,10 @@ impl EventHub {
         let _ = self.log_tx.send(event);
     }
 
+    pub(crate) fn has_log_subscribers(&self) -> bool {
+        self.log_tx.receiver_count() > 0
+    }
+
     pub fn subscribe_logs(&self) -> broadcast::Receiver<Event> {
         self.log_tx.subscribe()
     }
@@ -238,9 +242,11 @@ mod tests {
         let _status = hub.subscribe();
         assert_eq!(hub.receiver_count(), 1);
         assert_eq!(hub.log_receiver_count(), 0);
+        assert!(!hub.has_log_subscribers());
         let _logs = hub.subscribe_logs();
         assert_eq!(hub.receiver_count(), 1);
         assert_eq!(hub.log_receiver_count(), 1);
+        assert!(hub.has_log_subscribers());
     }
 
     /// The point of the whole stage: a log burst big enough to overrun its own

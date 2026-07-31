@@ -32,6 +32,13 @@ use super::{consts::RuntimeInfos, events::EventHub};
 
 const CORE_LOG_TARGET: &str = "nyanpasu_service::core";
 
+// These mirror `nyanpasu-core-manager`'s private `log_sink` caps; keep the
+// numbers in sync.
+const MAX_CORE_LOG_TEXT_BYTES: usize = 16 * 1024;
+const MAX_CORE_LOG_TARGET_BYTES: usize = 2048;
+const MAX_CORE_LOG_FIELDS: usize = 64;
+const MAX_CORE_LOG_FIELD_TEXT_BYTES: usize = 1024;
+
 /// Concurrent `/core/check` operations a service will run. Each one spawns a
 /// core binary, so this is a resource bound, not a fairness knob: two lets an
 /// honest client fire a second check while the first is running, and refuses
@@ -170,10 +177,14 @@ impl CoreManagerService {
                         // The projection borrows, so `forward_log` still takes
                         // the frame by value and moves its 16 KiB `raw` instead
                         // of the stream paying to clone it.
-                        hub.send_log(WsEvent::new_core_log(core_log_info(
-                            &frame,
-                            chrono::Utc::now().timestamp_millis(),
-                        )));
+                        // A subscriber connecting mid-frame misses that frame,
+                        // consistent with the stream's no-replay semantics.
+                        if hub.has_log_subscribers() {
+                            hub.send_log(WsEvent::new_core_log(core_log_info(
+                                &frame,
+                                chrono::Utc::now().timestamp_millis(),
+                            )));
+                        }
                         forward_log(frame);
                     }
                     Err(RecvError::Lagged(skipped)) => {
@@ -762,6 +773,30 @@ fn forward_log(frame: LogFrame) {
 /// an inferred one, so this is the only clock every record is guaranteed to
 /// have.
 fn core_log_info(frame: &LogFrame, at: i64) -> CoreLogInfo {
+    let (message, message_cut) = clamp_core_log_text(&frame.message, MAX_CORE_LOG_TEXT_BYTES);
+    let (target, target_cut) = match frame.target.as_deref() {
+        Some(target) => {
+            let (target, cut) = clamp_core_log_text(target, MAX_CORE_LOG_TARGET_BYTES);
+            (Some(target.to_owned()), cut)
+        }
+        None => (None, false),
+    };
+    let mut fields_cut = frame.fields.len() > MAX_CORE_LOG_FIELDS;
+    let fields = frame
+        .fields
+        .iter()
+        .take(MAX_CORE_LOG_FIELDS)
+        .map(|field| {
+            let (key, key_cut) = clamp_core_log_text(&field.key, MAX_CORE_LOG_FIELD_TEXT_BYTES);
+            let (value, value_cut) =
+                clamp_core_log_text(&field.value, MAX_CORE_LOG_FIELD_TEXT_BYTES);
+            fields_cut |= key_cut || value_cut;
+            CoreLogField {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            }
+        })
+        .collect();
     CoreLogInfo {
         epoch: frame.epoch,
         kind: match frame.kind {
@@ -787,20 +822,24 @@ fn core_log_info(frame: &LogFrame, at: i64) -> CoreLogInfo {
             .timestamp
             .as_ref()
             .and_then(|timestamp| timestamp.unix_ms),
-        target: frame.target.clone(),
-        message: frame.message.clone(),
+        target,
+        message: message.to_owned(),
         // Read field by field rather than through `clash_api::LogField`:
         // clash-api is not a dependency of this crate and must not become one.
-        fields: frame
-            .fields
-            .iter()
-            .map(|field| CoreLogField {
-                key: field.key.clone(),
-                value: field.value.clone(),
-            })
-            .collect(),
-        truncated: frame.truncated,
+        fields,
+        truncated: frame.truncated || message_cut || target_cut || fields_cut,
     }
+}
+
+fn clamp_core_log_text(text: &str, max_bytes: usize) -> (&str, bool) {
+    if text.len() <= max_bytes {
+        return (text, false);
+    }
+    let mut end = max_bytes;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    (&text[..end], true)
 }
 
 // TODO: support system path search via a config or flag
@@ -1748,6 +1787,46 @@ mod tests {
         let frame = log_frame();
         let _ = core_log_info(&frame, 0);
         assert_eq!(frame.raw, "the whole logical record");
+    }
+
+    #[test]
+    fn core_log_projection_caps_oversized_values_and_preserves_normal_frames() {
+        let mut normal = log_frame();
+        normal.truncated = false;
+        normal.fields = serde_json::from_value(serde_json::json!([{
+            "key": "request",
+            "value": "7"
+        }]))
+        .unwrap();
+        let normal_info = core_log_info(&normal, 1);
+        assert_eq!(normal_info.target.as_deref(), Some("dns"));
+        assert_eq!(normal_info.message, "message body");
+        assert_eq!(normal_info.fields[0].key, "request");
+        assert_eq!(normal_info.fields[0].value, "7");
+        assert!(!normal_info.truncated);
+
+        let huge = "x".repeat(MAX_CORE_LOG_FIELD_TEXT_BYTES * 2);
+        let mut oversized = log_frame();
+        oversized.truncated = false;
+        oversized.message = "m".repeat(MAX_CORE_LOG_TEXT_BYTES * 2);
+        oversized.target = Some("t".repeat(MAX_CORE_LOG_TARGET_BYTES * 2));
+        oversized.fields = (0..=MAX_CORE_LOG_FIELDS)
+            .map(|index| {
+                serde_json::from_value(serde_json::json!({
+                    "key": format!("{index}{huge}"),
+                    "value": huge.clone(),
+                }))
+                .unwrap()
+            })
+            .collect();
+
+        let info = core_log_info(&oversized, 2);
+        assert_eq!(info.message.len(), MAX_CORE_LOG_TEXT_BYTES);
+        assert_eq!(info.target.unwrap().len(), MAX_CORE_LOG_TARGET_BYTES);
+        assert_eq!(info.fields.len(), MAX_CORE_LOG_FIELDS);
+        assert_eq!(info.fields[0].key.len(), MAX_CORE_LOG_FIELD_TEXT_BYTES);
+        assert_eq!(info.fields[0].value.len(), MAX_CORE_LOG_FIELD_TEXT_BYTES);
+        assert!(info.truncated);
     }
 
     /// A line whose header did not parse has no clock of its own, which is

@@ -115,6 +115,10 @@ struct Inner {
     /// off, and there is deliberately no path to report — nothing will ever
     /// appear there.
     log_dir: Option<camino::Utf8PathBuf>,
+    /// Dropping the manager without calling `shutdown()` abandons at most the
+    /// final batch. This is diagnostic data and best-effort by design;
+    /// `shutdown()` is the graceful path.
+    log_sink: tokio::sync::Mutex<Option<log_sink::SinkHandle>>,
     // Declared last so ordinary Inner destruction drops instances/tasks before
     // releasing directory ownership.
     _runtime_lock: RuntimeDirectoryLock,
@@ -252,21 +256,21 @@ impl CoreManager {
         let (log_tx, _) = broadcast::channel(LOG_CHANNEL_CAPACITY);
         // Subscribed here rather than inside the task, and before any instance
         // can exist, so the sink cannot miss the start-up burst.
-        let log_dir = if options.log_sink_enabled {
+        let (log_dir, log_sink) = if options.log_sink_enabled {
             let dir = log_sink::prepare_dir(store.dir()).await?;
-            log_sink::spawn(
+            let handle = log_sink::spawn(
                 dir.clone(),
                 SinkOptions {
                     max_bytes: options.log_max_bytes,
                     max_files: options.log_max_files,
                 },
                 log_tx.subscribe(),
-                options.cancel_token.clone(),
+                options.cancel_token.child_token(),
             )
             .await?;
-            Some(dir)
+            (Some(dir), Some(handle))
         } else {
-            None
+            (None, None)
         };
         Ok(Self {
             inner: Arc::new(Inner {
@@ -279,6 +283,7 @@ impl CoreManager {
                 epoch: AtomicU64::new(max_epoch),
                 version_cache: VersionCache::default(),
                 log_dir,
+                log_sink: tokio::sync::Mutex::new(log_sink),
                 _runtime_lock: runtime_lock,
             }),
         })
@@ -575,6 +580,10 @@ impl CoreManager {
                 None,
                 None,
             );
+        }
+        let log_sink = self.inner.log_sink.lock().await.take();
+        if let Some(log_sink) = log_sink {
+            log_sink.shutdown().await;
         }
         Ok(())
     }

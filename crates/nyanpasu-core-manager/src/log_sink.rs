@@ -21,6 +21,8 @@
 //!   `RuntimeConfigStore`, which pays the full stage/fsync/replace price because
 //!   it holds authoritative configuration.
 
+use std::borrow::Cow;
+
 use camino::{Utf8Path, Utf8PathBuf};
 use clash_api::LogField;
 use serde::Serialize;
@@ -36,7 +38,7 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     error::Error,
     kind::CoreKind,
-    log::{LogFrame, LogLevel, LogStream, LogTimestamp},
+    log::{LogFrame, LogLevel, LogStream},
     // `crate::runtime_store`, not `crate::config::runtime_store`: `lib.rs:19`
     // re-exports it and `manager/mod.rs:26` already spells it this way.
     runtime_store::validate_directory_metadata,
@@ -57,6 +59,11 @@ const FILE_SUFFIX: &str = ".jsonl";
 /// is what actually makes "a rotated file overshoots by at most one record" a
 /// statement with a number behind it.
 const MAX_TEXT_BYTES: usize = 16 * 1024;
+const MAX_TARGET_BYTES: usize = 2048;
+const MAX_TS_RAW_BYTES: usize = 256;
+const MAX_FIELDS: usize = 64;
+const MAX_FIELD_TEXT_BYTES: usize = 1024;
+const MAX_BATCH_RECORDS: usize = 256;
 
 /// Rotation knobs, mirrored from `ManagerOptions` so the writer does not carry
 /// the whole option bag.
@@ -64,6 +71,23 @@ const MAX_TEXT_BYTES: usize = 16 * 1024;
 pub(crate) struct SinkOptions {
     pub max_bytes: u64,
     pub max_files: usize,
+}
+
+pub(crate) struct SinkHandle {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SinkHandle {
+    pub(crate) async fn shutdown(self) {
+        self.cancel.cancel();
+        if tokio::time::timeout(std::time::Duration::from_secs(5), self.task)
+            .await
+            .is_err()
+        {
+            tracing::warn!("timed out waiting for the core log sink to shut down");
+        }
+    }
 }
 
 /// A `"log"` line. The fields are borrowed from the frame so the two capped
@@ -77,13 +101,20 @@ struct LogRecord<'a> {
     kind: CoreKind,
     stream: LogStream,
     level: LogLevel,
-    timestamp: Option<&'a LogTimestamp>,
+    timestamp: Option<RecordTimestamp<'a>>,
     target: Option<&'a str>,
     message: &'a str,
-    fields: &'a [LogField],
+    fields: Cow<'a, [LogField]>,
     raw: &'a str,
     /// The frame's own flag, OR-ed with whichever cap this record hit.
     truncated: bool,
+}
+
+#[derive(Serialize)]
+struct RecordTimestamp<'a> {
+    raw: &'a str,
+    unix_ms: Option<i64>,
+    inferred: bool,
 }
 
 /// A `"gap"` line: the writer fell behind and the broadcast dropped `dropped`
@@ -97,8 +128,30 @@ struct GapRecord {
 
 impl<'a> LogRecord<'a> {
     fn new(frame: &'a LogFrame, at: i64) -> Self {
-        let (message, message_cut) = clamp(&frame.message);
-        let (raw, raw_cut) = clamp(&frame.raw);
+        let (message, message_cut) = clamp(&frame.message, MAX_TEXT_BYTES);
+        let (raw, raw_cut) = clamp(&frame.raw, MAX_TEXT_BYTES);
+        let (target, target_cut) = match frame.target.as_deref() {
+            Some(target) => {
+                let (target, cut) = clamp(target, MAX_TARGET_BYTES);
+                (Some(target), cut)
+            }
+            None => (None, false),
+        };
+        let (timestamp, timestamp_cut) = match frame.timestamp.as_ref() {
+            Some(timestamp) => {
+                let (raw, cut) = clamp(&timestamp.raw, MAX_TS_RAW_BYTES);
+                (
+                    Some(RecordTimestamp {
+                        raw,
+                        unix_ms: timestamp.unix_ms,
+                        inferred: timestamp.inferred,
+                    }),
+                    cut,
+                )
+            }
+            None => (None, false),
+        };
+        let (fields, fields_cut) = project_fields(&frame.fields);
         Self {
             t: "log",
             at,
@@ -106,12 +159,17 @@ impl<'a> LogRecord<'a> {
             kind: frame.kind,
             stream: frame.stream,
             level: frame.level,
-            timestamp: frame.timestamp.as_ref(),
-            target: frame.target.as_deref(),
+            timestamp,
+            target,
             message,
-            fields: &frame.fields,
+            fields,
             raw,
-            truncated: frame.truncated || message_cut || raw_cut,
+            truncated: frame.truncated
+                || message_cut
+                || raw_cut
+                || target_cut
+                || timestamp_cut
+                || fields_cut,
         }
     }
 }
@@ -128,15 +186,35 @@ impl GapRecord {
 
 /// Cuts at the last char boundary at or below the limit, so the result is still
 /// a `str` and still serializes as valid JSON.
-fn clamp(text: &str) -> (&str, bool) {
-    if text.len() <= MAX_TEXT_BYTES {
+fn clamp(text: &str, max_bytes: usize) -> (&str, bool) {
+    if text.len() <= max_bytes {
         return (text, false);
     }
-    let mut end = MAX_TEXT_BYTES;
+    let mut end = max_bytes;
     while !text.is_char_boundary(end) {
         end -= 1;
     }
     (&text[..end], true)
+}
+
+fn project_fields(fields: &[LogField]) -> (Cow<'_, [LogField]>, bool) {
+    let kept = &fields[..fields.len().min(MAX_FIELDS)];
+    let exceeds_budget = fields.len() > MAX_FIELDS
+        || kept.iter().any(|field| {
+            field.key.len() > MAX_FIELD_TEXT_BYTES || field.value.len() > MAX_FIELD_TEXT_BYTES
+        });
+    if !exceeds_budget {
+        return (Cow::Borrowed(fields), false);
+    }
+
+    let fields = kept
+        .iter()
+        .map(|field| LogField {
+            key: clamp(&field.key, MAX_FIELD_TEXT_BYTES).0.to_owned(),
+            value: clamp(&field.value, MAX_FIELD_TEXT_BYTES).0.to_owned(),
+        })
+        .collect();
+    (Cow::Owned(fields), true)
 }
 
 /// Creates and hardens `{parent}/logs`, returning its path.
@@ -175,15 +253,19 @@ pub(crate) async fn prepare_dir(parent: &Utf8Path) -> Result<Utf8PathBuf, Error>
 /// Opening before spawning is deliberate: a directory that cannot be written is
 /// a `CoreManager::new` failure, not a task that dies quietly three seconds
 /// later.
+///
+/// Dropping the manager without calling `shutdown()` abandons at most the final
+/// batch. This is diagnostic data and best-effort by design; `shutdown()` is
+/// the graceful path.
 pub(crate) async fn spawn(
     dir: Utf8PathBuf,
     options: SinkOptions,
     logs: Receiver<LogFrame>,
     cancel: CancellationToken,
-) -> Result<(), Error> {
+) -> Result<SinkHandle, Error> {
     let writer = Writer::open(dir, options).await?;
-    tokio::spawn(run(writer, logs, cancel));
-    Ok(())
+    let task = tokio::spawn(run(writer, logs, cancel.clone()));
+    Ok(SinkHandle { cancel, task })
 }
 
 /// Drains the broadcast in batches until the token is cancelled or the last
@@ -197,9 +279,12 @@ async fn run(mut writer: Writer, mut logs: Receiver<LogFrame>, cancel: Cancellat
         batch.clear();
         let first = tokio::select! {
             _ = cancel.cancelled() => {
-                drain(&mut logs, &mut batch);
+                let closed = drain(&mut logs, &mut batch);
                 writer.write(&batch).await;
-                break;
+                if closed || batch.len() < MAX_BATCH_RECORDS {
+                    break;
+                }
+                continue;
             }
             received = logs.recv() => received,
         };
@@ -232,7 +317,7 @@ enum Entry {
 /// Appends everything already buffered. `true` means the channel is closed and
 /// the caller must stop after writing what it has.
 fn drain(logs: &mut Receiver<LogFrame>, batch: &mut Vec<Entry>) -> bool {
-    loop {
+    while batch.len() < MAX_BATCH_RECORDS {
         match logs.try_recv() {
             Ok(frame) => batch.push(Entry::Log(frame)),
             Err(TryRecvError::Lagged(dropped)) => batch.push(Entry::Gap(dropped)),
@@ -240,6 +325,7 @@ fn drain(logs: &mut Receiver<LogFrame>, batch: &mut Vec<Entry>) -> bool {
             Err(TryRecvError::Closed) => return true,
         }
     }
+    false
 }
 
 struct Writer {
@@ -257,18 +343,15 @@ impl Writer {
         // record. One file also means one run, which is a useful boundary when
         // somebody hands you a log directory.
         let seq = next_seq(&dir).await?;
+        prune_dir(&dir, options.max_files - 1).await;
         let file = create(&dir, seq).await?;
-        let writer = Self {
+        Ok(Self {
             dir,
             options,
             file,
             written: 0,
             seq,
-        };
-        // A previous run may have died holding more files than the retention
-        // limit allows.
-        writer.prune().await;
-        Ok(writer)
+        })
     }
 
     /// Serializes and appends one batch, rotating whenever the active file has
@@ -332,12 +415,12 @@ impl Writer {
 
     async fn rotate(&mut self) {
         let seq = self.seq + 1;
+        prune_dir(&self.dir, self.options.max_files - 1).await;
         match create(&self.dir, seq).await {
             Ok(file) => {
                 self.file = file;
                 self.seq = seq;
                 self.written = 0;
-                self.prune().await;
             }
             // Keep writing into the oversized file rather than losing the
             // stream; the next record's pre-check retries.
@@ -346,23 +429,23 @@ impl Writer {
             }
         }
     }
+}
 
-    /// Deletes everything past the newest `max_files`, the active file included
-    /// in the count. A delete that fails — a file held open by an editor, which
-    /// Windows refuses to unlink — is logged and retried on the next rollover.
-    async fn prune(&self) {
-        let existing = match read_seqs(&self.dir).await {
-            Ok(seqs) => seqs,
-            Err(error) => {
-                tracing::warn!("failed to list the core log directory: {error}");
-                return;
-            }
-        };
-        for seq in prune_targets(existing, self.options.max_files) {
-            let path = self.dir.join(file_name(seq));
-            if let Err(error) = tokio::fs::remove_file(&path).await {
-                tracing::warn!("failed to prune the rotated core log file {path}: {error}");
-            }
+/// Deletes everything past the newest `keep` files. A delete that fails — a
+/// file held open by an editor, which Windows refuses to unlink — is logged and
+/// retried on the next rollover.
+async fn prune_dir(dir: &Utf8Path, keep: usize) {
+    let existing = match read_seqs(dir).await {
+        Ok(seqs) => seqs,
+        Err(error) => {
+            tracing::warn!("failed to list the core log directory: {error}");
+            return;
+        }
+    };
+    for seq in prune_targets(existing, keep) {
+        let path = dir.join(file_name(seq));
+        if let Err(error) = tokio::fs::remove_file(&path).await {
+            tracing::warn!("failed to prune the rotated core log file {path}: {error}");
         }
     }
 }
@@ -422,7 +505,7 @@ fn prune_targets(mut seqs: Vec<u64>, max_files: usize) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    use crate::kind::CoreKind;
+    use crate::{kind::CoreKind, log::LogTimestamp};
 
     fn temp_dir() -> (tempfile::TempDir, Utf8PathBuf) {
         let guard = tempfile::tempdir().unwrap();
@@ -573,10 +656,42 @@ mod tests {
         // Three bytes per char, so the limit never lands on a boundary and the
         // walk-back actually runs.
         let text = "€".repeat(MAX_TEXT_BYTES);
-        let (cut, truncated) = clamp(&text);
+        let (cut, truncated) = clamp(&text, MAX_TEXT_BYTES);
         assert!(truncated);
         assert!(cut.len() < MAX_TEXT_BYTES, "the boundary walk did not run");
         assert!(text.starts_with(cut));
+    }
+
+    #[test]
+    fn oversized_metadata_is_capped_and_flagged_truncated() {
+        let huge = "x".repeat(MAX_FIELD_TEXT_BYTES * 2);
+        let mut oversized = frame("oversized metadata");
+        oversized.target = Some("t".repeat(MAX_TARGET_BYTES * 2));
+        oversized.timestamp.as_mut().unwrap().raw = "z".repeat(MAX_TS_RAW_BYTES * 2);
+        oversized.fields = (0..=MAX_FIELDS)
+            .map(|index| LogField {
+                key: format!("{index}{huge}"),
+                value: huge.clone(),
+            })
+            .collect();
+
+        let value = record(&oversized);
+
+        assert_eq!(value["target"].as_str().unwrap().len(), MAX_TARGET_BYTES);
+        assert_eq!(
+            value["timestamp"]["raw"].as_str().unwrap().len(),
+            MAX_TS_RAW_BYTES
+        );
+        assert_eq!(value["fields"].as_array().unwrap().len(), MAX_FIELDS);
+        assert_eq!(
+            value["fields"][0]["key"].as_str().unwrap().len(),
+            MAX_FIELD_TEXT_BYTES
+        );
+        assert_eq!(
+            value["fields"][0]["value"].as_str().unwrap().len(),
+            MAX_FIELD_TEXT_BYTES
+        );
+        assert_eq!(value["truncated"], true);
     }
 
     #[test]
@@ -727,6 +842,50 @@ mod tests {
         assert_eq!(records[0]["dropped"], 3);
         assert_eq!(records[1]["message"], "line 3");
         assert_eq!(records[2]["message"], "line 4");
+    }
+
+    #[tokio::test]
+    async fn bounded_batches_preserve_every_record_until_the_channel_closes() {
+        let (_guard, dir) = temp_dir();
+        let (log_tx, logs) = tokio::sync::broadcast::channel(512);
+        for index in 0..300 {
+            log_tx.send(frame(&format!("line {index}"))).unwrap();
+        }
+        drop(log_tx);
+
+        let writer = Writer::open(dir.clone(), options(1024 * 1024, 5))
+            .await
+            .unwrap();
+        run(writer, logs, CancellationToken::new()).await;
+
+        let records = lines(&dir.join(file_name(1)));
+        assert_eq!(records.len(), 300);
+        assert!(records.iter().all(|record| record["t"] == "log"));
+    }
+
+    #[tokio::test]
+    async fn graceful_sink_shutdown_drains_every_buffered_frame() {
+        let (_guard, dir) = temp_dir();
+        let (log_tx, logs) = tokio::sync::broadcast::channel(16);
+        let handle = spawn(
+            dir.clone(),
+            options(1024 * 1024, 5),
+            logs,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+        for index in 0..8 {
+            log_tx.send(frame(&format!("line {index}"))).unwrap();
+        }
+
+        handle.shutdown().await;
+
+        let records = lines(&dir.join(file_name(1)));
+        assert_eq!(records.len(), 8);
+        for (index, record) in records.iter().enumerate() {
+            assert_eq!(record["message"], format!("line {index}"));
+        }
     }
 
     /// The subdirectory has to be hardened explicitly: the parent's DACL is

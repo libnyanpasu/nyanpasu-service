@@ -1,5 +1,5 @@
 use anyhow::{Result, anyhow};
-use std::{fs, io::IsTerminal, sync::OnceLock};
+use std::{fs, io::IsTerminal, path::Path, sync::OnceLock};
 use tracing::level_filters::LevelFilter;
 use tracing_appender::{
     non_blocking::{NonBlocking, WorkerGuard},
@@ -25,9 +25,7 @@ fn get_file_appender(max_files: usize) -> Result<(NonBlocking, WorkerGuard)> {
 pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     if write_file {
         let log_dir = crate::utils::dirs::service_logs_dir();
-        if !log_dir.exists() {
-            fs::create_dir_all(&log_dir)?;
-        }
+        ensure_plain_dir(&log_dir)?;
         harden_log_dir(&log_dir)?;
     }
     let (log_level, log_max_files) = {
@@ -100,6 +98,27 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn ensure_plain_dir(dir: &Path) -> Result<()> {
+    match fs::symlink_metadata(dir) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                || nyanpasu_utils::io::atomic_fs::is_reparse_point(&metadata)
+                || !metadata.is_dir() =>
+        {
+            Err(anyhow!(
+                "service log path is not a plain directory: {}",
+                dir.display()
+            ))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(dir)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
 /// Restrict the service log directory to the account the service runs under,
 /// the way the manager's runtime directory already is.
 ///
@@ -111,6 +130,10 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
 /// The writer is unaffected — the DACL grants SYSTEM full access and the
 /// service runs elevated. Readers are affected, deliberately: see
 /// `LogPathsInfo`'s rustdoc.
+///
+/// Ownership of a pre-existing directory is not verified here: the shared
+/// helpers accept the current owner. Tightening that requires a
+/// `nyanpasu-utils` change and is tracked as a follow-up.
 fn harden_log_dir(dir: &std::path::Path) -> Result<()> {
     #[cfg(unix)]
     {
@@ -134,6 +157,17 @@ fn harden_log_dir(dir: &std::path::Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_regular_file_is_rejected_as_the_service_log_directory() {
+        let guard = tempfile::tempdir().unwrap();
+        let path = guard.path().join("logs");
+        fs::write(&path, b"not a directory").unwrap();
+
+        let error = ensure_plain_dir(&path).unwrap_err();
+
+        assert!(error.to_string().contains("not a plain directory"));
+    }
 
     /// The directory `/status` advertises must not be world-readable. The
     /// Windows half also pins why the call is explicit: `verify` rejects an
