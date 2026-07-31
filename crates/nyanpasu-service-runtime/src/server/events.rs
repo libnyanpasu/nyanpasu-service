@@ -5,6 +5,14 @@ use tokio::sync::broadcast;
 /// this is told how many it lost instead of stalling the broadcast.
 const EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Core log frames buffered per subscriber. Four times the status ring, and the
+/// reason is not a traffic estimate: the two streams fail differently. Dropping
+/// a status frame costs a full snapshot resend, so that ring is sized to be
+/// cheap to resynchronise; dropping a log line costs nothing, so this one is
+/// sized to swallow a core's start-up burst outright. At roughly 200-400 bytes
+/// a record the resident ceiling is a few hundred KiB.
+const LOG_EVENT_CHANNEL_CAPACITY: usize = 1024;
+
 /// Tracing target for ws-lag diagnostics. Log lines with this target must
 /// never be forwarded into the EventHub: a lag warning that re-enters the
 /// ring it just overflowed would let many slow connections feed each other
@@ -16,10 +24,16 @@ pub(crate) fn should_forward_to_hub(target: &str) -> bool {
     target != WS_LAG_LOG_TARGET
 }
 
-/// Fan-out point for ws events. Cloning shares the one channel.
+/// Fan-out point for ws events. Cloning shares both channels.
+///
+/// Two rings, not one, because a subscriber that falls behind must be able to
+/// lose a log line without paying for a status resynchronisation. Sharing one
+/// ring makes the two indistinguishable, so every loss has to be handled as if
+/// it were the expensive kind.
 #[derive(Clone)]
 pub struct EventHub {
     tx: broadcast::Sender<Event>,
+    log_tx: broadcast::Sender<Event>,
 }
 
 impl Default for EventHub {
@@ -32,6 +46,7 @@ impl EventHub {
     pub fn new() -> Self {
         Self {
             tx: broadcast::channel(EVENT_CHANNEL_CAPACITY).0,
+            log_tx: broadcast::channel(LOG_EVENT_CHANNEL_CAPACITY).0,
         }
     }
 
@@ -48,16 +63,36 @@ impl EventHub {
         self.tx.subscribe()
     }
 
+    /// Fan out one [`Event::CoreLog`]. Same contract as [`Self::send`] —
+    /// synchronous, never awaits, and a failure just means nobody is listening.
+    /// Kept non-logging for the same reason: a log line about the log stream is
+    /// the one thing that can feed itself.
+    pub fn send_log(&self, event: Event) {
+        let _ = self.log_tx.send(event);
+    }
+
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<Event> {
+        self.log_tx.subscribe()
+    }
+
     #[cfg(test)]
     fn receiver_count(&self) -> usize {
         self.tx.receiver_count()
+    }
+
+    #[cfg(test)]
+    fn log_receiver_count(&self) -> usize {
+        self.log_tx.receiver_count()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nyanpasu_ipc::api::status::{CoreInfos, CoreState, CoreStateDetail};
+    use nyanpasu_ipc::api::{
+        status::{CoreInfos, CoreState, CoreStateDetail},
+        ws::events::{CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream},
+    };
     use tokio::sync::broadcast::error::TryRecvError;
 
     fn state_event(state: CoreState) -> Event {
@@ -175,5 +210,81 @@ mod tests {
                 r#""detail":{"Stopped":{"reason":null}}}}"#
             )
         );
+    }
+
+    fn core_log_event() -> Event {
+        Event::new_core_log(CoreLogInfo {
+            epoch: 1,
+            kind: CoreLogKind::Mihomo,
+            stream: CoreLogStream::Stdout,
+            level: CoreLogLevel::Info,
+            at: 1_700_000_000_000,
+            timestamp_ms: Some(1_753_719_382_646),
+            target: None,
+            message: "hello core".to_owned(),
+            fields: vec![CoreLogField {
+                key: "request".to_owned(),
+                value: "7".to_owned(),
+            }],
+            truncated: false,
+        })
+    }
+
+    /// Byte-for-byte the literal `nyanpasu_ipc`'s `the_core_log_event_is_pinned`
+    /// asserts against `serde_json`. The service writes the socket with
+    /// `simd_json` and the client decodes with `serde_json`; the two must agree.
+    #[test]
+    fn ws_core_log_frames_are_pinned() {
+        let frame = simd_json::to_vec(&core_log_event()).unwrap();
+        assert_eq!(
+            String::from_utf8(frame).unwrap(),
+            concat!(
+                r#"{"CoreLog":{"epoch":1,"kind":"mihomo","stream":"stdout","level":"info","#,
+                r#""at":1700000000000,"timestamp_ms":1753719382646,"target":null,"#,
+                r#""message":"hello core","fields":[{"key":"request","value":"7"}],"#,
+                r#""truncated":false}}"#
+            )
+        );
+    }
+
+    /// The two rings are separate objects, so a subscriber to one is not a
+    /// subscriber to the other. Without this, `send_log` would reach the status
+    /// stream and the split would be decorative.
+    #[test]
+    fn the_two_rings_have_independent_subscribers() {
+        let hub = EventHub::new();
+        let _status = hub.subscribe();
+        assert_eq!(hub.receiver_count(), 1);
+        assert_eq!(hub.log_receiver_count(), 0);
+        let _logs = hub.subscribe_logs();
+        assert_eq!(hub.receiver_count(), 1);
+        assert_eq!(hub.log_receiver_count(), 1);
+    }
+
+    /// The point of the whole stage: a log burst big enough to overrun its own
+    /// ring several times over leaves the status subscriber untouched. On one
+    /// ring this same burst would have forced a `Lagged`, and the ws handler
+    /// answers a status `Lagged` with a full snapshot resend — so a chatty core
+    /// would have driven a resynchronisation loop.
+    #[tokio::test]
+    async fn a_log_burst_never_lags_the_status_ring() {
+        let hub = EventHub::new();
+        let mut status = hub.subscribe();
+        let mut logs = hub.subscribe_logs();
+        hub.send(state_event(CoreState::Running));
+        // Twice the ring, matching the convention the two tests above use.
+        for _ in 0..(LOG_EVENT_CHANNEL_CAPACITY * 2) {
+            hub.send_log(core_log_event());
+        }
+
+        // The status subscriber still sees its one event, in order, un-lagged.
+        assert!(matches!(
+            status.try_recv().unwrap(),
+            Event::CoreStateChanged(CoreState::Running)
+        ));
+        assert!(matches!(status.try_recv(), Err(TryRecvError::Empty)));
+        // The log subscriber is the only one that paid, and it paid in log
+        // frames — which is free, by design.
+        assert!(matches!(logs.try_recv(), Err(TryRecvError::Lagged(_))));
     }
 }

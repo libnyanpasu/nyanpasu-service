@@ -22,6 +22,17 @@ pub fn setup() -> Router<AppState> {
     router.route(EVENT_URI, any(ws_handler))
 }
 
+/// One turn of the sender loop. The two rings are read inside `select!` and
+/// every mutation happens after it, so no receiver is reassigned while the
+/// other branch's future is still alive.
+#[allow(clippy::large_enum_variant)]
+enum Next {
+    Send(Event),
+    StatusLag(u64),
+    LogLag(u64),
+    Closed,
+}
+
 /// One protocol, no negotiation: the service binary ships with the program that
 /// consumes it, so there is no client to shield from a variant it cannot decode.
 /// The query string is not extracted at all — routing ignores it, and so do we.
@@ -30,11 +41,12 @@ async fn ws_handler(State(state): State<AppState>, ws: WebSocketUpgrade) -> Resp
 }
 
 async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManager) {
-    // The subscription lives and dies with this task; there is no registry to
+    // The subscriptions live and die with this task; there is no registry to
     // insert into and no id to collide with. Subscribing *before* the snapshot
     // is read is deliberate: a transition landing in between is then delivered
     // twice rather than lost.
     let mut events = hub.subscribe();
+    let mut logs = hub.subscribe_logs();
     let (mut sink, mut stream) = socket.split();
 
     let handler = async { while let Some(Ok(_)) = stream.next().await {} };
@@ -42,13 +54,28 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
     let sender = async {
         // Snapshot-on-connect, for everyone: the socket's first frame is the
         // current status, so a client never has to poll `/status` to find out
-        // what it reconnected to.
+        // what it reconnected to. There is no equivalent for logs — a log
+        // stream has no "current value", and the history lives in the JSONL
+        // archive whose directory `/status` reports.
         if !send_snapshot(&mut sink, &core_manager).await {
             return;
         }
         loop {
-            match events.recv().await {
-                Ok(event) => {
+            // Unbiased on purpose: neither stream may starve the other.
+            let next = tokio::select! {
+                received = events.recv() => match received {
+                    Ok(event) => Next::Send(event),
+                    Err(RecvError::Lagged(skipped)) => Next::StatusLag(skipped),
+                    Err(RecvError::Closed) => Next::Closed,
+                },
+                received = logs.recv() => match received {
+                    Ok(event) => Next::Send(event),
+                    Err(RecvError::Lagged(skipped)) => Next::LogLag(skipped),
+                    Err(RecvError::Closed) => Next::Closed,
+                },
+            };
+            match next {
+                Next::Send(event) => {
                     if !send_event(&mut sink, &event).await {
                         break;
                     }
@@ -60,7 +87,7 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
                 // subscriber filters out before it ever reaches the hub —
                 // otherwise many lagging connections could collectively
                 // refill the ring and re-lag each other.
-                Err(RecvError::Lagged(skipped)) => {
+                Next::StatusLag(skipped) => {
                     tracing::warn!(
                         target: WS_LAG_LOG_TARGET,
                         "ws subscriber dropped {skipped} events"
@@ -74,7 +101,23 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
                         break;
                     }
                 }
-                Err(RecvError::Closed) => break,
+                // Deliberately no snapshot. This is the whole reason the log
+                // ring is separate: a dropped log line is a dropped log line,
+                // and making it cost a full status resend would turn a busy
+                // core into a resynchronisation loop. The same
+                // WS_LAG_LOG_TARGET keeps this notice out of the hub — the
+                // target is what provides that, not the level, because
+                // `--verbose` admits DEBUG to the very same writer.
+                Next::LogLag(skipped) => {
+                    tracing::debug!(
+                        target: WS_LAG_LOG_TARGET,
+                        "ws subscriber dropped {skipped} core log frames"
+                    );
+                    logs = logs.resubscribe();
+                }
+                // Both rings belong to the same hub, so either closing means
+                // the service is going away.
+                Next::Closed => break,
             }
         }
     };

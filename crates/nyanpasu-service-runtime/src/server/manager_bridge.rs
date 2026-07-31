@@ -8,8 +8,8 @@ use camino::{Utf8Path, Utf8PathBuf};
 use nyanpasu_core_manager::{
     ApplyOutcome, ConfigRevision, CoreKind, CoreManager as Manager, CoreSpec,
     CoreState as ManagerCoreState, CoreStatus, Error as ManagerError, HealthState, HealthStatus,
-    Host, InstanceOptions, InstanceSpec, LocalIpcPolicy, LogFrame, LogStream, ManagerOptions,
-    RevisionId,
+    Host, InstanceOptions, InstanceSpec, LocalIpcPolicy, LogFrame, LogLevel, LogStream,
+    ManagerOptions, RevisionId,
 };
 use nyanpasu_ipc::api::{
     R, RBuilder,
@@ -19,7 +19,9 @@ use nyanpasu_ipc::api::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
         CoreState, CoreStateDetail, RevisionIdInfo,
     },
-    ws::events::Event as WsEvent,
+    ws::events::{
+        CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, Event as WsEvent,
+    },
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 use serde::{Serialize, de::DeserializeOwned};
@@ -151,20 +153,29 @@ impl CoreManagerService {
         })
     }
 
-    /// State → ws events and core logs → tracing.
+    /// State → ws events, and core logs → both the ws log ring and tracing.
     pub fn spawn_bridges(&self, hub: EventHub) {
         // Only the two receivers are moved in, never the adapter: see `Inner`.
         tokio::spawn(status_bridge(
             self.inner.manager.subscribe(),
             self.inner.requested_core.subscribe(),
-            hub,
+            hub.clone(),
         ));
 
         let mut logs = self.inner.manager.subscribe_logs();
         tokio::spawn(async move {
             loop {
                 match logs.recv().await {
-                    Ok(frame) => forward_log(frame),
+                    Ok(frame) => {
+                        // The projection borrows, so `forward_log` still takes
+                        // the frame by value and moves its 16 KiB `raw` instead
+                        // of the stream paying to clone it.
+                        hub.send_log(WsEvent::new_core_log(core_log_info(
+                            &frame,
+                            chrono::Utc::now().timestamp_millis(),
+                        )));
+                        forward_log(frame);
+                    }
                     Err(RecvError::Lagged(skipped)) => {
                         tracing::warn!("core log bridge dropped {skipped} frames")
                     }
@@ -712,6 +723,59 @@ fn forward_log(frame: LogFrame) {
         LogStream::Stderr => {
             tracing::error!(target: CORE_LOG_TARGET, ?core_level, %kind, epoch, "{raw}")
         }
+    }
+}
+
+/// The wire projection of one normalized core log frame.
+///
+/// Takes `&LogFrame` so the caller can still hand the owned frame to
+/// [`forward_log`], which moves `raw` — the largest field and the one the
+/// stream deliberately does not carry.
+///
+/// `at` is a parameter rather than a `now()` call inside so the mapping is
+/// testable. It is stamped service-side, at conversion time: the manager's
+/// frame may carry no timestamp at all (a line whose header did not parse) or
+/// an inferred one, so this is the only clock every record is guaranteed to
+/// have.
+fn core_log_info(frame: &LogFrame, at: i64) -> CoreLogInfo {
+    CoreLogInfo {
+        epoch: frame.epoch,
+        kind: match frame.kind {
+            CoreKind::Mihomo => CoreLogKind::Mihomo,
+            CoreKind::ClashRust => CoreLogKind::ClashRust,
+            CoreKind::ClashPremium => CoreLogKind::ClashPremium,
+            CoreKind::Meow => CoreLogKind::Meow,
+        },
+        stream: match frame.stream {
+            LogStream::Stdout => CoreLogStream::Stdout,
+            LogStream::Stderr => CoreLogStream::Stderr,
+        },
+        level: match frame.level {
+            LogLevel::Trace => CoreLogLevel::Trace,
+            LogLevel::Debug => CoreLogLevel::Debug,
+            LogLevel::Info => CoreLogLevel::Info,
+            LogLevel::Warning => CoreLogLevel::Warning,
+            LogLevel::Error => CoreLogLevel::Error,
+            LogLevel::Fatal => CoreLogLevel::Fatal,
+        },
+        at,
+        timestamp_ms: frame
+            .timestamp
+            .as_ref()
+            .and_then(|timestamp| timestamp.unix_ms),
+        target: frame.target.clone(),
+        message: frame.message.clone(),
+        // Read field by field rather than through `clash_api::LogField`:
+        // clash-api is not a dependency of this crate and must not become one.
+        fields: frame
+            .fields
+            .iter()
+            .map(|field| CoreLogField {
+                key: field.key.clone(),
+                value: field.value.clone(),
+            })
+            .collect(),
+        truncated: frame.truncated,
     }
 }
 
@@ -1621,6 +1685,58 @@ mod tests {
         assert!(infos.health.is_none());
         assert!(infos.revision.is_none());
         assert!(infos.config_path.is_none());
+    }
+
+    fn log_frame() -> LogFrame {
+        LogFrame {
+            epoch: 7,
+            kind: CoreKind::Mihomo,
+            stream: LogStream::Stdout,
+            timestamp: Some(nyanpasu_core_manager::LogTimestamp {
+                raw: "2026-07-29T00:16:22.646059400+08:00".to_owned(),
+                unix_ms: Some(1_753_719_382_646),
+                inferred: false,
+            }),
+            level: LogLevel::Warning,
+            target: Some("dns".to_owned()),
+            message: "message body".to_owned(),
+            fields: Vec::new(),
+            raw: "the whole logical record".to_owned(),
+            truncated: true,
+        }
+    }
+
+    /// Every field the stream carries, and — just as deliberately — `raw` is
+    /// not one of them: it is the archive's job, and it can reach 16 KiB.
+    #[test]
+    fn the_core_log_projection_carries_every_streamed_field() {
+        let info = core_log_info(&log_frame(), 1_700_000_000_000);
+        assert_eq!(info.epoch, 7);
+        assert_eq!(info.kind, CoreLogKind::Mihomo);
+        assert_eq!(info.stream, CoreLogStream::Stdout);
+        assert_eq!(info.level, CoreLogLevel::Warning);
+        assert_eq!(info.at, 1_700_000_000_000);
+        assert_eq!(info.timestamp_ms, Some(1_753_719_382_646));
+        assert_eq!(info.target.as_deref(), Some("dns"));
+        assert_eq!(info.message, "message body");
+        assert!(info.truncated);
+        // The projection borrows, so the frame is still whole for `forward_log`.
+        let frame = log_frame();
+        let _ = core_log_info(&frame, 0);
+        assert_eq!(frame.raw, "the whole logical record");
+    }
+
+    /// A line whose header did not parse has no clock of its own, which is
+    /// exactly why `at` is stamped service-side and is never optional.
+    #[test]
+    fn a_frame_without_a_parsed_header_carries_no_core_timestamp() {
+        let mut degraded = log_frame();
+        degraded.timestamp = None;
+        degraded.target = None;
+        let info = core_log_info(&degraded, 1_700_000_000_002);
+        assert_eq!(info.timestamp_ms, None);
+        assert_eq!(info.target, None);
+        assert_eq!(info.at, 1_700_000_000_002);
     }
 }
 

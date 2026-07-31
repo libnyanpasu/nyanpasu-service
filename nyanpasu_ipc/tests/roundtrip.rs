@@ -56,7 +56,10 @@ use nyanpasu_ipc::{
             ConfigRevisionInfo, CoreInfos, CoreState, CoreStateDetail, RevisionIdInfo,
             RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody,
         },
-        ws::events::{EVENT_URI, Event, TraceLog},
+        ws::events::{
+            CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
+            TraceLog,
+        },
     },
     client::{Client, ClientError},
 };
@@ -315,6 +318,18 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
                 fields: IndexMap::new(),
             }),
             Event::new_core_state_changed(CoreState::Stopped(Some("bye".to_owned()))),
+            Event::new_core_log(CoreLogInfo {
+                epoch: 4,
+                kind: CoreLogKind::Mihomo,
+                stream: CoreLogStream::Stdout,
+                level: CoreLogLevel::Info,
+                at: 1_700_000_000_000,
+                timestamp_ms: Some(1_753_719_382_646),
+                target: Some("dns".to_owned()),
+                message: "hello core".to_owned(),
+                fields: Vec::<CoreLogField>::new(),
+                truncated: false,
+            }),
         ];
         for event in events {
             let bytes = serde_json::to_vec(&event).unwrap();
@@ -567,6 +582,48 @@ async fn events_roundtrip() {
         }
         other => panic!("expected a core state changed event, got: {other:?}"),
     }
+
+    let _ = shutdown.send(());
+    cleanup(&placeholder);
+}
+
+/// The new variant over the real transport: it decodes through the same
+/// unchanged `EventStream` path, behind the frames a pre-L2 client already
+/// understood. A client that predates the variant fails on this one frame only
+/// — `filter_map` yields `Some(Err(Decode))` and the stream keeps running —
+/// which is what lets L2 ship without the GUI.
+#[tokio::test]
+async fn core_log_roundtrip() {
+    let placeholder = format!("nyanpasu-ipc-test-{}-core-log", std::process::id());
+    let Some((shutdown, client)) = run_server(&placeholder, test_router(Shared::default())).await
+    else {
+        return;
+    };
+
+    let mut events = client.events().await.expect("events should connect");
+    let mut seen = None;
+    for _ in 0..4 {
+        let event = events
+            .next()
+            .await
+            .expect("stream should yield four frames")
+            .expect("every frame should decode");
+        if let Event::CoreLog(log) = event {
+            seen = Some(log);
+        }
+    }
+
+    let log = seen.expect("the stream should carry a core log frame");
+    assert_eq!(log.epoch, 4);
+    assert_eq!(log.kind, CoreLogKind::Mihomo);
+    assert_eq!(log.stream, CoreLogStream::Stdout);
+    assert_eq!(log.level, CoreLogLevel::Info);
+    assert_eq!(log.at, 1_700_000_000_000);
+    assert_eq!(log.timestamp_ms, Some(1_753_719_382_646));
+    assert_eq!(log.target.as_deref(), Some("dns"));
+    assert_eq!(log.message, "hello core");
+    assert!(log.fields.is_empty());
+    assert!(!log.truncated);
 
     let _ = shutdown.send(());
     cleanup(&placeholder);

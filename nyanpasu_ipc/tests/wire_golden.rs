@@ -26,7 +26,10 @@ use nyanpasu_ipc::api::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
         CoreState, CoreStateDetail, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
-    ws::events::{EVENT_URI, Event, TraceLog},
+    ws::events::{
+        CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
+        TraceLog,
+    },
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
 
@@ -379,6 +382,69 @@ fn the_ws_events_are_pinned() {
     assert_eq!(
         serde_json::to_string(&Event::new_core_state_changed(CoreState::Running)).unwrap(),
         r#"{"CoreStateChanged":"Running"}"#
+    );
+}
+
+/// The fixture both serializer pins use. `crates/nyanpasu-service-runtime`'s
+/// `ws_core_log_frames_are_pinned` builds the identical value and asserts the
+/// identical literal: the service writes with `simd_json` and the client reads
+/// with `serde_json`, so a divergence must show up as a diff between two
+/// otherwise identical strings.
+fn pinned_core_log() -> Event {
+    Event::new_core_log(CoreLogInfo {
+        epoch: 1,
+        kind: CoreLogKind::Mihomo,
+        stream: CoreLogStream::Stdout,
+        level: CoreLogLevel::Info,
+        at: 1_700_000_000_000,
+        timestamp_ms: Some(1_753_719_382_646),
+        target: None,
+        message: "hello core".to_owned(),
+        fields: vec![CoreLogField {
+            key: "request".to_owned(),
+            value: "7".to_owned(),
+        }],
+        truncated: false,
+    })
+}
+
+#[test]
+fn the_core_log_event_is_pinned() {
+    assert_eq!(
+        serde_json::to_string(&pinned_core_log()).unwrap(),
+        concat!(
+            r#"{"CoreLog":{"epoch":1,"kind":"mihomo","stream":"stdout","level":"info","#,
+            r#""at":1700000000000,"timestamp_ms":1753719382646,"target":null,"#,
+            r#""message":"hello core","fields":[{"key":"request","value":"7"}],"#,
+            r#""truncated":false}}"#
+        )
+    );
+}
+
+/// The degraded shape, which is the common one: a line whose header did not
+/// parse has no clock, no target and no fields — and `at` is why the record is
+/// still sortable.
+#[test]
+fn a_degraded_core_log_event_is_pinned() {
+    let event = Event::new_core_log(CoreLogInfo {
+        epoch: 2,
+        kind: CoreLogKind::ClashRust,
+        stream: CoreLogStream::Stderr,
+        level: CoreLogLevel::Warning,
+        at: 1_700_000_000_001,
+        timestamp_ms: None,
+        target: None,
+        message: "unparsed line".to_owned(),
+        fields: Vec::new(),
+        truncated: true,
+    });
+    assert_eq!(
+        serde_json::to_string(&event).unwrap(),
+        concat!(
+            r#"{"CoreLog":{"epoch":2,"kind":"clash-rs","stream":"stderr","#,
+            r#""level":"warning","at":1700000000001,"timestamp_ms":null,"target":null,"#,
+            r#""message":"unparsed line","fields":[],"truncated":true}}"#
+        )
     );
 }
 
