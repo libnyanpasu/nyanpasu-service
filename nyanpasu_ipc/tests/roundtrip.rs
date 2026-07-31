@@ -33,7 +33,6 @@ use axum::{
     routing::{get, post},
 };
 use futures_util::StreamExt;
-use indexmap::IndexMap;
 use interprocess::local_socket::{
     GenericFilePath, ListenerNonblockingMode, ListenerOptions, ToFsName,
     tokio::{Listener, Stream as IpcStream, prelude::*},
@@ -58,7 +57,6 @@ use nyanpasu_ipc::{
         },
         ws::events::{
             CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
-            TraceLog,
         },
     },
     client::{Client, ClientError},
@@ -224,6 +222,7 @@ fn test_status_body() -> StatusResBody<'static> {
             nyanpasu_config_dir: Cow::Owned(PathBuf::from("/home/config")),
             nyanpasu_data_dir: Cow::Owned(PathBuf::from("/home/data")),
         },
+        logs: None,
     }
 }
 
@@ -310,13 +309,6 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(|mut socket: WebSocket| async move {
         let events = [
             Event::new_core_status_changed(test_snapshot()),
-            Event::new_log(TraceLog {
-                timestamp: "2026-01-01T00:00:00Z".to_owned(),
-                level: "INFO".to_owned(),
-                message: "hello events".to_owned(),
-                target: "roundtrip".to_owned(),
-                fields: IndexMap::new(),
-            }),
             Event::new_core_state_changed(CoreState::Stopped(Some("bye".to_owned()))),
             Event::new_core_log(CoreLogInfo {
                 epoch: 4,
@@ -560,20 +552,6 @@ async fn events_roundtrip() {
     let event = events
         .next()
         .await
-        .expect("stream should yield the log event")
-        .expect("log event should decode");
-    match event {
-        Event::Log(log) => {
-            assert_eq!(log.message, "hello events");
-            assert_eq!(log.target, "roundtrip");
-            assert_eq!(log.level, "INFO");
-        }
-        other => panic!("expected a log event, got: {other:?}"),
-    }
-
-    let event = events
-        .next()
-        .await
         .expect("stream should yield the legacy state event")
         .expect("legacy state event should decode");
     match event {
@@ -602,11 +580,11 @@ async fn core_log_roundtrip() {
 
     let mut events = client.events().await.expect("events should connect");
     let mut seen = None;
-    for _ in 0..4 {
+    for _ in 0..3 {
         let event = events
             .next()
             .await
-            .expect("stream should yield four frames")
+            .expect("stream should yield three frames")
             .expect("every frame should decode");
         if let Event::CoreLog(log) = event {
             seen = Some(log);

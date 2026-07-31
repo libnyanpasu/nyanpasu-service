@@ -12,10 +12,7 @@ use nyanpasu_ipc::api::ws::events::{EVENT_URI, Event};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::AppState;
-use crate::server::{
-    CoreManager,
-    events::{EventHub, WS_LAG_LOG_TARGET},
-};
+use crate::server::{CoreManager, events::EventHub};
 
 pub fn setup() -> Router<AppState> {
     let router = Router::new();
@@ -82,16 +79,13 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
                 }
                 // Only this connection pays for being slow. Warn once, then
                 // jump to the live tail: the receiver skips the backlog, so a
-                // full ring cannot spin us in a Lagged loop. The warn itself
-                // is tagged with WS_LAG_LOG_TARGET, which the log-forwarding
-                // subscriber filters out before it ever reaches the hub —
-                // otherwise many lagging connections could collectively
-                // refill the ring and re-lag each other.
+                // full ring cannot spin us in a Lagged loop. Until L3 this line
+                // needed a dedicated tracing target, because it would otherwise
+                // have re-entered the very ring it had just overflowed. No
+                // tracing output becomes an event now, so it is an ordinary log
+                // line.
                 Next::StatusLag(skipped) => {
-                    tracing::warn!(
-                        target: WS_LAG_LOG_TARGET,
-                        "ws subscriber dropped {skipped} events"
-                    );
+                    tracing::warn!("ws subscriber dropped {skipped} events");
                     events = events.resubscribe();
                     // The gap may have swallowed a transition, so the client is
                     // resynchronised exactly as it was on connect. This is what
@@ -104,15 +98,9 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
                 // Deliberately no snapshot. This is the whole reason the log
                 // ring is separate: a dropped log line is a dropped log line,
                 // and making it cost a full status resend would turn a busy
-                // core into a resynchronisation loop. The same
-                // WS_LAG_LOG_TARGET keeps this notice out of the hub — the
-                // target is what provides that, not the level, because
-                // `--verbose` admits DEBUG to the very same writer.
+                // core into a resynchronisation loop.
                 Next::LogLag(skipped) => {
-                    tracing::debug!(
-                        target: WS_LAG_LOG_TARGET,
-                        "ws subscriber dropped {skipped} core log frames"
-                    );
+                    tracing::debug!("ws subscriber dropped {skipped} core log frames");
                     logs = logs.resubscribe();
                 }
                 // Both rings belong to the same hub, so either closing means

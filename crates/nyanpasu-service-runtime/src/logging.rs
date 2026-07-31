@@ -26,8 +26,9 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     if write_file {
         let log_dir = crate::utils::dirs::service_logs_dir();
         if !log_dir.exists() {
-            let _ = fs::create_dir_all(&log_dir);
+            fs::create_dir_all(&log_dir)?;
         }
+        harden_log_dir(&log_dir)?;
     }
     let (log_level, log_max_files) = {
         (
@@ -97,4 +98,66 @@ pub fn init(debug: bool, write_file: bool) -> anyhow::Result<()> {
     };
 
     Ok(())
+}
+
+/// Restrict the service log directory to the account the service runs under,
+/// the way the manager's runtime directory already is.
+///
+/// `/status` publishes this path from L3 onward, and advertising a location is
+/// a good moment to be sure of its permissions. On Windows the DACL is set
+/// explicitly rather than inherited: an inherited descriptor does not carry
+/// `SE_DACL_PROTECTED`, which is exactly what the verifier requires.
+///
+/// The writer is unaffected — the DACL grants SYSTEM full access and the
+/// service runs elevated. Readers are affected, deliberately: see
+/// `LogPathsInfo`'s rustdoc.
+fn harden_log_dir(dir: &std::path::Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
+            .map_err(|error| anyhow!("failed to protect the service log directory: {error}"))?;
+    }
+    #[cfg(windows)]
+    {
+        use nyanpasu_utils::io::atomic_fs::{
+            harden_windows_directory_acl, verify_windows_directory_acl,
+        };
+        harden_windows_directory_acl(dir)
+            .map_err(|error| anyhow!("failed to protect the service log directory: {error}"))?;
+        verify_windows_directory_acl(dir)
+            .map_err(|error| anyhow!("the service log directory is not protected: {error}"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The directory `/status` advertises must not be world-readable. The
+    /// Windows half also pins why the call is explicit: `verify` rejects an
+    /// inherited DACL, so a directory that merely sits inside a protected
+    /// parent would fail this.
+    #[test]
+    fn the_service_log_directory_is_owner_only() {
+        let guard = tempfile::tempdir().unwrap();
+        let dir = guard.path().join("logs");
+        fs::create_dir_all(&dir).unwrap();
+
+        harden_log_dir(&dir).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+                0o700
+            );
+        }
+        #[cfg(windows)]
+        {
+            nyanpasu_utils::io::atomic_fs::verify_windows_directory_acl(&dir).unwrap();
+        }
+    }
 }

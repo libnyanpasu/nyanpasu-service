@@ -26,8 +26,8 @@ use crate::{
     },
     kind::{self, CLICOLOR_FORCE_ENV_NAME, MIHOMO_SAFE_PATHS_ENV_NAME},
     log::{
-        LOG_CHANNEL_CAPACITY, LogFrame, LogLevel, LogParser, LogStream, ParsedFrames,
-        error_summary, format_tail,
+        LOG_CHANNEL_CAPACITY, LogFrame, LogParser, LogStream, ParsedFrames, error_summary,
+        format_tail,
     },
     probe::{ControllerVersionProbe, ProbeHandle, ProbePhase, ProbeResult},
     spec::{InstanceOptions, InstanceSpec, ResolvedController},
@@ -84,15 +84,15 @@ impl Shared {
         self.parser.lock().finish()
     }
 
+    /// Buffer the frame for diagnostics and hand it to the subscribers.
+    ///
+    /// This runs inline on the supervision loop, in the same `select!` that
+    /// decides readiness, so it does exactly two cheap things. It used to emit a
+    /// tracing event as well; every consumer that fed — the JSONL archive, and
+    /// in the service the bridge that mirrors frames into tracing — is a
+    /// broadcast subscriber, so doing it here too was a second copy of every
+    /// line paid for on the hot path.
     fn publish_log_frame(&self, frame: LogFrame) {
-        let record = frame.raw.as_str();
-        match frame.level {
-            LogLevel::Trace => tracing::trace!(target: "core", "{record}"),
-            LogLevel::Debug => tracing::debug!(target: "core", "{record}"),
-            LogLevel::Info => tracing::info!(target: "core", "{record}"),
-            LogLevel::Warning => tracing::warn!(target: "core", "{record}"),
-            LogLevel::Error | LogLevel::Fatal => tracing::error!(target: "core", "{record}"),
-        }
         let mut tail = self.log_tail.lock();
         if tail.len() == LOG_TAIL_FRAMES {
             tail.pop_front();

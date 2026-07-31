@@ -11,7 +11,6 @@ use std::{
     path::PathBuf,
 };
 
-use indexmap::IndexMap;
 use nyanpasu_ipc::api::{
     R, RBuilder, ResponseCode,
     core::{
@@ -24,11 +23,10 @@ use nyanpasu_ipc::api::{
     network::set_dns::NetworkSetDnsReq,
     status::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
-        CoreState, CoreStateDetail, RevisionIdInfo, RuntimeInfos, StatusResBody,
+        CoreState, CoreStateDetail, LogPathsInfo, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
     ws::events::{
         CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
-        TraceLog,
     },
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
@@ -329,6 +327,7 @@ fn the_status_response_is_pinned() {
             nyanpasu_config_dir: Cow::Owned(PathBuf::from("/home/config")),
             nyanpasu_data_dir: Cow::Owned(PathBuf::from("/home/data")),
         },
+        logs: None,
     };
     assert_eq!(
         serde_json::to_string(&ok_envelope(body)).unwrap(),
@@ -360,25 +359,12 @@ fn the_core_states_are_pinned() {
     );
 }
 
+/// The legacy state frame, unchanged since before S7. A service-log frame was
+/// pinned here too until L3, when the service stopped pushing its own logs.
+/// (Deliberately not naming the removed variant: §7 step 2's `rg` gate covers
+/// this file.)
 #[test]
 fn the_ws_events_are_pinned() {
-    let mut fields = IndexMap::new();
-    fields.insert("epoch".to_owned(), serde_json::json!(1));
-    let log = Event::new_log(TraceLog {
-        timestamp: "2026-01-01T00:00:00Z".to_owned(),
-        level: "INFO".to_owned(),
-        message: "hello".to_owned(),
-        target: "nyanpasu_service::core".to_owned(),
-        fields,
-    });
-    assert_eq!(
-        serde_json::to_string(&log).unwrap(),
-        concat!(
-            r#"{"Log":{"timestamp":"2026-01-01T00:00:00Z","level":"INFO","#,
-            r#""message":"hello","target":"nyanpasu_service::core","#,
-            r#""fields":{"epoch":1}}}"#
-        )
-    );
     assert_eq!(
         serde_json::to_string(&Event::new_core_state_changed(CoreState::Running)).unwrap(),
         r#"{"CoreStateChanged":"Running"}"#
@@ -615,6 +601,7 @@ fn the_enriched_status_response_is_pinned() {
             nyanpasu_config_dir: Cow::Owned(PathBuf::from("/home/config")),
             nyanpasu_data_dir: Cow::Owned(PathBuf::from("/home/data")),
         },
+        logs: None,
     };
     assert_eq!(
         serde_json::to_string(&ok_envelope(body)).unwrap(),
@@ -635,6 +622,33 @@ fn the_enriched_status_response_is_pinned() {
             r#""nyanpasu_config_dir":"/home/config","#,
             r#""nyanpasu_data_dir":"/home/data"}},"ts":1700000000}"#
         )
+    );
+}
+
+/// The L3 addition. The field is `Option` only so a payload without it matches
+/// the pre-L3 bytes exactly — which the two literals above still assert — but
+/// the service always sends it.
+#[test]
+fn the_status_log_paths_are_pinned() {
+    assert_eq!(
+        serde_json::to_string(&LogPathsInfo {
+            service_dir: PathBuf::from("/var/lib/nyanpasu-service/logs"),
+            core_dir: Some(PathBuf::from("/var/lib/nyanpasu-service/core-runtime/logs")),
+        })
+        .unwrap(),
+        concat!(
+            r#"{"service_dir":"/var/lib/nyanpasu-service/logs","#,
+            r#""core_dir":"/var/lib/nyanpasu-service/core-runtime/logs"}"#
+        )
+    );
+    // Sink disabled: the key is omitted, not null.
+    assert_eq!(
+        serde_json::to_string(&LogPathsInfo {
+            service_dir: PathBuf::from("/var/lib/nyanpasu-service/logs"),
+            core_dir: None,
+        })
+        .unwrap(),
+        r#"{"service_dir":"/var/lib/nyanpasu-service/logs"}"#
     );
 }
 

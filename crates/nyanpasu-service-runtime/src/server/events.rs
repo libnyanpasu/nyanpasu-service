@@ -13,17 +13,6 @@ const EVENT_CHANNEL_CAPACITY: usize = 256;
 /// a record the resident ceiling is a few hundred KiB.
 const LOG_EVENT_CHANNEL_CAPACITY: usize = 1024;
 
-/// Tracing target for ws-lag diagnostics. Log lines with this target must
-/// never be forwarded into the EventHub: a lag warning that re-enters the
-/// ring it just overflowed would let many slow connections feed each other
-/// a log storm (feedback ratio ~ connections / capacity).
-pub(crate) const WS_LAG_LOG_TARGET: &str = "nyanpasu_service::ws::lag";
-
-/// Filter applied by the log-forwarding subscriber before `EventHub::send`.
-pub(crate) fn should_forward_to_hub(target: &str) -> bool {
-    target != WS_LAG_LOG_TARGET
-}
-
 /// Fan-out point for ws events. Cloning shares both channels.
 ///
 /// Two rings, not one, because a subscriber that falls behind must be able to
@@ -53,8 +42,7 @@ impl EventHub {
     /// Fan out an event: synchronous and never awaits; only brief internal
     /// channel locking. It is unaffected by slow subscribers. `send` fails only
     /// when nobody is subscribed, which is the normal idle state, so the result
-    /// is dropped. It must never be logged: the log-forwarding subscriber calls
-    /// this from inside the tracing writer.
+    /// is dropped.
     pub fn send(&self, event: Event) {
         let _ = self.tx.send(event);
     }
@@ -65,8 +53,6 @@ impl EventHub {
 
     /// Fan out one [`Event::CoreLog`]. Same contract as [`Self::send`] —
     /// synchronous, never awaits, and a failure just means nobody is listening.
-    /// Kept non-logging for the same reason: a log line about the log stream is
-    /// the one thing that can feed itself.
     pub fn send_log(&self, event: Event) {
         let _ = self.log_tx.send(event);
     }
@@ -132,16 +118,18 @@ mod tests {
 
     #[tokio::test]
     async fn lag_recovery_with_feedback_reaches_the_tail() {
-        // Models the production hazard: recovering from Lagged itself feeds one
-        // more event back into a full ring (the warn log). The resubscribe jump
-        // must land at the tail with no residual Lagged and no spin.
+        // Models a subscriber that fell behind: the resubscribe jump must land
+        // at the tail with no residual Lagged and no spin. The feedback this
+        // once guarded against — a lag warning re-entering the ring it had just
+        // overflowed — is structurally gone, because no tracing output becomes
+        // an event any more.
         let hub = EventHub::new();
         let mut lagged = hub.subscribe();
         for _ in 0..(EVENT_CHANNEL_CAPACITY * 2) {
             hub.send(state_event(CoreState::Running));
         }
         assert!(matches!(lagged.try_recv(), Err(TryRecvError::Lagged(_))));
-        // The ws handler's recovery sequence: warn (feeds back into the hub)…
+        // One more event arrives during recovery…
         hub.send(state_event(CoreState::Running)); // stand-in for the warn log event
         // …then jump to the tail.
         let mut recovered = lagged.resubscribe();
@@ -166,12 +154,6 @@ mod tests {
     #[test]
     fn sending_without_subscribers_is_not_an_error() {
         EventHub::new().send(state_event(CoreState::Running));
-    }
-
-    #[test]
-    fn lag_diagnostics_are_never_forwarded_to_the_hub() {
-        assert!(!should_forward_to_hub(WS_LAG_LOG_TARGET));
-        assert!(should_forward_to_hub("nyanpasu_service::server"));
     }
 
     /// The ws handler frames events with simd_json; the bytes on the socket

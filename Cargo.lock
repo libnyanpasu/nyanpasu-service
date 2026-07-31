@@ -2030,7 +2030,6 @@ dependencies = [
  "ctrlc",
  "dunce",
  "futures-util",
- "indexmap",
  "nyanpasu-core-manager",
  "nyanpasu-ipc",
  "nyanpasu-utils",

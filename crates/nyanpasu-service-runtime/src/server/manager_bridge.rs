@@ -351,6 +351,16 @@ impl CoreManagerService {
         )
     }
 
+    /// Where the manager archives core logs, or `None` when its sink is off.
+    /// Constant for the manager's lifetime, so it is read on demand rather than
+    /// carried in the status snapshot.
+    pub fn core_log_dir(&self) -> Option<PathBuf> {
+        self.inner
+            .manager
+            .log_dir()
+            .map(|dir| dir.as_std_path().to_path_buf())
+    }
+
     /// Publish the wire-type echo the bridge projects into status snapshots.
     ///
     /// `Some` commits a new type, `None` republishes the current one; either way
@@ -454,9 +464,9 @@ async fn status_bridge(
                 // state cannot express (Starting, Restarting, and the
                 // Stopping/Switching arrivals the guards below drop). Emitting
                 // it here rather than after the guards is what keeps the legacy
-                // path below untouched. Deliberately no `tracing::info!` for it
-                // — that would re-enter the hub as an `Event::Log` and change
-                // what the legacy stream carries.
+                // path below untouched. (Until L3 there was a second reason not
+                // to log here: the line would have come back round as an event
+                // of its own. No tracing output becomes an event now.)
                 let requested = requested_core.borrow_and_update().clone();
                 hub.send(WsEvent::new_core_status_changed(project_core_infos(
                     &raw, requested,
@@ -711,17 +721,31 @@ fn project_core_infos(status: &CoreStatus, requested_core: Option<CoreType>) -> 
     }
 }
 
+/// Mirror the core's console output into the service's own tracing stream, for
+/// an operator watching a terminal.
+///
+/// Nothing here is above `DEBUG`, deliberately. Core output now has two homes
+/// that outlive the process — the JSONL archive and the event stream — so
+/// putting it in the service's log file at the default filter would be a third
+/// copy of the same bytes. `RUST_LOG=nyanpasu_service::core=debug` turns it back
+/// on by itself, without the noise of a full `--verbose`.
+///
+/// The severity is not lost, only un-promoted: `core_level` carries the parsed
+/// level as a field. That also retires a real defect — the level used to come
+/// from the *pipe*, so every stderr line was reported as an error however
+/// harmless it was.
 fn forward_log(frame: LogFrame) {
     let kind = frame.kind;
     let epoch = frame.epoch;
+    let stream = frame.stream;
     let core_level = frame.level;
     let raw = frame.raw;
-    match frame.stream {
-        LogStream::Stdout => {
-            tracing::info!(target: CORE_LOG_TARGET, ?core_level, %kind, epoch, "{raw}")
+    match core_level {
+        LogLevel::Trace => {
+            tracing::trace!(target: CORE_LOG_TARGET, ?core_level, ?stream, %kind, epoch, "{raw}")
         }
-        LogStream::Stderr => {
-            tracing::error!(target: CORE_LOG_TARGET, ?core_level, %kind, epoch, "{raw}")
+        _ => {
+            tracing::debug!(target: CORE_LOG_TARGET, ?core_level, ?stream, %kind, epoch, "{raw}")
         }
     }
 }
