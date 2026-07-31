@@ -539,8 +539,10 @@ impl CoreManager {
     /// Like [`Self::stop`], shutdown intentionally bypasses the quarantine
     /// gate and never treats an unrelated uncertain epoch as recovered.
     pub async fn shutdown(&self) -> Result<(), Error> {
+        // Held through sink finalization so no control-plane operation can interleave
+        // between core stop and archive teardown.
+        let mut ctrl = self.inner.ctrl.lock().await;
         let result: Result<(), Error> = async {
-            let mut ctrl = self.inner.ctrl.lock().await;
             if let Some(active) = ctrl.current.take() {
                 let Active {
                     instance,
