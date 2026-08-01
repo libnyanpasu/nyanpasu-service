@@ -14,7 +14,6 @@ use nyanpasu_core_manager::{
 use nyanpasu_ipc::api::{
     R, RBuilder,
     core::apply::{ApplyOutcomeKind, CoreApplyData},
-    error_kind,
     status::{
         ConfigRevisionInfo, CoreControllerInfo, CoreHealthInfo, CoreHealthState, CoreInfos,
         CoreState, CoreStateDetail, RevisionIdInfo,
@@ -79,10 +78,7 @@ impl OpError {
     where
         T: Serialize + DeserializeOwned + std::fmt::Debug,
     {
-        RBuilder::other_error_with_kind(
-            Cow::Owned(self.message),
-            self.kind.map(|kind| Cow::Borrowed(kind.as_str())),
-        )
+        RBuilder::other_error_with_kind(Cow::Owned(self.message), self.kind)
     }
 }
 

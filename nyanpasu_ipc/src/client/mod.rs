@@ -49,7 +49,7 @@ pub enum ClientError {
         code: ResponseCode,
         msg: String,
         /// The envelope's `error_kind`, when the service classified the
-        /// failure. See [`crate::api::error_kind`].
+        /// failure. See [`crate::api::CoreErrorKind`].
         error_kind: Option<String>,
     },
     #[error("IPC request `{operation}` succeeded but carried no data")]
