@@ -150,6 +150,16 @@ pub struct CoreInfos {
 /// running as an ordinary user generally cannot read them — surface the path
 /// for a support request rather than building a tail on it. Live core output is
 /// on the event stream; the service's own logs are not streamed at all.
+///
+/// TODO: that restriction is the open question here, not a settled posture. A
+/// user-level GUI reading the archive would need one of: a widened DACL (which
+/// means teaching `nyanpasu_utils::io::atomic_fs`'s hardener *and* its verifier
+/// a second acceptable shape — the verifier rejects user-readable DACLs today,
+/// so both move together or directory creation starts failing), some other
+/// grant mechanism, or an RPC that serves the archive so the directory stays
+/// closed. All three are acceptable; none is chosen yet. The two sites that
+/// would change are `log_sink::prepare_dir` and the service's own log directory
+/// setup.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "specta", derive(specta::Type))]
 pub struct LogPathsInfo {
