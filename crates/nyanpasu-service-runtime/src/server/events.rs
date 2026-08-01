@@ -1,3 +1,6 @@
+use std::sync::Arc;
+
+use nyanpasu_core_manager::LogFrame;
 use nyanpasu_ipc::api::ws::events::Event;
 use tokio::sync::broadcast;
 
@@ -22,7 +25,9 @@ const LOG_EVENT_CHANNEL_CAPACITY: usize = 1024;
 #[derive(Clone)]
 pub struct EventHub {
     tx: broadcast::Sender<Event>,
-    log_tx: broadcast::Sender<Event>,
+    /// Frames, not events: the ring holds what the manager produced, and the
+    /// `Event` wrapper is built per connection at send time.
+    log_tx: broadcast::Sender<Arc<LogFrame>>,
 }
 
 impl Default for EventHub {
@@ -51,17 +56,17 @@ impl EventHub {
         self.tx.subscribe()
     }
 
-    /// Fan out one [`Event::CoreLog`]. Same contract as [`Self::send`] —
+    /// Fan out one core log frame. Same contract as [`Self::send`] —
     /// synchronous, never awaits, and a failure just means nobody is listening.
-    pub fn send_log(&self, event: Event) {
-        let _ = self.log_tx.send(event);
+    pub fn send_log(&self, frame: Arc<LogFrame>) {
+        let _ = self.log_tx.send(frame);
     }
 
     pub(crate) fn has_log_subscribers(&self) -> bool {
         self.log_tx.receiver_count() > 0
     }
 
-    pub fn subscribe_logs(&self) -> broadcast::Receiver<Event> {
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<Arc<LogFrame>> {
         self.log_tx.subscribe()
     }
 
@@ -79,10 +84,8 @@ impl EventHub {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nyanpasu_ipc::api::{
-        status::{CoreInfos, CoreState, CoreStateDetail},
-        ws::events::{CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream},
-    };
+    use nyanpasu_core_manager::{CoreKind, LogField, LogLevel, LogStream, LogTimestamp};
+    use nyanpasu_ipc::api::status::{CoreInfos, CoreState, CoreStateDetail};
     use tokio::sync::broadcast::error::TryRecvError;
 
     fn state_event(state: CoreState) -> Event {
@@ -198,20 +201,26 @@ mod tests {
         );
     }
 
-    fn core_log_event() -> Event {
-        Event::new_core_log(CoreLogInfo {
-            epoch: 1,
-            kind: CoreLogKind::Mihomo,
-            stream: CoreLogStream::Stdout,
-            level: CoreLogLevel::Info,
+    fn core_log_frame() -> Arc<LogFrame> {
+        Arc::new(LogFrame {
             at: 1_700_000_000_000,
-            timestamp_ms: Some(1_753_719_382_646),
+            epoch: 1,
+            kind: CoreKind::Mihomo,
+            stream: LogStream::Stdout,
+            level: LogLevel::Info,
+            timestamp: Some(LogTimestamp {
+                raw: "2026-07-29T00:16:22.646059400+08:00".to_owned(),
+                unix_ms: Some(1_753_719_382_646),
+                inferred: false,
+            }),
             target: None,
             message: "hello core".to_owned(),
-            fields: vec![CoreLogField {
+            fields: vec![LogField {
                 key: "request".to_owned(),
                 value: "7".to_owned(),
             }],
+            raw: "time=\"2026-07-29T00:16:22.646059400+08:00\" level=info msg=\"hello core\" request=7"
+                .to_owned(),
             truncated: false,
         })
     }
@@ -221,14 +230,16 @@ mod tests {
     /// `simd_json` and the client decodes with `serde_json`; the two must agree.
     #[test]
     fn ws_core_log_frames_are_pinned() {
-        let frame = simd_json::to_vec(&core_log_event()).unwrap();
+        let payload = simd_json::to_vec(&Event::new_core_log(core_log_frame())).unwrap();
         assert_eq!(
-            String::from_utf8(frame).unwrap(),
+            String::from_utf8(payload).unwrap(),
             concat!(
-                r#"{"CoreLog":{"epoch":1,"kind":"mihomo","stream":"stdout","level":"info","#,
-                r#""at":1700000000000,"timestamp_ms":1753719382646,"target":null,"#,
+                r#"{"CoreLog":{"at":1700000000000,"epoch":1,"kind":"mihomo","stream":"stdout","#,
+                r#""level":"info","timestamp":{"raw":"2026-07-29T00:16:22.646059400+08:00","#,
+                r#""unix_ms":1753719382646,"inferred":false},"target":null,"#,
                 r#""message":"hello core","fields":[{"key":"request","value":"7"}],"#,
-                r#""truncated":false}}"#
+                r#""raw":"time=\"2026-07-29T00:16:22.646059400+08:00\" level=info "#,
+                r#"msg=\"hello core\" request=7","truncated":false}}"#
             )
         );
     }
@@ -243,10 +254,18 @@ mod tests {
         assert_eq!(hub.receiver_count(), 1);
         assert_eq!(hub.log_receiver_count(), 0);
         assert!(!hub.has_log_subscribers());
-        let _logs = hub.subscribe_logs();
+        let mut logs = hub.subscribe_logs();
         assert_eq!(hub.receiver_count(), 1);
         assert_eq!(hub.log_receiver_count(), 1);
         assert!(hub.has_log_subscribers());
+
+        // The ring shares the manager's allocation rather than copying it.
+        let frame = core_log_frame();
+        hub.send_log(Arc::clone(&frame));
+        assert!(Arc::ptr_eq(
+            &frame,
+            &logs.try_recv().expect("the frame arrives")
+        ));
     }
 
     /// The point of the whole stage: a log burst big enough to overrun its own
@@ -262,7 +281,7 @@ mod tests {
         hub.send(state_event(CoreState::Running));
         // Twice the ring, matching the convention the two tests above use.
         for _ in 0..(LOG_EVENT_CHANNEL_CAPACITY * 2) {
-            hub.send_log(core_log_event());
+            hub.send_log(core_log_frame());
         }
 
         // The status subscriber still sees its one event, in order, un-lagged.

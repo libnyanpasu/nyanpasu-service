@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Router,
     extract::{
@@ -8,6 +10,7 @@ use axum::{
     routing::any,
 };
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
+use nyanpasu_core_manager::LogFrame;
 use nyanpasu_ipc::api::ws::events::{EVENT_URI, Event};
 use tokio::sync::broadcast::error::RecvError;
 
@@ -25,6 +28,7 @@ pub fn setup() -> Router<AppState> {
 #[allow(clippy::large_enum_variant)]
 enum Next {
     Send(Event),
+    Log(Arc<LogFrame>),
     StatusLag(u64),
     LogLag(u64),
     Closed,
@@ -66,7 +70,7 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
                     Err(RecvError::Closed) => Next::Closed,
                 },
                 received = logs.recv() => match received {
-                    Ok(event) => Next::Send(event),
+                    Ok(frame) => Next::Log(frame),
                     Err(RecvError::Lagged(skipped)) => Next::LogLag(skipped),
                     Err(RecvError::Closed) => Next::Closed,
                 },
@@ -74,6 +78,13 @@ async fn handle_socket(socket: WebSocket, hub: EventHub, core_manager: CoreManag
             match next {
                 Next::Send(event) => {
                     if !send_event(&mut sink, &event).await {
+                        break;
+                    }
+                }
+                // The ring carries frames, so the envelope is built here, once
+                // per connection that is actually listening.
+                Next::Log(frame) => {
+                    if !send_event(&mut sink, &Event::new_core_log(frame)).await {
                         break;
                     }
                 }

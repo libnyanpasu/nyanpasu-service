@@ -10,10 +10,11 @@
 //!
 //! - append-only, line-delimited JSON, one object per line, never rewritten and
 //!   never renamed;
-//! - every record carries `t` (`"log"` or `"gap"`) and `at`, the writer-observed
-//!   unix-millisecond instant. `at` is the only sortable clock: a frame whose
-//!   header did not parse has no timestamp at all, and clash premium's and
-//!   clash-rs's are inferred;
+//! - every record carries `t` (`"log"` or `"gap"`) and `at`, a unix-millisecond
+//!   instant. On a log record it is the parser's observation of the record's
+//!   root line; on a gap record it is the writer's own. `at` is the only
+//!   sortable clock: a frame whose header did not parse has no timestamp at all,
+//!   and clash premium's and clash-rs's are inferred;
 //! - a crash can only truncate the **last** line, because each batch is one
 //!   `write_all`. A reader splits on `\n`, parses each line, and ignores a
 //!   trailing line that does not parse;
@@ -21,10 +22,9 @@
 //!   `RuntimeConfigStore`, which pays the full stage/fsync/replace price because
 //!   it holds authoritative configuration.
 
-use std::borrow::Cow;
+use std::sync::Arc;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use clash_api::LogField;
 use serde::Serialize;
 use tokio::{
     io::AsyncWriteExt,
@@ -37,8 +37,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     error::Error,
-    kind::CoreKind,
-    log::{LogFrame, LogLevel, LogStream},
+    log::LogFrame,
     // `crate::runtime_store`, not `crate::config::runtime_store`: `lib.rs:19`
     // re-exports it and `manager/mod.rs:26` already spells it this way.
     runtime_store::validate_directory_metadata,
@@ -54,15 +53,6 @@ const LOG_DIR_NAME: &str = "logs";
 const FILE_PREFIX: &str = "core-";
 const FILE_SUFFIX: &str = ".jsonl";
 
-/// Per-record cap on the two free-text fields. The parser's 16 KiB budget bounds
-/// only continuation growth, so a single enormous line still arrives whole; this
-/// is what actually makes "a rotated file overshoots by at most one record" a
-/// statement with a number behind it.
-const MAX_TEXT_BYTES: usize = 16 * 1024;
-const MAX_TARGET_BYTES: usize = 2048;
-const MAX_TS_RAW_BYTES: usize = 256;
-const MAX_FIELDS: usize = 64;
-const MAX_FIELD_TEXT_BYTES: usize = 1024;
 const MAX_BATCH_RECORDS: usize = 256;
 
 /// Rotation knobs, mirrored from `ManagerOptions` so the writer does not carry
@@ -94,88 +84,36 @@ impl SinkHandle {
     }
 }
 
-/// A `"log"` line. The fields are borrowed from the frame so the two capped
-/// texts can be sliced instead of cloned; every key is always present, including
-/// the nulls, so a reader never has to branch on the schema.
+/// A `"log"` line: the frame verbatim, behind the one key that discriminates a
+/// record's type.
+///
+/// The frame is written in place rather than projected, so the disk schema *is*
+/// [`LogFrame`]'s field order and every key stays present, nulls included — a
+/// reader never has to branch on the schema. `t` is reserved by this envelope:
+/// a frame field of that name would produce a duplicate JSON key, which the
+/// envelope test below is there to catch.
 #[derive(Serialize)]
 struct LogRecord<'a> {
     t: &'static str,
-    at: i64,
-    epoch: u64,
-    kind: CoreKind,
-    stream: LogStream,
-    level: LogLevel,
-    timestamp: Option<RecordTimestamp<'a>>,
-    target: Option<&'a str>,
-    message: &'a str,
-    fields: Cow<'a, [LogField]>,
-    raw: &'a str,
-    /// The frame's own flag, OR-ed with whichever cap this record hit.
-    truncated: bool,
+    #[serde(flatten)]
+    frame: &'a LogFrame,
 }
 
-#[derive(Serialize)]
-struct RecordTimestamp<'a> {
-    raw: &'a str,
-    unix_ms: Option<i64>,
-    inferred: bool,
+impl<'a> LogRecord<'a> {
+    fn new(frame: &'a LogFrame) -> Self {
+        Self { t: "log", frame }
+    }
 }
 
 /// A `"gap"` line: the writer fell behind and the broadcast dropped `dropped`
 /// frames on its behalf. Writing it turns a silent hole into a visible one.
+/// Unlike a log record's, its `at` is the writer's own observation — there is no
+/// frame behind it to have been parsed.
 #[derive(Serialize)]
 struct GapRecord {
     t: &'static str,
     at: i64,
     dropped: u64,
-}
-
-impl<'a> LogRecord<'a> {
-    fn new(frame: &'a LogFrame, at: i64) -> Self {
-        let (message, message_cut) = clamp(&frame.message, MAX_TEXT_BYTES);
-        let (raw, raw_cut) = clamp(&frame.raw, MAX_TEXT_BYTES);
-        let (target, target_cut) = match frame.target.as_deref() {
-            Some(target) => {
-                let (target, cut) = clamp(target, MAX_TARGET_BYTES);
-                (Some(target), cut)
-            }
-            None => (None, false),
-        };
-        let (timestamp, timestamp_cut) = match frame.timestamp.as_ref() {
-            Some(timestamp) => {
-                let (raw, cut) = clamp(&timestamp.raw, MAX_TS_RAW_BYTES);
-                (
-                    Some(RecordTimestamp {
-                        raw,
-                        unix_ms: timestamp.unix_ms,
-                        inferred: timestamp.inferred,
-                    }),
-                    cut,
-                )
-            }
-            None => (None, false),
-        };
-        let (fields, fields_cut) = project_fields(&frame.fields);
-        Self {
-            t: "log",
-            at,
-            epoch: frame.epoch,
-            kind: frame.kind,
-            stream: frame.stream,
-            level: frame.level,
-            timestamp,
-            target,
-            message,
-            fields,
-            raw,
-            truncated: frame.truncated
-                || message_cut
-                || raw_cut
-                || target_cut
-                || timestamp_cut
-                || fields_cut,
-        }
-    }
 }
 
 impl GapRecord {
@@ -186,39 +124,6 @@ impl GapRecord {
             dropped,
         }
     }
-}
-
-/// Cuts at the last char boundary at or below the limit, so the result is still
-/// a `str` and still serializes as valid JSON.
-fn clamp(text: &str, max_bytes: usize) -> (&str, bool) {
-    if text.len() <= max_bytes {
-        return (text, false);
-    }
-    let mut end = max_bytes;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    (&text[..end], true)
-}
-
-fn project_fields(fields: &[LogField]) -> (Cow<'_, [LogField]>, bool) {
-    let kept = &fields[..fields.len().min(MAX_FIELDS)];
-    let exceeds_budget = fields.len() > MAX_FIELDS
-        || kept.iter().any(|field| {
-            field.key.len() > MAX_FIELD_TEXT_BYTES || field.value.len() > MAX_FIELD_TEXT_BYTES
-        });
-    if !exceeds_budget {
-        return (Cow::Borrowed(fields), false);
-    }
-
-    let fields = kept
-        .iter()
-        .map(|field| LogField {
-            key: clamp(&field.key, MAX_FIELD_TEXT_BYTES).0.to_owned(),
-            value: clamp(&field.value, MAX_FIELD_TEXT_BYTES).0.to_owned(),
-        })
-        .collect();
-    (Cow::Owned(fields), true)
 }
 
 /// Creates and hardens `{parent}/logs`, returning its path.
@@ -264,7 +169,7 @@ pub(crate) async fn prepare_dir(parent: &Utf8Path) -> Result<Utf8PathBuf, Error>
 pub(crate) async fn spawn(
     dir: Utf8PathBuf,
     options: SinkOptions,
-    logs: Receiver<LogFrame>,
+    logs: Receiver<Arc<LogFrame>>,
     cancel: CancellationToken,
 ) -> Result<SinkHandle, Error> {
     let writer = Writer::open(dir, options).await?;
@@ -275,7 +180,7 @@ pub(crate) async fn spawn(
 /// Drains the broadcast in batches until the token is cancelled or the last
 /// sender is gone. One `recv().await` for the first frame, then `try_recv()`
 /// until empty: a start-up burst costs one write instead of one per line.
-async fn run(mut writer: Writer, mut logs: Receiver<LogFrame>, cancel: CancellationToken) {
+async fn run(mut writer: Writer, mut logs: Receiver<Arc<LogFrame>>, cancel: CancellationToken) {
     let mut batch = Vec::new();
     loop {
         // Cleared before the select, never after: the cancellation arm writes
@@ -314,13 +219,13 @@ async fn run(mut writer: Writer, mut logs: Receiver<LogFrame>, cancel: Cancellat
 }
 
 enum Entry {
-    Log(LogFrame),
+    Log(Arc<LogFrame>),
     Gap(u64),
 }
 
 /// Appends everything already buffered. `true` means the channel is closed and
 /// the caller must stop after writing what it has.
-fn drain(logs: &mut Receiver<LogFrame>, batch: &mut Vec<Entry>) -> bool {
+fn drain(logs: &mut Receiver<Arc<LogFrame>>, batch: &mut Vec<Entry>) -> bool {
     while batch.len() < MAX_BATCH_RECORDS {
         match logs.try_recv() {
             Ok(frame) => batch.push(Entry::Log(frame)),
@@ -361,10 +266,13 @@ impl Writer {
     /// Serializes and appends one batch, rotating whenever the active file has
     /// already crossed the limit. The check runs per record, not per batch, so
     /// a burst that arrives as one batch still cannot produce a file more than
-    /// one record past `max_bytes` — a record being bounded by MAX_TEXT_BYTES
-    /// on each of its two free-text fields. Errors are logged and swallowed:
-    /// losing diagnostic output must never take down a manager that is
-    /// otherwise healthy.
+    /// one record past `max_bytes` — a record being bounded by the caps the
+    /// manager's parser applied before it ever reached this channel. That holds
+    /// for as long as rollover keeps succeeding: `rotate` deliberately keeps
+    /// writing into the oversized file when it cannot open a new one, so
+    /// repeated failures overshoot by a record each. Errors are logged and
+    /// swallowed: losing diagnostic output must never take down a manager that
+    /// is otherwise healthy.
     async fn write(&mut self, batch: &[Entry]) {
         if batch.is_empty() {
             return;
@@ -381,7 +289,7 @@ impl Writer {
             }
             let mark = buffer.len();
             let result = match entry {
-                Entry::Log(frame) => serde_json::to_writer(&mut buffer, &LogRecord::new(frame, at)),
+                Entry::Log(frame) => serde_json::to_writer(&mut buffer, &LogRecord::new(frame)),
                 Entry::Gap(dropped) => {
                     serde_json::to_writer(&mut buffer, &GapRecord::new(*dropped, at))
                 }
@@ -521,7 +429,10 @@ fn prune_targets(mut seqs: Vec<u64>, max_files: usize) -> Vec<u64> {
 mod tests {
     use super::*;
 
-    use crate::{kind::CoreKind, log::LogTimestamp};
+    use crate::{
+        kind::CoreKind,
+        log::{LogField, LogLevel, LogStream, LogTimestamp},
+    };
 
     fn temp_dir() -> (tempfile::TempDir, Utf8PathBuf) {
         let guard = tempfile::tempdir().unwrap();
@@ -538,15 +449,16 @@ mod tests {
 
     fn frame(message: &str) -> LogFrame {
         LogFrame {
+            at: 1_700_000_000_000,
             epoch: 7,
             kind: CoreKind::Mihomo,
             stream: LogStream::Stdout,
+            level: LogLevel::Info,
             timestamp: Some(LogTimestamp {
                 raw: "2026-07-29T00:16:22.646059400+08:00".to_owned(),
                 unix_ms: Some(1_753_719_382_646),
                 inferred: false,
             }),
-            level: LogLevel::Info,
             target: None,
             message: message.to_owned(),
             fields: vec![LogField {
@@ -556,6 +468,10 @@ mod tests {
             raw: format!("time=\"...\" level=info msg=\"{message}\""),
             truncated: false,
         }
+    }
+
+    fn entry(message: &str) -> Entry {
+        Entry::Log(Arc::new(frame(message)))
     }
 
     fn touch(dir: &Utf8Path, seq: u64) {
@@ -580,7 +496,7 @@ mod tests {
     }
 
     fn record(frame: &LogFrame) -> serde_json::Value {
-        serde_json::to_value(LogRecord::new(frame, 1_700_000_000_000)).unwrap()
+        serde_json::to_value(LogRecord::new(frame)).unwrap()
     }
 
     #[test]
@@ -621,9 +537,49 @@ mod tests {
         assert_eq!(prune_targets(vec![999_999, 1_000_000, 5], 2), [5]);
     }
 
+    /// The envelope adds exactly one key and flattens the frame beside it. The
+    /// duplicate-key check is the reason `t` is reserved: a frame field of that
+    /// name would produce a line no reader could interpret, and serde would not
+    /// complain.
     #[test]
-    fn a_log_record_carries_the_observed_time_and_the_whole_frame() {
-        let value = record(&frame("startup frame"));
+    fn a_log_record_is_the_whole_frame_behind_a_single_tag() {
+        let frame = frame("startup frame");
+        let encoded = serde_json::to_string(&LogRecord::new(&frame)).unwrap();
+        assert_eq!(
+            encoded.matches(r#""t":"#).count(),
+            1,
+            "the envelope tag must be the only `t` key: {encoded}"
+        );
+        // The key order this pins is the order the archive has always written.
+        // Flattening the frame is a source-level change only: existing files
+        // stay readable and new lines sit beside them unmigrated.
+        assert!(
+            encoded.starts_with(concat!(
+                r#"{"t":"log","at":1700000000000,"epoch":7,"kind":"mihomo","#,
+                r#""stream":"stdout","level":"info","timestamp":{"#,
+            )),
+            "the on-disk key order moved: {encoded}"
+        );
+        assert!(
+            encoded.ends_with(concat!(
+                r#""target":null,"message":"startup frame","#,
+                r#""fields":[{"key":"request","value":"7"}],"#,
+                r#""raw":"time=\"...\" level=info msg=\"startup frame\"","#,
+                r#""truncated":false}"#
+            )),
+            "the on-disk key order moved: {encoded}"
+        );
+
+        let value: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        let flattened = serde_json::to_value(&frame).unwrap();
+        for (key, expected) in flattened.as_object().unwrap() {
+            assert_eq!(&value[key], expected, "flattened field {key}");
+        }
+        assert_eq!(
+            value.as_object().unwrap().len(),
+            flattened.as_object().unwrap().len() + 1
+        );
+
         assert_eq!(value["t"], "log");
         assert_eq!(value["at"], 1_700_000_000_000_i64);
         assert_eq!(value["epoch"], 7);
@@ -640,7 +596,8 @@ mod tests {
     }
 
     /// A frame whose header did not parse has no clock of its own, which is the
-    /// reason `at` exists. The key is still present, so a reader never branches.
+    /// reason the parser stamps `at`. The key is still present, so a reader
+    /// never branches.
     #[test]
     fn a_degraded_frame_keeps_a_null_timestamp_and_still_carries_at() {
         let mut degraded = frame("unparsed line");
@@ -648,66 +605,6 @@ mod tests {
         let value = record(&degraded);
         assert_eq!(value["timestamp"], serde_json::Value::Null);
         assert_eq!(value["at"], 1_700_000_000_000_i64);
-    }
-
-    /// The parser's 16 KiB budget bounds continuations, not the root line, so an
-    /// enormous single line reaches the sink whole. Both texts are cut and the
-    /// record says so.
-    #[test]
-    fn an_oversized_record_is_capped_and_flagged_truncated() {
-        let huge = "x".repeat(MAX_TEXT_BYTES * 2);
-        let mut oversized = frame("ignored");
-        oversized.message = huge.clone();
-        oversized.raw = huge;
-        let value = record(&oversized);
-        assert_eq!(value["message"].as_str().unwrap().len(), MAX_TEXT_BYTES);
-        assert_eq!(value["raw"].as_str().unwrap().len(), MAX_TEXT_BYTES);
-        assert_eq!(value["truncated"], true);
-    }
-
-    /// Multi-byte text must not be cut mid-character, or the line stops being
-    /// JSON at all.
-    #[test]
-    fn capping_cuts_on_a_character_boundary() {
-        // Three bytes per char, so the limit never lands on a boundary and the
-        // walk-back actually runs.
-        let text = "€".repeat(MAX_TEXT_BYTES);
-        let (cut, truncated) = clamp(&text, MAX_TEXT_BYTES);
-        assert!(truncated);
-        assert!(cut.len() < MAX_TEXT_BYTES, "the boundary walk did not run");
-        assert!(text.starts_with(cut));
-    }
-
-    #[test]
-    fn oversized_metadata_is_capped_and_flagged_truncated() {
-        let huge = "x".repeat(MAX_FIELD_TEXT_BYTES * 2);
-        let mut oversized = frame("oversized metadata");
-        oversized.target = Some("t".repeat(MAX_TARGET_BYTES * 2));
-        oversized.timestamp.as_mut().unwrap().raw = "z".repeat(MAX_TS_RAW_BYTES * 2);
-        oversized.fields = (0..=MAX_FIELDS)
-            .map(|index| LogField {
-                key: format!("{index}{huge}"),
-                value: huge.clone(),
-            })
-            .collect();
-
-        let value = record(&oversized);
-
-        assert_eq!(value["target"].as_str().unwrap().len(), MAX_TARGET_BYTES);
-        assert_eq!(
-            value["timestamp"]["raw"].as_str().unwrap().len(),
-            MAX_TS_RAW_BYTES
-        );
-        assert_eq!(value["fields"].as_array().unwrap().len(), MAX_FIELDS);
-        assert_eq!(
-            value["fields"][0]["key"].as_str().unwrap().len(),
-            MAX_FIELD_TEXT_BYTES
-        );
-        assert_eq!(
-            value["fields"][0]["value"].as_str().unwrap().len(),
-            MAX_FIELD_TEXT_BYTES
-        );
-        assert_eq!(value["truncated"], true);
     }
 
     #[test]
@@ -722,7 +619,8 @@ mod tests {
     async fn writing_past_the_size_limit_rotates_and_overshoots_by_at_most_one_record() {
         let (_guard, dir) = temp_dir();
         let mut writer = Writer::open(dir.clone(), options(512, 9)).await.unwrap();
-        let one = serde_json::to_vec(&LogRecord::new(&frame("rotate me"), now_ms()))
+        let rotate_me = frame("rotate me");
+        let one = serde_json::to_vec(&LogRecord::new(&rotate_me))
             .unwrap()
             .len() as u64
             + 1;
@@ -731,7 +629,7 @@ mod tests {
         // holds whatever the fixture serializes to.
         let mut writes = 0;
         while names(&dir).len() == 1 {
-            writer.write(&[Entry::Log(frame("rotate me"))]).await;
+            writer.write(&[entry("rotate me")]).await;
             writes += 1;
             assert!(writes < 100, "the writer never rotated");
         }
@@ -751,7 +649,7 @@ mod tests {
         let (_guard, dir) = temp_dir();
         let mut writer = Writer::open(dir.clone(), options(1, 2)).await.unwrap();
         for _ in 0..4 {
-            writer.write(&[Entry::Log(frame("roll"))]).await;
+            writer.write(&[entry("roll")]).await;
         }
         drop(writer);
 
@@ -766,7 +664,7 @@ mod tests {
         let mut writer = Writer::open(dir.clone(), options(1, 1)).await.unwrap();
         for index in 0..4 {
             let message = format!("line {index}");
-            writer.write(&[Entry::Log(frame(&message))]).await;
+            writer.write(&[entry(&message)]).await;
 
             let newest = dir.join(file_name(writer.seq));
             assert!(newest.exists(), "the active file disappeared");
@@ -789,14 +687,10 @@ mod tests {
     async fn a_batch_spanning_the_limit_rotates_mid_batch() {
         let (_guard, dir) = temp_dir();
         let mut writer = Writer::open(dir.clone(), options(512, 16)).await.unwrap();
-        let one = serde_json::to_vec(&LogRecord::new(&frame("burst"), now_ms()))
-            .unwrap()
-            .len() as u64
-            + 1;
+        let burst = frame("burst");
+        let one = serde_json::to_vec(&LogRecord::new(&burst)).unwrap().len() as u64 + 1;
         assert!(one < 512, "the fixture record must fit under the limit");
-        let batch = (0..20)
-            .map(|_| Entry::Log(frame("burst")))
-            .collect::<Vec<_>>();
+        let batch = (0..20).map(|_| entry("burst")).collect::<Vec<_>>();
         writer.write(&batch).await;
         drop(writer);
 
@@ -841,11 +735,11 @@ mod tests {
     async fn a_restarted_writer_opens_a_new_file_instead_of_appending() {
         let (_guard, dir) = temp_dir();
         let mut first = Writer::open(dir.clone(), options(4096, 5)).await.unwrap();
-        first.write(&[Entry::Log(frame("first run"))]).await;
+        first.write(&[entry("first run")]).await;
         drop(first);
 
         let mut second = Writer::open(dir.clone(), options(4096, 5)).await.unwrap();
-        second.write(&[Entry::Log(frame("second run"))]).await;
+        second.write(&[entry("second run")]).await;
         drop(second);
 
         assert_eq!(names(&dir), ["core-000001.jsonl", "core-000002.jsonl"]);
@@ -865,7 +759,9 @@ mod tests {
         let (_guard, dir) = temp_dir();
         let (log_tx, logs) = tokio::sync::broadcast::channel(2);
         for index in 0..5 {
-            log_tx.send(frame(&format!("line {index}"))).unwrap();
+            log_tx
+                .send(Arc::new(frame(&format!("line {index}"))))
+                .unwrap();
         }
         drop(log_tx);
 
@@ -887,7 +783,9 @@ mod tests {
         let (_guard, dir) = temp_dir();
         let (log_tx, logs) = tokio::sync::broadcast::channel(512);
         for index in 0..300 {
-            log_tx.send(frame(&format!("line {index}"))).unwrap();
+            log_tx
+                .send(Arc::new(frame(&format!("line {index}"))))
+                .unwrap();
         }
         drop(log_tx);
 
@@ -914,7 +812,9 @@ mod tests {
         .await
         .unwrap();
         for index in 0..8 {
-            log_tx.send(frame(&format!("line {index}"))).unwrap();
+            log_tx
+                .send(Arc::new(frame(&format!("line {index}"))))
+                .unwrap();
         }
 
         handle.shutdown().await;

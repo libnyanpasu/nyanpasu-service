@@ -108,7 +108,7 @@ struct Inner {
     status_tx: watch::Sender<CoreStatus>,
     /// Outlives every epoch, so callers can subscribe before the first start and
     /// keep receiving across restarts and core switches.
-    log_tx: broadcast::Sender<LogFrame>,
+    log_tx: broadcast::Sender<Arc<LogFrame>>,
     epoch: AtomicU64,
     version_cache: VersionCache,
     /// `Some` while the JSONL sink is running. `None` means the caller turned it
@@ -293,7 +293,7 @@ impl CoreManager {
         self.inner.status_tx.subscribe()
     }
 
-    pub fn subscribe_logs(&self) -> broadcast::Receiver<LogFrame> {
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<Arc<LogFrame>> {
         self.inner.log_tx.subscribe()
     }
 

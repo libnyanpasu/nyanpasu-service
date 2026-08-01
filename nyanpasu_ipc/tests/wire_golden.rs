@@ -9,6 +9,7 @@ use std::{
     borrow::Cow,
     net::{IpAddr, Ipv4Addr},
     path::PathBuf,
+    sync::Arc,
 };
 
 use nyanpasu_ipc::api::{
@@ -26,7 +27,7 @@ use nyanpasu_ipc::api::{
         CoreState, CoreStateDetail, LogPathsInfo, RevisionIdInfo, RuntimeInfos, StatusResBody,
     },
     ws::events::{
-        CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
+        ClashCoreKind, EVENT_URI, Event, LogField, LogFrame, LogLevel, LogStream, LogTimestamp,
     },
 };
 use nyanpasu_utils::core::{ClashCoreType, CoreType};
@@ -377,21 +378,27 @@ fn the_ws_events_are_pinned() {
 /// with `serde_json`, so a divergence must show up as a diff between two
 /// otherwise identical strings.
 fn pinned_core_log() -> Event {
-    Event::new_core_log(CoreLogInfo {
-        epoch: 1,
-        kind: CoreLogKind::Mihomo,
-        stream: CoreLogStream::Stdout,
-        level: CoreLogLevel::Info,
+    Event::new_core_log(Arc::new(LogFrame {
         at: 1_700_000_000_000,
-        timestamp_ms: Some(1_753_719_382_646),
+        epoch: 1,
+        kind: ClashCoreKind::Mihomo,
+        stream: LogStream::Stdout,
+        level: LogLevel::Info,
+        timestamp: Some(LogTimestamp {
+            raw: "2026-07-29T00:16:22.646059400+08:00".to_owned(),
+            unix_ms: Some(1_753_719_382_646),
+            inferred: false,
+        }),
         target: None,
         message: "hello core".to_owned(),
-        fields: vec![CoreLogField {
+        fields: vec![LogField {
             key: "request".to_owned(),
             value: "7".to_owned(),
         }],
+        raw: "time=\"2026-07-29T00:16:22.646059400+08:00\" level=info msg=\"hello core\" request=7"
+            .to_owned(),
         truncated: false,
-    })
+    }))
 }
 
 #[test]
@@ -399,10 +406,12 @@ fn the_core_log_event_is_pinned() {
     assert_eq!(
         serde_json::to_string(&pinned_core_log()).unwrap(),
         concat!(
-            r#"{"CoreLog":{"epoch":1,"kind":"mihomo","stream":"stdout","level":"info","#,
-            r#""at":1700000000000,"timestamp_ms":1753719382646,"target":null,"#,
+            r#"{"CoreLog":{"at":1700000000000,"epoch":1,"kind":"mihomo","stream":"stdout","#,
+            r#""level":"info","timestamp":{"raw":"2026-07-29T00:16:22.646059400+08:00","#,
+            r#""unix_ms":1753719382646,"inferred":false},"target":null,"#,
             r#""message":"hello core","fields":[{"key":"request","value":"7"}],"#,
-            r#""truncated":false}}"#
+            r#""raw":"time=\"2026-07-29T00:16:22.646059400+08:00\" level=info "#,
+            r#"msg=\"hello core\" request=7","truncated":false}}"#
         )
     );
 }
@@ -412,24 +421,26 @@ fn the_core_log_event_is_pinned() {
 /// still sortable.
 #[test]
 fn a_degraded_core_log_event_is_pinned() {
-    let event = Event::new_core_log(CoreLogInfo {
-        epoch: 2,
-        kind: CoreLogKind::ClashRust,
-        stream: CoreLogStream::Stderr,
-        level: CoreLogLevel::Warning,
+    let event = Event::new_core_log(Arc::new(LogFrame {
         at: 1_700_000_000_001,
-        timestamp_ms: None,
+        epoch: 2,
+        kind: ClashCoreKind::ClashRust,
+        stream: LogStream::Stderr,
+        level: LogLevel::Warning,
+        timestamp: None,
         target: None,
         message: "unparsed line".to_owned(),
         fields: Vec::new(),
+        raw: "unparsed line".to_owned(),
         truncated: true,
-    });
+    }));
     assert_eq!(
         serde_json::to_string(&event).unwrap(),
         concat!(
-            r#"{"CoreLog":{"epoch":2,"kind":"clash-rs","stream":"stderr","#,
-            r#""level":"warning","at":1700000000001,"timestamp_ms":null,"target":null,"#,
-            r#""message":"unparsed line","fields":[],"truncated":true}}"#
+            r#"{"CoreLog":{"at":1700000000001,"epoch":2,"kind":"clash-rs","stream":"stderr","#,
+            r#""level":"warning","timestamp":null,"target":null,"#,
+            r#""message":"unparsed line","fields":[],"raw":"unparsed line","#,
+            r#""truncated":true}}"#
         )
     );
 }

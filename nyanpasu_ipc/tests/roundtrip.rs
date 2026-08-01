@@ -56,7 +56,7 @@ use nyanpasu_ipc::{
             RuntimeInfos, STATUS_ENDPOINT, StatusRes, StatusResBody,
         },
         ws::events::{
-            CoreLogField, CoreLogInfo, CoreLogKind, CoreLogLevel, CoreLogStream, EVENT_URI, Event,
+            ClashCoreKind, EVENT_URI, Event, LogFrame, LogLevel, LogStream, LogTimestamp,
         },
     },
     client::{Client, ClientError},
@@ -310,18 +310,23 @@ async fn ws_handler(ws: WebSocketUpgrade) -> Response {
         let events = [
             Event::new_core_status_changed(test_snapshot()),
             Event::new_core_state_changed(CoreState::Stopped(Some("bye".to_owned()))),
-            Event::new_core_log(CoreLogInfo {
-                epoch: 4,
-                kind: CoreLogKind::Mihomo,
-                stream: CoreLogStream::Stdout,
-                level: CoreLogLevel::Info,
+            Event::new_core_log(std::sync::Arc::new(LogFrame {
                 at: 1_700_000_000_000,
-                timestamp_ms: Some(1_753_719_382_646),
+                epoch: 4,
+                kind: ClashCoreKind::Mihomo,
+                stream: LogStream::Stdout,
+                level: LogLevel::Info,
+                timestamp: Some(LogTimestamp {
+                    raw: "2026-07-29T00:16:22.646059400+08:00".to_owned(),
+                    unix_ms: Some(1_753_719_382_646),
+                    inferred: false,
+                }),
                 target: Some("dns".to_owned()),
                 message: "hello core".to_owned(),
-                fields: Vec::<CoreLogField>::new(),
+                fields: Vec::new(),
+                raw: "the whole logical record".to_owned(),
                 truncated: false,
-            }),
+            })),
         ];
         for event in events {
             let bytes = serde_json::to_vec(&event).unwrap();
@@ -592,15 +597,19 @@ async fn core_log_roundtrip() {
     }
 
     let log = seen.expect("the stream should carry a core log frame");
-    assert_eq!(log.epoch, 4);
-    assert_eq!(log.kind, CoreLogKind::Mihomo);
-    assert_eq!(log.stream, CoreLogStream::Stdout);
-    assert_eq!(log.level, CoreLogLevel::Info);
     assert_eq!(log.at, 1_700_000_000_000);
-    assert_eq!(log.timestamp_ms, Some(1_753_719_382_646));
+    assert_eq!(log.epoch, 4);
+    assert_eq!(log.kind, ClashCoreKind::Mihomo);
+    assert_eq!(log.stream, LogStream::Stdout);
+    assert_eq!(log.level, LogLevel::Info);
+    let timestamp = log.timestamp.as_ref().expect("the fixture parsed a header");
+    assert_eq!(timestamp.raw, "2026-07-29T00:16:22.646059400+08:00");
+    assert_eq!(timestamp.unix_ms, Some(1_753_719_382_646));
+    assert!(!timestamp.inferred);
     assert_eq!(log.target.as_deref(), Some("dns"));
     assert_eq!(log.message, "hello core");
     assert!(log.fields.is_empty());
+    assert_eq!(log.raw, "the whole logical record");
     assert!(!log.truncated);
 
     let _ = shutdown.send(());
