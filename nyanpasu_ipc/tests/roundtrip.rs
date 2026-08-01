@@ -761,13 +761,18 @@ async fn a_server_error_kind_reaches_the_client() {
         return;
     };
 
-    match client.apply_config(&apply_payload()).await {
-        Err(ClientError::Server {
+    let error = client.apply_config(&apply_payload()).await.unwrap_err();
+    assert_eq!(
+        error.core_error_kind(),
+        Some(CoreErrorKind::RevisionConflict)
+    );
+    match error {
+        ClientError::Server {
             code,
             msg,
             error_kind,
             ..
-        }) => {
+        } => {
             assert_eq!(code, ResponseCode::OtherError);
             assert_eq!(msg, "config revision conflict");
             assert_eq!(error_kind.as_deref(), Some("revision_conflict"));
