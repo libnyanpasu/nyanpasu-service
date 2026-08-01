@@ -1950,6 +1950,7 @@ dependencies = [
  "parking_lot",
  "schemars",
  "serde",
+ "serde_json",
  "serde_yaml_ng",
  "specta",
  "tempfile",
@@ -1968,6 +1969,7 @@ dependencies = [
  "schemars",
  "semver",
  "serde",
+ "serde_json",
  "specta",
 ]
 
@@ -1983,6 +1985,7 @@ dependencies = [
  "http",
  "indexmap",
  "interprocess",
+ "nyanpasu-core-metadata",
  "nyanpasu-utils",
  "reqwest",
  "reqwest-websocket",
@@ -2029,7 +2032,6 @@ dependencies = [
  "ctrlc",
  "dunce",
  "futures-util",
- "indexmap",
  "nyanpasu-core-manager",
  "nyanpasu-ipc",
  "nyanpasu-utils",
